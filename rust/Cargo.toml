@@ -1,0 +1,49 @@
+[package]
+name = "candy"
+version = "0.1.0"
+edition = "2024"
+description = "Code-oriented Animation Engine Designed for Typst — Rust rendering & encoding backend"
+license = "MIT"
+
+[lib]
+name = "candy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "candy"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
+# The internal typst crates are pulled in explicitly so we can build an in-memory
+# `World` to compile `.tyx` sources in-process.
+typst = "0.15"
+typst-render = "0.15"
+typst-svg = "0.15"
+typst-library = "0.15"
+typst-layout = "0.15"
+typst-syntax = "0.15"
+typst-utils = "0.15"
+
+# Lightweight AV1 encoding backend (no FFmpeg, pure Rust).
+# `default-features = false` disables the nasm assembly backend so it builds
+# with the portable Rust/C implementation on any host.
+rav1e = { version = "0.8", default-features = false }
+
+# In-process H.264 encoder. `openh264` links the system `libopenh264` library
+# at build time but performs all encoding in-process — candy never spawns a
+# system command (no `x264`/`x265`/FFmpeg CLI).
+openh264 = "0.7"
+
+[features]
+# AV1/H.264 video encoding. The build is fully self-contained: encoders run
+# in-process and containers (MP4 / Matroska) are written by candy itself, so no
+# external tool (FFmpeg, x264, x265) is ever invoked.
+default = ["video"]
+video = []
+
+[dev-dependencies]

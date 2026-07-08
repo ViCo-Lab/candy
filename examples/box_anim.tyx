@@ -1,0 +1,8 @@
+#import "../typst/src/lib.typ": *
+
+// Candy example: a red box moves to (3cm, 2cm) while scaling up to 1.5x.
+// Valid standard Typst — `typst compile` shows only the initial box.
+#mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+
+#animate("box", to: (3cm, 2cm), duration: 20, easing: "ease-out")
+#animate("box", scale: 1.5, duration: 20, easing: "linear")

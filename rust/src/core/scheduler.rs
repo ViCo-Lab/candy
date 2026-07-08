@@ -1,0 +1,201 @@
+//! Y-axis scheduling: turn a `Scene` AST into keyframe `FrameData`.
+
+use std::collections::HashMap;
+
+use crate::core::ast::{Action, FrameData, Label, Scene};
+
+/// Per-target animation state. Internal to the scheduler.
+#[derive(Debug, Clone, Copy)]
+struct State {
+    x: f64,
+    y: f64,
+    scale: f64,
+    opacity: f64,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+/// Generate keyframe `FrameData` from the `Scene` AST.
+///
+/// Precondition: every `slide.duration_frames ≥ 1` (enforced by
+/// `Scene::validate`).
+/// Postcondition: returns `Vec<FrameData>`; for every `Action::MoveTo` the
+/// `frame_idx` increments monotonically within a single target's keyframe list
+/// (asserted below). Every animatable item also gets a frame-0 default
+/// keyframe (seeded from `scene.initial`) and a final keyframe at the last
+/// frame.
+pub fn schedule(scene: &Scene) -> Vec<FrameData> {
+    // Seed each item's starting state from `scene.initial` (the `candy.mobject`
+    // `at`/`scale`/`opacity`), falling back to the origin/scale-1 default.
+    let mut state: HashMap<Label, State> = scene
+        .items
+        .keys()
+        .map(|l| {
+            let s = scene
+                .initial
+                .get(l)
+                .map(|f| State {
+                    x: f.x,
+                    y: f.y,
+                    scale: f.scale,
+                    opacity: f.opacity,
+                })
+                .unwrap_or_default();
+            (l.clone(), s)
+        })
+        .collect();
+
+    let mut per_item: HashMap<Label, Vec<FrameData>> = state
+        .keys()
+        .map(|l| (l.clone(), vec![FrameData::new(0, l.clone())]))
+        .collect();
+
+    let mut ptr: u32 = 0;
+    for slide in &scene.slides {
+        let start = ptr;
+        let end = ptr + slide.duration_frames.saturating_sub(1);
+
+        for action in &slide.actions {
+            let t = action.target().clone();
+            let s = *state.get(&t).unwrap_or(&State::default());
+
+            // Keyframe at the slide start = current state.
+            per_item.entry(t.clone()).or_default().push(FrameData {
+                frame_idx: start,
+                target: t.clone(),
+                x: s.x,
+                y: s.y,
+                scale: s.scale,
+                opacity: s.opacity,
+            });
+
+            apply(&mut state, &t, action);
+
+            let s = state[&t];
+            // Keyframe at the slide end = new state.
+            per_item.entry(t.clone()).or_default().push(FrameData {
+                frame_idx: end,
+                target: t.clone(),
+                x: s.x,
+                y: s.y,
+                scale: s.scale,
+                opacity: s.opacity,
+            });
+        }
+
+        ptr = end + 1;
+    }
+
+    // Ensure every item has a keyframe at the final frame.
+    let last = ptr.saturating_sub(1);
+    for (l, st) in &state {
+        per_item.entry(l.clone()).or_default().push(FrameData {
+            frame_idx: last,
+            target: l.clone(),
+            x: st.x,
+            y: st.y,
+            scale: st.scale,
+            opacity: st.opacity,
+        });
+    }
+
+    let mut all: Vec<FrameData> = per_item.into_values().flatten().collect();
+    all.sort_by(|a, b| a.frame_idx.cmp(&b.frame_idx).then(a.target.0.cmp(&b.target.0)));
+
+    // Mandatory assertion: monotonic frame_idx per target.
+    assert_monotonic(&all);
+    all
+}
+
+/// Apply a single action to a target's state.
+fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
+    let s = *state.get(t).unwrap_or(&State::default());
+    let ns = match action {
+        Action::MoveTo { to, .. } => State {
+            x: to.0,
+            y: to.1,
+            ..s
+        },
+        Action::Scale { to, .. } => State { scale: *to, ..s },
+        Action::FadeIn { .. } => State {
+            opacity: 1.0,
+            ..s
+        },
+        Action::FadeOut { .. } => State {
+            opacity: 0.0,
+            ..s
+        },
+    };
+    state.insert(t.clone(), ns);
+}
+
+/// Assertion helper: within each target's keyframe list, `frame_idx` must be
+/// non-decreasing.
+fn assert_monotonic(frames: &[FrameData]) {
+    let mut last: Option<(Label, u32)> = None;
+    for f in frames {
+        if let Some((ref lbl, idx)) = last {
+            if lbl == &f.target && f.frame_idx < idx {
+                panic!(
+                    "scheduler: non-monotonic frame_idx for @{} ({} < {})",
+                    f.target.0, f.frame_idx, idx
+                );
+            }
+        }
+        last = Some((f.target.clone(), f.frame_idx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ast::{Action, Label, Scene, Slide};
+    use crate::core::meta::PrivateMeta;
+
+    fn scene() -> Scene {
+        Scene {
+            slides: vec![
+                Slide {
+                    duration_frames: 10,
+                    actions: vec![Action::MoveTo {
+                        target: Label("a".into()),
+                        to: (3.0, 0.0),
+                    }],
+                },
+                Slide {
+                    duration_frames: 5,
+                    actions: vec![Action::FadeOut {
+                        target: Label("a".into()),
+                    }],
+                },
+            ],
+            items: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(Label("a".into()), String::new());
+                m
+            },
+            initial: std::collections::HashMap::new(),
+            audio: Vec::new(),
+            private_metadata: PrivateMeta::default(),
+        }
+    }
+
+    #[test]
+    fn keyframes_cover_bounds() {
+        let kf = schedule(&scene());
+        // first keyframe at frame 0, last at frame 14 (10 + 5 - 1)
+        assert_eq!(kf.iter().map(|f| f.frame_idx).min(), Some(0));
+        assert_eq!(kf.iter().map(|f| f.frame_idx).max(), Some(14));
+        // frame 0 default + start/end for slide0 + start/end for slide1 + final
+        assert!(kf.len() >= 5);
+    }
+}

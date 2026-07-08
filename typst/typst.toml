@@ -1,0 +1,10 @@
+[package]
+name = "candy"
+version = "0.0.1"
+entrypoint = "src/lib.typ"
+authors = ["Shining Yang<@ShiningYangYXN>"]
+license = "MIT"
+description = "Code-oriented Animation eNgine Designed for tYpst"
+repository = "https://github.com/ViCo-Lab/candy"
+keywords = ["animation", "typst", "graphics", "manim"]
+categories = ["scripting","presentation","fun"]

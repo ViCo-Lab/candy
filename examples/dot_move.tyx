@@ -1,0 +1,12 @@
+#import "../typst/src/lib.typ": *
+
+// Candy example: a blue dot starts at its natural position and slides to
+// (4cm, 0pt) over 30 frames, then holds for 15 frames. Valid standard Typst —
+// `typst compile` shows only the initial dot; `candy build` renders the clip.
+// Note: no `at` is given; the dot's position is taken automatically from the
+// document flow.
+#mobject("dot", circle(radius: 1cm, fill: blue))
+
+#animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
+#pause(duration: 15)
+#audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
