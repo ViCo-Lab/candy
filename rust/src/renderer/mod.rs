@@ -15,6 +15,7 @@ pub mod h264;
 pub mod rav1e;
 pub mod typst;
 pub mod video;
+pub mod ffmpeg;
 
 /// A single rasterized animation frame (RGBA8, row-major).
 #[derive(Clone)]

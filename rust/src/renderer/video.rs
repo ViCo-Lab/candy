@@ -1,11 +1,28 @@
-//! Video encoding dispatch — fully self-contained (no FFmpeg, no `x264`/`x265`
-//! CLI). Every codec runs *in-process*:
+//! Video encoding dispatch.
+//!
+//! ## Self-contained codecs (default, no system deps)
 //!
 //! * **AV1** (`rav1e`, pure Rust) — preferred.
 //! * **H.264** (`openh264`, linked `libopenh264`) — optional.
-//! * **HEVC** is intentionally *not* supported: there is no pure-Rust / library
-//!   encoder we can ship without invoking a system command, and the spec marks
-//!   it optional (HEVC/H264).
+//!
+//! ## Optional system-FFmpeg codecs (runtime-detected, no cargo deps)
+//!
+//! When the system has `ffmpeg` on `$PATH`, candy can shell out to it for
+//! codecs that have no pure-Rust encoder:
+//!
+//! * **H.265/HEVC** (`x265` via ffmpeg) — the spec marks HEVC optional; this
+//!   makes it available on systems with ffmpeg + x265 installed.
+//! * **x264** (`x264` via ffmpeg) — higher-quality / faster than openh264 on
+//!   systems with x264, used when `--codec x264` is passed.
+//! * **Hardware encoders** (VAAPI on Linux, VideoToolbox on macOS, QSV on
+//!   Windows/Intel) — selected via `--codec h264-vaapi` / `h265-vaapi` /
+//!   `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`.
+//!   These are runtime-detected; if the hardware encoder is unavailable,
+//!   candy falls back to the software equivalent.
+//!
+//! The FFmpeg path pipes raw RGBA frames to ffmpeg's stdin and reads the
+//! muxed output from stdout — no temp files, no cargo dependency on ffmpeg.
+//! If ffmpeg is not found, candy falls back to the self-contained codecs.
 //!
 //! Typst auto-sizes each page to its content, so per-frame sizes can vary. We
 //! *compose* every frame onto a uniform opaque-white canvas of the largest size
@@ -22,9 +39,32 @@ use crate::renderer::container;
 /// Video codec selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
+    /// AV1 via rav1e (pure Rust, self-contained). Default.
     Av1,
+    /// H.264 via openh264 (self-contained).
     H264,
+    /// H.265/HEVC. Self-contained build returns E007; with system ffmpeg +
+    /// x265, shells out to ffmpeg.
     H265,
+    /// H.264 via system ffmpeg + libx264 (higher quality than openh264).
+    /// Falls back to openh264 if ffmpeg is unavailable.
+    X264,
+    /// H.265/HEVC via system ffmpeg + libx265.
+    /// Falls back to AV1 (rav1e) if ffmpeg is unavailable.
+    X265,
+    /// H.264 via VAAPI (Linux Intel/AMD GPU hardware encoder).
+    /// Falls back to openh264 if ffmpeg or the VAAPI device is unavailable.
+    H264Vaapi,
+    /// H.265 via VAAPI.
+    H265Vaapi,
+    /// H.264 via VideoToolbox (macOS hardware encoder).
+    H264VideoToolbox,
+    /// H.265 via VideoToolbox.
+    H265VideoToolbox,
+    /// H.264 via Intel Quick Sync Video (QSV).
+    H264Qsv,
+    /// H.265 via Intel QSV.
+    H265Qsv,
 }
 
 /// An encoded video ready for container muxing.
@@ -68,7 +108,37 @@ fn compose(frame: &RenderedFrame, tw: usize, th: usize) -> RenderedFrame {
     }
 }
 
+impl Codec {
+    /// Returns `true` if this codec should shell out to system ffmpeg
+    /// (rather than using candy's self-contained rav1e/openh264 encoders).
+    pub fn uses_ffmpeg(self) -> bool {
+        matches!(
+            self,
+            Codec::X264
+                | Codec::X265
+                | Codec::H264Vaapi
+                | Codec::H265Vaapi
+                | Codec::H264VideoToolbox
+                | Codec::H265VideoToolbox
+                | Codec::H264Qsv
+                | Codec::H265Qsv
+        )
+    }
+
+    /// Returns `true` if candy has a self-contained encoder for this codec
+    /// (rav1e for AV1, openh264 for H.264). H265 is self-contained-only when
+    /// ffmpeg is not available (it returns E007 in that case).
+    pub fn is_self_contained(self) -> bool {
+        matches!(self, Codec::Av1 | Codec::H264 | Codec::H265)
+    }
+}
+
 /// Encode composed RGBA frames into an [`EncodedVideo`] with the chosen codec.
+///
+/// For self-contained codecs (Av1, H264, H265-without-ffmpeg), this runs the
+/// in-process encoder. For ffmpeg codecs (X264, X265, VAAPI, VideoToolbox,
+/// QSV), use [`crate::renderer::ffmpeg::encode_via_ffmpeg`] instead — that
+/// function returns already-muxed bytes and bypasses this path entirely.
 pub fn encode_frames(
     frames: &[RenderedFrame],
     fps: u32,
@@ -108,11 +178,28 @@ pub fn encode_frames(
             }
         },
         Codec::H264 => crate::renderer::h264::encode(&composed, fps),
-        Codec::H265 => Err(CandyError::Encode(
-            "HEVC/H.265 encoding is not available in this self-contained build (E007). Use AV1 \
-             (default) or H.264."
-                .into(),
-        )),
+        Codec::H265 => {
+            // Try ffmpeg + x265 first; if ffmpeg is not available, return E007.
+            if crate::renderer::ffmpeg::find_ffmpeg().is_some() {
+                // This path returns muxed bytes, so callers must use the
+                // ffmpeg path directly. Here we return an error to signal
+                // the caller should use encode_via_ffmpeg instead.
+                Err(CandyError::Encode(
+                    "H.265 requires the ffmpeg path — use encode_via_ffmpeg (E007 fallback)".into(),
+                ))
+            } else {
+                Err(CandyError::Encode(
+                    "HEVC/H.265 encoding is not available: no pure-Rust encoder and no system \
+                     ffmpeg. Install ffmpeg with x265 support, or use AV1 (default) / H.264."
+                        .into(),
+                ))
+            }
+        }
+        // FFmpeg codecs should not reach here — callers route them to
+        // encode_via_ffmpeg directly. Return a clear error if they do.
+        _ => Err(CandyError::Encode(format!(
+            "codec {codec:?} must use the ffmpeg path (encode_via_ffmpeg), not encode_frames"
+        ))),
     }
 }
 

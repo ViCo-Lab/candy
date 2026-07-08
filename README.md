@@ -109,7 +109,7 @@ cargo run -- build scene.svg --from-svg --format mp4
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `svg` (SVG draft → `.candy/`). |
-| `--codec` | `av1` | `av1` (preferred) / `h264` / `h265` (returns E007). |
+| `--codec` | `av1` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`. The first three are self-contained (rav1e/openh264); the rest shell out to system ffmpeg (runtime-detected, no cargo dep). See [Codecs](#codecs). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
 | `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |
@@ -139,6 +139,47 @@ The GPU path produces frames in the same RGBA8 format as the CPU path, so the
 downstream video encoder (rav1e/openh264) consumes them unchanged. GPU
 rasterization is most beneficial at high resolutions (`-p 4` or above) where
 CPU rasterization becomes the bottleneck.
+
+### Codecs
+
+Candy ships two **self-contained** video encoders (no system dependencies):
+
+| `--codec` | Encoder | Container | Notes |
+|---|---|---|---|
+| `av1` (default) | rav1e (pure Rust) | MP4/MKV/WebM | Falls back to H.264 if rav1e fails. |
+| `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264. |
+| `h265` | — | — | Self-contained build returns E007; with system ffmpeg, uses x265. |
+
+When the system has **`ffmpeg`** on `$PATH`, candy can shell out to it for
+additional codecs — no cargo dependency, runtime-detected. This enables
+hardware-accelerated encoding and higher-quality software codecs:
+
+| `--codec` | ffmpeg encoder | Use case |
+|---|---|---|
+| `x264` | libx264 | Higher-quality H.264 than openh264. |
+| `x265` | libx265 | H.265/HEVC (smaller files at same quality). |
+| `h264-vaapi` | h264_vaapi | Linux Intel/AMD GPU H.264. |
+| `h265-vaapi` | hevc_vaapi | Linux Intel/AMD GPU H.265. |
+| `h264-videotoolbox` | h264_videotoolbox | macOS hardware H.264. |
+| `h265-videotoolbox` | hevc_videotoolbox | macOS hardware H.265. |
+| `h264-qsv` | h264_qsv | Intel Quick Sync Video H.264. |
+| `h265-qsv` | hevc_qsv | Intel Quick Sync Video H.265. |
+
+```sh
+# Software H.264 via system ffmpeg + libx264
+cargo run -- build anim.tyx --codec x264
+
+# Hardware H.265 via VAAPI (Linux, Intel/AMD GPU)
+cargo run -- build anim.tyx --codec h265-vaapi
+
+# Hardware H.264 via VideoToolbox (macOS)
+cargo run -- build anim.tyx --codec h264-videotoolbox
+```
+
+The ffmpeg path pipes raw RGBA frames to ffmpeg's stdin and reads the muxed
+container from stdout — no temp files. If ffmpeg is not found, candy falls
+back to the self-contained codecs (av1/h264) or returns E007 (h265/x264/x265
+without ffmpeg).
 
 > **Note on encoding fallback:** `rav1e` 0.8 can panic on certain frame
 > geometries; candy wraps the encoder in `catch_unwind` and falls back to

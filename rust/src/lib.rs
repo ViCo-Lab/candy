@@ -229,30 +229,80 @@ pub fn build_input_with_gpu(
     std::fs::create_dir_all(intermediate_dir)?;
     video::write_rgba_draft(&probe, intermediate_dir, "frames")?;
 
-    // Step 6: encode + mux. On failure, emit an SVG draft and surface E007.
-    let video: EncodedVideo = match video::encode_frames(&probe, fps, codec) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "warn: [{}] video encode failed, wrote SVG draft to .candy: {e}",
-                e.code()
-            );
-            for f in 0..=total {
-                let svg = renderer.render_frame_at(f, &frames)?;
-                std::fs::write(
-                    intermediate_dir.join(format!("frame_{:05}.svg", f)),
-                    svg,
-                )?;
+    // Step 6: encode + mux.
+    //
+    // FFmpeg codecs (X264, X265, VAAPI, VideoToolbox, QSV) shell out to
+    // system ffmpeg and return already-muxed bytes — they bypass candy's
+    // hand-written muxer. Self-contained codecs (AV1, H264) go through
+    // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
+    // back to E007.
+    let bytes: Vec<u8> = if codec.uses_ffmpeg() || (codec == Codec::H265 && crate::renderer::ffmpeg::find_ffmpeg().is_some()) {
+        // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
+        let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
+        let max_h = probe.iter().map(|f| f.height).max().unwrap_or(16);
+        let tw = max_w.max(16).next_multiple_of(2);
+        let th = max_h.max(16).next_multiple_of(2);
+        let composed: Vec<_> = probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
+        match crate::renderer::ffmpeg::encode_via_ffmpeg(&composed, fps, codec, container) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!(
+                    "warn: [{}] ffmpeg encode failed, wrote SVG draft to .candy: {e}",
+                    e.code()
+                );
+                for f in 0..=total {
+                    let svg = renderer.render_frame_at(f, &frames)?;
+                    std::fs::write(
+                        intermediate_dir.join(format!("frame_{:05}.svg", f)),
+                        svg,
+                    )?;
+                }
+                return Err(e);
             }
-            return Err(e);
         }
+    } else {
+        // Self-contained path: rav1e/openh264 + candy's muxer.
+        let video: EncodedVideo = match video::encode_frames(&probe, fps, codec) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "warn: [{}] video encode failed, wrote SVG draft to .candy: {e}",
+                    e.code()
+                );
+                for f in 0..=total {
+                    let svg = renderer.render_frame_at(f, &frames)?;
+                    std::fs::write(
+                        intermediate_dir.join(format!("frame_{:05}.svg", f)),
+                        svg,
+                    )?;
+                }
+                return Err(e);
+            }
+        };
+        let audio = video::collect_audio(&scene.audio, fps);
+        video::mux(&video, audio.as_ref(), container)?
     };
-    let audio = video::collect_audio(&scene.audio, fps);
-    let bytes = video::mux(&video, audio.as_ref(), container)?;
 
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(output, bytes)?;
     Ok(())
+}
+
+/// Compose a frame onto a uniform `tw × th` opaque-white canvas (copies source
+/// pixels to top-left). Used by the ffmpeg path to give ffmpeg a uniform frame
+/// size (its rawvideo input doesn't support per-frame dimensions).
+fn compose_uniform(frame: &crate::renderer::RenderedFrame, tw: usize, th: usize) -> crate::renderer::RenderedFrame {
+    let mut rgba = vec![255u8; tw * th * 4];
+    for y in 0..frame.height.min(th) {
+        let src = y * frame.width * 4;
+        let dst = y * tw * 4;
+        rgba[dst..dst + frame.width * 4].copy_from_slice(&frame.rgba[src..src + frame.width * 4]);
+    }
+    crate::renderer::RenderedFrame {
+        width: tw,
+        height: th,
+        rgba,
+    }
 }

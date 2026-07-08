@@ -84,9 +84,34 @@ enum FormatArg {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum CodecArg {
+    /// AV1 via rav1e (pure Rust, self-contained). Default.
     Av1,
+    /// H.264 via openh264 (self-contained).
     H264,
+    /// H.265/HEVC. Uses system ffmpeg + x265 if available; E007 otherwise.
     H265,
+    /// H.264 via system ffmpeg + libx264 (higher quality than openh264).
+    X264,
+    /// H.265 via system ffmpeg + libx265.
+    X265,
+    /// H.264 via VAAPI (Linux Intel/AMD GPU hardware encoder).
+    #[value(name = "h264-vaapi")]
+    H264Vaapi,
+    /// H.265 via VAAPI.
+    #[value(name = "h265-vaapi")]
+    H265Vaapi,
+    /// H.264 via VideoToolbox (macOS hardware encoder).
+    #[value(name = "h264-videotoolbox")]
+    H264VideoToolbox,
+    /// H.265 via VideoToolbox.
+    #[value(name = "h265-videotoolbox")]
+    H265VideoToolbox,
+    /// H.264 via Intel Quick Sync Video (QSV).
+    #[value(name = "h264-qsv")]
+    H264Qsv,
+    /// H.265 via Intel QSV.
+    #[value(name = "h265-qsv")]
+    H265Qsv,
 }
 
 fn main() -> Result<(), CandyError> {
@@ -120,6 +145,14 @@ fn main() -> Result<(), CandyError> {
                 CodecArg::Av1 => Codec::Av1,
                 CodecArg::H264 => Codec::H264,
                 CodecArg::H265 => Codec::H265,
+                CodecArg::X264 => Codec::X264,
+                CodecArg::X265 => Codec::X265,
+                CodecArg::H264Vaapi => Codec::H264Vaapi,
+                CodecArg::H265Vaapi => Codec::H265Vaapi,
+                CodecArg::H264VideoToolbox => Codec::H264VideoToolbox,
+                CodecArg::H265VideoToolbox => Codec::H265VideoToolbox,
+                CodecArg::H264Qsv => Codec::H264Qsv,
+                CodecArg::H265Qsv => Codec::H265Qsv,
             };
 
             let input_kind = if from_svg {
