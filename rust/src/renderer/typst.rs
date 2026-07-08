@@ -219,7 +219,9 @@ impl Renderer {
         labels.sort_by(|a, b| a.0.cmp(&b.0));
         for label in labels {
             let body = &self.scene.items[label];
-            src.push_str(body);
+            // Prefix with # so the body (a function-call expression like
+            // "rect(width: 2cm, fill: red)") is evaluated, not treated as text.
+            src.push_str(&format!("#{}\n", body));
             src.push_str(&format!(" <__candy_{}>\n", label.0));
         }
 
@@ -499,15 +501,19 @@ fn place_source(
     rotation: f64,
     body: &str,
 ) -> String {
+    // The body is a raw Typst expression (e.g. "rect(width: 2cm, fill: red)")
+    // captured from the .tyx source. Inside a content block `[...]`, function
+    // calls MUST be prefixed with `#` — otherwise Typst treats them as plain
+    // text. We add the `#` here so the body renders as an object, not text.
     if rotation.abs() < 1e-9 {
         format!(
             "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ {body} ] ]\n"
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #{body} ] ]\n"
         )
     } else {
         format!(
             "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #rotate(origin: top + left, {rotation}deg)[ {body} ] ] ]\n"
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #rotate(origin: top + left, {rotation}deg)[ #{body} ] ] ]\n"
         )
     }
 }
