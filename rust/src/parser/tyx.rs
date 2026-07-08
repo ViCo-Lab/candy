@@ -255,6 +255,7 @@ fn process_animate(
     };
 
     let mut actions = Vec::new();
+    // Absolute move: `to: (x, y)`.
     if let Some(to_e) = named.get("to") {
         if let Some((x, y)) = tuple_cm(to_e, raw, node) {
             actions.push(Action::MoveTo {
@@ -264,6 +265,17 @@ fn process_animate(
             });
         }
     }
+    // Relative move: `dx:` / `dy:` (cm). Either or both may be given.
+    let dx = named.get("dx").and_then(expr_to_f64);
+    let dy = named.get("dy").and_then(expr_to_f64);
+    if dx.is_some() || dy.is_some() {
+        actions.push(Action::MoveBy {
+            target: label.clone(),
+            delta: (dx.unwrap_or(0.0), dy.unwrap_or(0.0)),
+            easing,
+        });
+    }
+    // Absolute scale: `scale: 1.5`.
     if let Some(s) = named.get("scale").and_then(expr_to_f64) {
         actions.push(Action::Scale {
             target: label.clone(),
@@ -271,6 +283,15 @@ fn process_animate(
             easing,
         });
     }
+    // Relative scale: `scale-by: 1.5` (multiply current scale).
+    if let Some(f) = named.get("scale-by").and_then(expr_to_f64) {
+        actions.push(Action::ScaleBy {
+            target: label.clone(),
+            factor: f,
+            easing,
+        });
+    }
+    // Absolute rotate: `rotate: 90`.
     if let Some(deg) = named.get("rotate").and_then(expr_to_f64) {
         actions.push(Action::Rotate {
             target: label.clone(),
@@ -278,11 +299,15 @@ fn process_animate(
             easing,
         });
     }
+    // Relative rotate: `rotate-by: 15` (add to current rotation).
+    if let Some(d) = named.get("rotate-by").and_then(expr_to_f64) {
+        actions.push(Action::RotateBy {
+            target: label.clone(),
+            delta_degrees: d,
+            easing,
+        });
+    }
     if let Some(o) = named.get("opacity").and_then(expr_to_f64) {
-        // Use the general FadeTo action so users can target any opacity in
-        // [0, 1]. The v0.1 FadeIn/FadeOut distinction (o <= 0 → FadeOut, else
-        // FadeIn) was lossy: animating to opacity 0.5 was impossible. FadeTo
-        // subsumes both (FadeIn == FadeTo{opacity:1.0}, FadeOut == FadeTo{opacity:0.0}).
         actions.push(Action::FadeTo {
             target: label.clone(),
             opacity: o.clamp(0.0, 1.0),

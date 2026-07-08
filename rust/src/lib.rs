@@ -33,6 +33,8 @@ pub use crate::renderer::Codec;
 
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::core::ast::Scene;
 use crate::core::interpolator;
 use crate::core::scheduler;
@@ -186,7 +188,14 @@ pub fn build_input_with_gpu(
         OutputFormat::Svg => unreachable!(),
     };
 
-    // Step 5: rasterize every frame. Try GPU first if requested.
+    // Pre-compute natural layout once (serial) so the parallel rasterization
+    // loop can use the &self render_frame_pixels_par method.
+    renderer.ensure_natural_public()?;
+
+    // Rasterize every frame in parallel via rayon (data-parallel over frames).
+    // Each frame render is independent (the WorldState is shared via Arc and
+    // the typst compile is thread-safe). GPU path stays serial (single GPU
+    // device).
     #[cfg(feature = "gpu")]
     let gpu_ok = use_gpu;
     #[cfg(not(feature = "gpu"))]
@@ -211,19 +220,30 @@ pub fn build_input_with_gpu(
     if use_gpu {
         eprintln!("warn: --gpu requested but candy was built without the 'gpu' feature; using CPU");
     }
-    // Suppress unused-variable warning when gpu feature is off.
-    #[allow(unused_variables)]
-    let gpu_ok_unused = gpu_ok;
 
-    let probe: Vec<_> = (0..=total)
-        .map(|f| {
-            #[cfg(feature = "gpu")]
-            if let Some(g) = gpu_renderer.as_mut() {
-                return renderer.render_frame_pixels_gpu(f, &frames, pixel_per_pt, g);
+    let probe: Vec<_> = {
+        // GPU path is serial (single device); CPU path is parallel (rayon).
+        #[cfg(feature = "gpu")]
+        if let Some(g) = gpu_renderer.as_mut() {
+            let mut out = Vec::with_capacity((total + 1) as usize);
+            for f in 0..=total {
+                out.push(renderer.render_frame_pixels_gpu(f, &frames, pixel_per_pt, g)?);
             }
-            renderer.render_frame_pixels(f, &frames, pixel_per_pt)
-        })
-        .collect::<Result<_, _>>()?;
+            out
+        } else {
+            (0..=total)
+                .into_par_iter()
+                .map(|f| renderer.render_frame_pixels_par(f, &frames, pixel_per_pt))
+                .collect::<Result<_, _>>()?
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            (0..=total)
+                .into_par_iter()
+                .map(|f| renderer.render_frame_pixels_par(f, &frames, pixel_per_pt))
+                .collect::<Result<_, _>>()?
+        }
+    };
 
     // Draft: persist the RGBA frames under `.candy/` for inspection.
     std::fs::create_dir_all(intermediate_dir)?;

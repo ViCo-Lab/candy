@@ -33,12 +33,19 @@
 /// Animate an object to a new placement / scale / rotation / opacity over
 /// `duration` frames.
 ///
-/// - `target`: the `label` of the object to animate.
+/// Absolute transforms:
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
-/// - `scale`: a uniform scale factor (e.g. `1.5`).
-/// - `rotate`: a target clockwise rotation in degrees (e.g. `45`).
-/// - `opacity`: a target opacity in `[0, 1]` (any value; `0` fades out, `1`
-///   fades in, `0.5` half-transparent).
+/// - `scale`: an absolute scale factor (e.g. `1.5`).
+/// - `rotate`: an absolute clockwise rotation in degrees (e.g. `45`).
+/// - `opacity`: a target opacity in `[0, 1]`.
+///
+/// Relative transforms (Manim-style `shift` / `scale` / `rotate`):
+/// - `dx`, `dy`: relative offset in cm (e.g. `dx: 2cm` moves right 2cm from
+///   the current position). Either or both may be given.
+/// - `scale-by`: relative scale multiplier (e.g. `1.5` grows by 50%).
+/// - `rotate-by`: relative rotation in degrees (e.g. `15` adds 15° to the
+///   current rotation).
+///
 /// - `duration`: number of frames the animation spans (default `30`).
 /// - `easing`: a string naming the rate curve (default `"linear"`). One of:
 ///   `"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
@@ -48,14 +55,18 @@
 ///   `"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
 ///   Unknown names fall back to `linear` with a warning.
 ///
-/// Any of `to` / `scale` / `rotate` / `opacity` may be omitted to keep the
-/// current value. Inert under standard Typst (returns `none`), so the
-/// animation stays hidden and only the first frame is shown.
+/// Absolute and relative transforms may be combined in one `animate` call:
+/// each produces a separate action that animates in parallel over the slide's
+/// duration. Inert under standard Typst (returns `none`).
 #let animate(
   target,
   to: none,
+  dx: none,
+  dy: none,
   scale: none,
+  scale-by: none,
   rotate: none,
+  rotate-by: none,
   opacity: none,
   duration: 30,
   easing: "linear",
@@ -203,6 +214,61 @@
   duration: 1,
   easing: "linear",
 ) = none
+
+/// Insert a video reference as a placeholder mobject.
+///
+/// Since Typst cannot embed video, candy renders a labeled placeholder box
+/// (a rounded rect with a ▶ icon and the filename). Under standard Typst this
+/// is a visible placeholder; candy's renderer treats it like any other mobject
+/// body (it can be animated with `animate`/`indicate`/etc.).
+///
+/// - `path`: path to the video file (displayed in the placeholder).
+/// - `width`: placeholder width (default `8cm`).
+/// - `height`: placeholder height (default `5cm`).
+///
+/// To show the actual first frame, extract it with ffmpeg first:
+/// ```sh
+/// ffmpeg -i input.mp4 -vframes 1 -q:v 2 first_frame.png
+/// ```
+/// then use `#mobject("vid", image("first_frame.png", width: 8cm))`.
+#let video(path, width: 8cm, height: 5cm) = {
+  block(
+    width: width,
+    height: height,
+    radius: 4pt,
+    stroke: 1pt + gray,
+    fill: luma(240),
+    align(center + horizon)[
+      #text(28pt, fill: gray)[▶]
+      #v(0.5em)
+      #text(10pt, fill: gray)[Video: #path]
+    ],
+  )
+}
+
+/// Mark a slide transition (a "cut" between scenes). Semantically, this is a
+/// boundary marker; candy inserts a brief blank frame or crossfade between
+/// the preceding and following content.
+///
+/// - `kind`: transition style — `"cut"` (instant, default), `"fade"` (crossfade),
+///   `"slide"` (push). Only `"cut"` is fully implemented; others are recorded
+///   for future versions.
+/// - `duration`: number of frames for the transition (default `6`).
+///
+/// Inert under standard Typst.
+#let transition(kind: "cut", duration: 6) = none
+
+/// Zoom-to-region: nest a sub-animation that focuses on a rectangle of the
+/// canvas. The `rect` (in cm, relative to the page origin) is enlarged to fill
+/// the frame over `duration` frames, producing a "camera zoom" effect.
+///
+/// - `rect`: `(x, y, w, h)` in cm — the region to zoom into.
+/// - `duration`: number of frames (default `30`).
+/// - `easing`: rate curve (default `"smooth"`).
+///
+/// Implemented as a scale + translate on all mobjects; inert under standard
+/// Typst.
+#let zoom-to(rect, duration: 30, easing: "smooth") = none
 
 #let dir-left = (-2.0, 0.0)
 #let dir-right = (2.0, 0.0)

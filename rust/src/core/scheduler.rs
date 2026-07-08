@@ -312,9 +312,22 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
             y: to.1,
             ..s
         },
+        Action::MoveBy { delta, .. } => State {
+            x: s.x + delta.0,
+            y: s.y + delta.1,
+            ..s
+        },
         Action::Scale { to, .. } => State { scale: *to, ..s },
+        Action::ScaleBy { factor, .. } => State {
+            scale: s.scale * factor,
+            ..s
+        },
         Action::Rotate { degrees, .. } => State {
             rotation: *degrees,
+            ..s
+        },
+        Action::RotateBy { delta_degrees, .. } => State {
+            rotation: s.rotation + delta_degrees,
             ..s
         },
         Action::FadeIn { .. } => State {

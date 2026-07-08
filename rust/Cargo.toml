@@ -32,7 +32,9 @@ typst-utils = "0.15"
 # typst-kit provides the same font discovery and package resolution that the
 # official `typst` CLI uses, so candy's in-process World behaves identically to
 # `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
-typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files"] }
+# `system-downloader` enables network fetch of @preview packages at render
+# time (so `#import "@preview/cetz"` works without a prior `typst compile`).
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files", "system-downloader"] }
 
 # Mature keyframe / easing library. candy's `Easing` enum delegates its math
 # to `keyframe::functions::*` so we get well-tested implementations of the
@@ -61,14 +63,22 @@ vello_svg = { version = "0.9", optional = true }
 # Lightweight blocking executor for wgpu's async device-creation API.
 pollster = { version = "0.4", optional = true }
 
+# Parallel frame rasterization (data-parallel over animation frames).
+rayon = "1"
+
 [features]
 # AV1/H.264 video encoding. The build is fully self-contained: encoders run
 # in-process and containers (MP4 / Matroska) are written by candy itself, so no
 # external tool (FFmpeg, x264, x265) is ever invoked.
-default = ["video"]
+default = ["video", "system-downloader"]
 video = []
 # GPU-accelerated frame rasterization via vello + wgpu. Off by default because
 # it pulls in heavy native GPU deps; enable with `--features gpu`.
 gpu = ["dep:vello", "dep:wgpu", "dep:vello_svg", "dep:pollster"]
+# @preview package download at render time. Enabled by default — when on,
+# `#import "@preview/cetz"` works without a prior `typst compile`. Disable
+# with `--no-default-features` for a fully offline build (packages must then
+# be pre-cached).
+system-downloader = []
 
 [dev-dependencies]

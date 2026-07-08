@@ -40,13 +40,14 @@ use crate::core::error::CandyError;
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 const PT_PER_CM: f64 = 28.346_456_692_913_385;
 
-/// A no-op downloader for `@preview` packages. candy's renderer does not
-/// download packages at render time (a render should be deterministic and
-/// offline-safe); users who need `@preview` packages should `typst compile`
-/// once to populate the local cache, after which candy will find them.
+/// A no-op downloader used when the `system-downloader` feature is disabled.
+/// Returns NotFound for every URL, so @preview packages resolve only from
+/// the local cache (pre-populated via `typst compile`).
+#[cfg(not(feature = "system-downloader"))]
 #[derive(Debug, Clone, Copy)]
 struct NoDownload;
 
+#[cfg(not(feature = "system-downloader"))]
 impl typst_kit::downloader::Downloader for NoDownload {
     fn stream(
         &self,
@@ -55,7 +56,8 @@ impl typst_kit::downloader::Downloader for NoDownload {
     ) -> std::io::Result<(Option<usize>, Box<dyn std::io::Read>)> {
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "candy does not download packages at render time",
+            "candy was built without the 'system-downloader' feature; \
+             @preview packages must be pre-cached via 'typst compile'",
         ))
     }
 }
@@ -75,24 +77,22 @@ impl WorldState {
     /// - embedded fallback fonts + all system fonts
     /// - a project root (the `.tyx` source's parent directory) so local
     ///   `#import "file.typ"` works, and `@preview` packages resolve from
-    ///   the local cache
+    ///   the local cache (downloading on demand when the
+    ///   `system-downloader` feature is enabled)
     fn new(project_root: PathBuf) -> Self {
-        // Standard library — same as `typst compile` with no extra prelude.
         let library = LazyHash::new(Library::default());
 
-        // Font store: embedded fallbacks first, then system fonts.
-        // Embedded fonts guarantee that `#set text(font: "New Computer Modern")`
-        // works even on systems with no installed fonts. Both sources are
-        // unconditionally enabled in candy's Cargo.toml.
         let mut fonts = FontStore::new();
         fonts.extend(typst_kit::fonts::embedded());
         fonts.extend(typst_kit::fonts::system());
 
-        // File resolver: project files from the .tyx's parent directory,
-        // package files from the local Typst cache (~/.cache/typst/packages
-        // on Linux, ~/Library/Caches/typst/packages on macOS,
-        // %LOCALAPPDATA%\typst\packages on Windows).
+        // Package resolver: @preview packages from the local cache, with
+        // on-demand download when the `system-downloader` feature is enabled.
+        #[cfg(feature = "system-downloader")]
+        let packages = SystemPackages::new(typst_kit::downloader::SystemDownloader::new("candy/0.1"));
+        #[cfg(not(feature = "system-downloader"))]
         let packages = SystemPackages::new(NoDownload);
+
         let root = FsRoot::new(project_root);
         let files = FileStore::new(SystemFiles::new(root, packages));
 
@@ -282,7 +282,21 @@ impl Renderer {
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         self.ensure_natural()?;
+        self.render_frame_pixels_par(frame_idx, all_frames, pixel_per_pt)
+    }
 
+    /// Parallel-safe variant of [`render_frame_pixels`](Self::render_frame_pixels).
+    ///
+    /// Takes `&self` (not `&mut self`) so it can be called from a rayon
+    /// parallel iterator. **Precondition:** `ensure_natural()` must have been
+    /// called once before any parallel call (it initializes `nat`/`page_w`/
+    /// `page_h`). The [`Renderer::ensure_natural_public`] method exposes this.
+    pub fn render_frame_pixels_par(
+        &self,
+        frame_idx: u32,
+        all_frames: &[FrameData],
+        pixel_per_pt: f32,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         let mut states: HashMap<Label, FrameData> = HashMap::new();
         for f in all_frames {
             if f.frame_idx == frame_idx {
@@ -295,7 +309,6 @@ impl Renderer {
                 .or_insert_with(|| self.initial_for(label.clone(), frame_idx));
         }
 
-        // Deterministic z-order.
         let mut labels: Vec<&Label> = states.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -310,7 +323,7 @@ impl Renderer {
             Some((_, f)) => (f.width, f.height),
             None => (1, 1),
         };
-        let mut canvas = vec![255u8; w * h * 4]; // opaque white
+        let mut canvas = vec![255u8; w * h * 4];
         for (opacity, f) in &objs {
             composite_over(&mut canvas, f, *opacity, w, h);
         }
@@ -319,6 +332,13 @@ impl Renderer {
             height: h,
             rgba: canvas,
         })
+    }
+
+    /// Public wrapper around `ensure_natural` so callers (e.g. the parallel
+    /// rasterization loop in `build_input_with_gpu`) can pre-compute the
+    /// natural layout before spawning parallel frame renders.
+    pub fn ensure_natural_public(&mut self) -> Result<(), CandyError> {
+        self.ensure_natural()
     }
 
     /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).

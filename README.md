@@ -1,6 +1,6 @@
 # Candy
 
-**C**ode-oriented **A**nimation **N**gine **D**esigned for **T**ypst
+**C**ode-oriented **A**nimation e**N**gine **D**esigned for t**Y**pst
 
 Candy is an animation engine for Typst, using Rust as a high-performance rendering
 and encoding backend. Inspired by 3Blue1Brown's

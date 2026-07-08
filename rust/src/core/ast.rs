@@ -71,12 +71,22 @@ impl Label {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
     // ---- Core transforms (candy v0.1) ----
-    /// Move the target so its origin lands at `(x_cm, y_cm)`.
+    /// Move the target so its origin lands at `(x_cm, y_cm)` (absolute).
     MoveTo { target: Label, to: (f64, f64), easing: Easing },
-    /// Scale the target uniformly by `to` (1.0 = original size).
+    /// Move the target by a relative offset `(dx_cm, dy_cm)` from its current
+    /// position. Mirrors Manim's `mobject.shift(vector)`. Cumulative: calling
+    /// MoveBy twice moves the object by the sum of the offsets.
+    MoveBy { target: Label, delta: (f64, f64), easing: Easing },
+    /// Scale the target uniformly by `to` (1.0 = original size, absolute).
     Scale { target: Label, to: f64, easing: Easing },
-    /// Rotate the target by `degrees` (clockwise, around the object's origin).
+    /// Scale the target by a relative factor (e.g. 1.5 = grow 50%). The final
+    /// scale is `current * factor`. Mirrors Manim's `mobject.scale(factor)`.
+    ScaleBy { target: Label, factor: f64, easing: Easing },
+    /// Rotate the target to `degrees` (absolute, clockwise).
     Rotate { target: Label, degrees: f64, easing: Easing },
+    /// Rotate the target by a relative `degrees` from its current rotation.
+    /// Mirrors Manim's `mobject.rotate(angle)`.
+    RotateBy { target: Label, delta_degrees: f64, easing: Easing },
     /// Fade the target in to full opacity.
     FadeIn { target: Label, easing: Easing },
     /// Fade the target out to zero opacity.
@@ -132,8 +142,11 @@ impl Action {
     pub fn target(&self) -> &Label {
         match self {
             Action::MoveTo { target, .. }
+            | Action::MoveBy { target, .. }
             | Action::Scale { target, .. }
+            | Action::ScaleBy { target, .. }
             | Action::Rotate { target, .. }
+            | Action::RotateBy { target, .. }
             | Action::FadeIn { target, .. }
             | Action::FadeOut { target, .. }
             | Action::FadeTo { target, .. }
@@ -149,15 +162,14 @@ impl Action {
     }
 
     /// The easing curve this action will be interpolated with.
-    ///
-    /// Instantaneous actions ([`Show`](Action::Show),
-    /// [`Hide`](Action::Hide), [`SaveState`](Action::SaveState)) have no
-    /// easing — they return [`Easing::Linear`] as a harmless default.
     pub fn easing(&self) -> Easing {
         match self {
             Action::MoveTo { easing, .. }
+            | Action::MoveBy { easing, .. }
             | Action::Scale { easing, .. }
+            | Action::ScaleBy { easing, .. }
             | Action::Rotate { easing, .. }
+            | Action::RotateBy { easing, .. }
             | Action::FadeIn { easing, .. }
             | Action::FadeOut { easing, .. }
             | Action::FadeTo { easing, .. }

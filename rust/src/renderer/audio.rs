@@ -252,3 +252,55 @@ fn ogg_packets(bytes: &[u8]) -> Result<Vec<Vec<u8>>, CandyError> {
     }
     Ok(packets)
 }
+
+/// Transcode an audio file to a target codec/container via system ffmpeg.
+///
+/// When the audio format doesn't match the target container (e.g. Opus audio
+/// with an MP4 container, or AAC audio with a WebM container), candy can
+/// transcode using system ffmpeg. This is runtime-detected (no cargo dep).
+///
+/// Returns the path to the transcoded temporary file, or `None` if ffmpeg is
+/// not available (caller should fall back to the original file).
+pub fn transcode_via_ffmpeg(
+    input_path: &str,
+    target_codec: AudioCodec,
+) -> Option<std::path::PathBuf> {
+    let ffmpeg = crate::renderer::ffmpeg::find_ffmpeg()?;
+    let (codec_name, ext) = match target_codec {
+        AudioCodec::Opus => ("libopus", "opus"),
+        AudioCodec::Aac => ("aac", "aac"),
+    };
+    let tmp = std::env::temp_dir().join(format!(
+        "candy_transcode_{}_{}.{}",
+        std::path::Path::new(input_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audio"),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+        ext
+    ));
+    let output = std::process::Command::new(&ffmpeg)
+        .args(["-y", "-i", input_path])
+        .args(["-c:a", codec_name])
+        .args(["-f", if ext == "opus" { "ogg" } else { "adts" }])
+        .arg(tmp.to_str()?)
+        .output()
+        .ok()?;
+    if output.status.success() && tmp.exists() {
+        eprintln!(
+            "info: transcoded '{}' to {} via ffmpeg",
+            input_path, codec_name
+        );
+        Some(tmp)
+    } else {
+        eprintln!(
+            "warn: ffmpeg transcoding failed for '{}': {}",
+            input_path,
+            String::from_utf8_lossy(&output.stderr).lines().take(5).collect::<Vec<_>>().join("\n")
+        );
+        None
+    }
+}
