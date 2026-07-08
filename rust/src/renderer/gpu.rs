@@ -55,11 +55,15 @@ impl GpuRenderer {
     pub fn new() -> Result<Self, CandyError> {
         // Use pollster to block on wgpu's async device-creation futures.
         pollster::block_on(async {
-            let instance = Instance::new(wgpu::InstanceDescriptor {
+            // InstanceDescriptor with all backends, default flags, default
+            // backend options. wgpu 27's Instance::new takes &InstanceDescriptor.
+            let desc = wgpu::InstanceDescriptor {
                 backends: Backends::all(),
                 flags: InstanceFlags::default(),
                 memory_budget_thresholds: Default::default(),
-            });
+                backend_options: Default::default(),
+            };
+            let instance = Instance::new(&desc);
 
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
@@ -75,8 +79,9 @@ impl GpuRenderer {
                     label: Some("candy gpu device"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::downlevel_defaults(),
-                    experimental_features: wgpu::ExperimentalFeatures::empty(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
                     memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
                 })
                 .await
                 .map_err(|e| CandyError::Encode(format!("wgpu device: {e}")))?;
@@ -114,7 +119,7 @@ impl GpuRenderer {
 
         // 3. Render scene → texture via vello's compute pipeline.
         let params = RenderParams {
-            base_color: peniko::Color::from_rgba8(255, 255, 255, 255), // opaque white
+            base_color: vello::peniko::Color::from_rgba8(255, 255, 255, 255), // opaque white
             width,
             height,
             antialiasing_method: vello::AaConfig::Area,
@@ -160,7 +165,7 @@ impl GpuRenderer {
         let slice = buffer.slice(..);
         slice.map_async(MapMode::Read, |_| {});
         self.device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|e| CandyError::Encode(format!("wgpu poll: {e}")))?;
 
         let rgba = {
