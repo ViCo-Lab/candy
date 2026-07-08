@@ -53,10 +53,15 @@ pub enum Action {
     MoveTo { target: Label, to: (f64, f64), easing: Easing },
     /// Scale the target uniformly by `to` (1.0 = original size).
     Scale { target: Label, to: f64, easing: Easing },
+    /// Rotate the target by `degrees` (clockwise, around the object's origin).
+    Rotate { target: Label, degrees: f64, easing: Easing },
     /// Fade the target in to full opacity.
     FadeIn { target: Label, easing: Easing },
     /// Fade the target out to zero opacity.
     FadeOut { target: Label, easing: Easing },
+    /// Fade the target to an explicit `opacity` in `[0, 1]`.
+    /// (FadeIn/FadeOut are conveniences for `FadeTo { opacity: 1.0/0.0 }`.)
+    FadeTo { target: Label, opacity: f64, easing: Easing },
 }
 
 impl Action {
@@ -64,8 +69,10 @@ impl Action {
         match self {
             Action::MoveTo { target, .. }
             | Action::Scale { target, .. }
+            | Action::Rotate { target, .. }
             | Action::FadeIn { target, .. }
-            | Action::FadeOut { target, .. } => target,
+            | Action::FadeOut { target, .. }
+            | Action::FadeTo { target, .. } => target,
         }
     }
 
@@ -74,8 +81,10 @@ impl Action {
         match self {
             Action::MoveTo { easing, .. }
             | Action::Scale { easing, .. }
+            | Action::Rotate { easing, .. }
             | Action::FadeIn { easing, .. }
-            | Action::FadeOut { easing, .. } => *easing,
+            | Action::FadeOut { easing, .. }
+            | Action::FadeTo { easing, .. } => *easing,
         }
     }
 }
@@ -157,6 +166,10 @@ pub struct FrameData {
     pub y: f64, // cm
     pub scale: f64, // Default 1.0
     pub opacity: f64, // 0.0–1.0
+    /// Clockwise rotation in degrees around the object's origin.
+    /// Default 0.0.
+    #[serde(default)]
+    pub rotation: f64,
     /// Easing curve used to interpolate *from the previous keyframe* to this
     /// one. Defaults to [`Easing::Linear`]. The frame-0 keyframe's easing is
     /// unused (there is no previous keyframe).
@@ -173,6 +186,7 @@ impl FrameData {
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            rotation: 0.0,
             easing: Easing::Linear,
         }
     }
@@ -191,6 +205,7 @@ impl FrameData {
             y: lerp(a.y, b.y, t),
             scale: lerp(a.scale, b.scale, t),
             opacity: lerp(a.opacity, b.opacity, t),
+            rotation: lerp(a.rotation, b.rotation, t),
             easing: b.easing,
         }
     }

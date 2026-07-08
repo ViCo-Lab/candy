@@ -182,6 +182,7 @@ fn process_mobject(
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            rotation: 0.0,
             easing: Easing::Linear,
         },
     );
@@ -246,18 +247,23 @@ fn process_animate(
             easing,
         });
     }
+    if let Some(deg) = named.get("rotate").and_then(expr_to_f64) {
+        actions.push(Action::Rotate {
+            target: label.clone(),
+            degrees: deg,
+            easing,
+        });
+    }
     if let Some(o) = named.get("opacity").and_then(expr_to_f64) {
-        if o <= 0.0 {
-            actions.push(Action::FadeOut {
-                target: label.clone(),
-                easing,
-            });
-        } else {
-            actions.push(Action::FadeIn {
-                target: label.clone(),
-                easing,
-            });
-        }
+        // Use the general FadeTo action so users can target any opacity in
+        // [0, 1]. The v0.1 FadeIn/FadeOut distinction (o <= 0 → FadeOut, else
+        // FadeIn) was lossy: animating to opacity 0.5 was impossible. FadeTo
+        // subsumes both (FadeIn == FadeTo{opacity:1.0}, FadeOut == FadeTo{opacity:0.0}).
+        actions.push(Action::FadeTo {
+            target: label.clone(),
+            opacity: o.clamp(0.0, 1.0),
+            easing,
+        });
     }
     ctx.slides.push(Slide {
         duration_frames: duration,
@@ -339,6 +345,7 @@ fn process_play(
             y: 0.0,
             scale: 1.0,
             opacity: 0.0,
+            rotation: 0.0,
             easing: Easing::Linear,
         },
     );
@@ -558,11 +565,40 @@ mod tests {
              #mobject(\"dot\", circle(radius: 1cm, fill: blue))\n\
              #mobject(\"box\", rect(width: 2cm, height: 2cm, fill: red))\n\
              #animate(\"dot\", to: (4cm, 0pt), duration: 30)\n\
+             #animate(\"box\", rotate: 45, opacity: 0.5, easing: \"smooth\", duration: 20)\n\
              #pause(duration: 15)\n\
              #audio(\"voice.opus\", blocking: false, loop: false, volume: 0.9)\n\
              #play(circle(radius: 1cm), duration: 10)\n"
         );
         let out = crate::renderer::compile_svg_for_test(&src);
         assert!(out.is_ok(), "std Typst failed to compile: {out:?}");
+    }
+
+    /// Verify the new `rotate` and `opacity` (FadeTo) actions parse correctly.
+    #[test]
+    fn parses_rotate_and_fadeto() {
+        let src = r#"
+#import "candy": *
+#mobject("sq", rect(width: 2cm, height: 2cm))
+#animate("sq", rotate: 90, opacity: 0.3, duration: 25, easing: "cubic-in-out")
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_rotate.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 1);
+        let actions = &scene.slides[0].actions;
+        // rotate + opacity → 2 actions
+        assert_eq!(actions.len(), 2);
+        let has_rotate = actions.iter().any(|a| matches!(a, Action::Rotate { degrees: 90.0, .. }));
+        let has_fadeto = actions
+            .iter()
+            .any(|a| matches!(a, Action::FadeTo { opacity: 0.3, .. }));
+        assert!(has_rotate, "expected Rotate(90) action, got {actions:?}");
+        assert!(has_fadeto, "expected FadeTo(0.3) action, got {actions:?}");
+        // Easing must propagate to both actions.
+        for a in actions {
+            assert_eq!(a.easing(), crate::core::easing::Easing::CubicInOut);
+        }
+        std::fs::remove_file(&tmp).ok();
     }
 }

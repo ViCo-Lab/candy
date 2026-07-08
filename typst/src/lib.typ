@@ -30,13 +30,15 @@
 /// Under standard Typst this simply renders `body` at its natural position.
 #let mobject(label, body) = body
 
-/// Animate an object to a new placement / scale / opacity over `duration`
-/// frames.
+/// Animate an object to a new placement / scale / rotation / opacity over
+/// `duration` frames.
 ///
 /// - `target`: the `label` of the object to animate.
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
 /// - `scale`: a uniform scale factor (e.g. `1.5`).
-/// - `opacity`: a target opacity in `[0, 1]` (`0` fades out, `1` fades in).
+/// - `rotate`: a target clockwise rotation in degrees (e.g. `45`).
+/// - `opacity`: a target opacity in `[0, 1]` (any value; `0` fades out, `1`
+///   fades in, `0.5` half-transparent).
 /// - `duration`: number of frames the animation spans (default `30`).
 /// - `easing`: a string naming the rate curve (default `"linear"`). One of:
 ///   `"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
@@ -46,13 +48,14 @@
 ///   `"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
 ///   Unknown names fall back to `linear` with a warning.
 ///
-/// Any of `to` / `scale` / `opacity` may be omitted to keep the current value.
-/// Inert under standard Typst (returns `none`), so the animation stays hidden
-/// and only the first frame is shown.
+/// Any of `to` / `scale` / `rotate` / `opacity` may be omitted to keep the
+/// current value. Inert under standard Typst (returns `none`), so the
+/// animation stays hidden and only the first frame is shown.
 #let animate(
   target,
   to: none,
   scale: none,
+  rotate: none,
   opacity: none,
   duration: 30,
   easing: "linear",

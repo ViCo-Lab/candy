@@ -154,6 +154,7 @@ impl Renderer {
                 y: f.y,
                 scale: f.scale,
                 opacity: f.opacity,
+                rotation: f.rotation,
                 easing: f.easing,
             },
             None => FrameData::new(frame_idx, label),
@@ -174,14 +175,9 @@ impl Renderer {
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
+        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body);
 
-        let src = format!(
-            "#set page(width: {}pt, height: {}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {}cm, dy: {}cm)[ #scale(origin: top + left, {}%)[ {} ] ]\n",
-            self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, body
-        );
-
-        let doc = self.compile(&src)?;
+        let doc = self.compile(&placed)?;
         let page = doc
             .pages()
             .first()
@@ -304,11 +300,7 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
 
-        let src = format!(
-            "#set page(width: {}pt, height: {}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {}cm, dy: {}cm)[ #scale(origin: top + left, {}%)[ {} ] ]\n",
-            self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, body
-        );
+        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body);
 
         let doc = self.compile(&src)?;
         let page = doc
@@ -341,10 +333,36 @@ impl Renderer {
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(&st.target).map(|s| s.as_str()).unwrap_or("");
+        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body)
+    }
+}
+
+/// Build the Typst source that places a single mobject body at `(x_cm, y_cm)`
+/// from the top-left corner, scaled by `scale_pct`% and rotated by `rotation`
+/// degrees (clockwise, around the object's top-left origin).
+///
+/// When `rotation == 0.0` the `rotate(..)` wrapper is omitted, keeping the
+/// generated source minimal for the common case (and matching the v0.1 output
+/// exactly, so existing SVG drafts are byte-identical when no rotation is
+/// applied).
+fn place_source(
+    page_w: f64,
+    page_h: f64,
+    x_cm: f64,
+    y_cm: f64,
+    scale_pct: f64,
+    rotation: f64,
+    body: &str,
+) -> String {
+    if rotation.abs() < 1e-9 {
         format!(
-            "#set page(width: {}pt, height: {}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {}cm, dy: {}cm)[ #scale(origin: top + left, {}%)[ {} ] ]\n",
-            self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, body
+            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ {body} ] ]\n"
+        )
+    } else {
+        format!(
+            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #rotate(origin: top + left, {rotation}deg)[ {body} ] ] ]\n"
         )
     }
 }

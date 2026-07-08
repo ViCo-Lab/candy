@@ -13,6 +13,7 @@ struct State {
     y: f64,
     scale: f64,
     opacity: f64,
+    rotation: f64,
 }
 
 impl Default for State {
@@ -22,6 +23,7 @@ impl Default for State {
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            rotation: 0.0,
         }
     }
 }
@@ -41,7 +43,7 @@ impl Default for State {
 /// ("production code must not panic").
 pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
     // Seed each item's starting state from `scene.initial` (the `candy.mobject`
-    // `at`/`scale`/`opacity`), falling back to the origin/scale-1 default.
+    // `at`/`scale`/`opacity`/`rotation`), falling back to the origin/scale-1 default.
     let mut state: HashMap<Label, State> = scene
         .items
         .keys()
@@ -54,6 +56,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     y: f.y,
                     scale: f.scale,
                     opacity: f.opacity,
+                    rotation: f.rotation,
                 })
                 .unwrap_or_default();
             (l.clone(), s)
@@ -83,6 +86,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 y: s.y,
                 scale: s.scale,
                 opacity: s.opacity,
+                rotation: s.rotation,
                 easing,
             });
 
@@ -99,6 +103,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 y: s.y,
                 scale: s.scale,
                 opacity: s.opacity,
+                rotation: s.rotation,
                 easing,
             });
         }
@@ -116,6 +121,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             y: st.y,
             scale: st.scale,
             opacity: st.opacity,
+            rotation: st.rotation,
             easing: Easing::Linear,
         });
     }
@@ -139,12 +145,20 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
             ..s
         },
         Action::Scale { to, .. } => State { scale: *to, ..s },
+        Action::Rotate { degrees, .. } => State {
+            rotation: *degrees,
+            ..s
+        },
         Action::FadeIn { .. } => State {
             opacity: 1.0,
             ..s
         },
         Action::FadeOut { .. } => State {
             opacity: 0.0,
+            ..s
+        },
+        Action::FadeTo { opacity, .. } => State {
+            opacity: *opacity,
             ..s
         },
     };
@@ -232,8 +246,8 @@ mod tests {
     #[test]
     fn non_monotonic_returns_err_not_panic() {
         let frames = vec![
-            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, easing: Easing::Linear },
-            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, easing: Easing::Linear },
+            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
+            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
         ];
         let err = validate_monotonic(&frames).unwrap_err();
         assert_eq!(err.code(), "E002");

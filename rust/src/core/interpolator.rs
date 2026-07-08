@@ -118,6 +118,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                rotation: 0.0,
                 easing: Easing::Linear,
             },
             FrameData {
@@ -127,6 +128,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                rotation: 0.0,
                 easing: Easing::Linear,
             },
         ];
@@ -147,6 +149,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                rotation: 0.0,
                 easing: Easing::Linear,
             },
             FrameData {
@@ -156,6 +159,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: -2.0,
+                rotation: 0.0,
                 easing: Easing::Linear,
             },
         ];
@@ -179,6 +183,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                rotation: 0.0,
                 easing: Easing::Linear,
             },
             FrameData {
@@ -188,6 +193,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                rotation: 0.0,
                 easing: Easing::Smooth,
             },
         ];
