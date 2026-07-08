@@ -63,6 +63,10 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
         })
         .collect();
 
+    // Named save slots for SaveState/Restore (Manim's save_state/Restore).
+    // Keyed by (target, slot_name).
+    let mut saved: HashMap<(Label, String), State> = HashMap::new();
+
     let mut per_item: HashMap<Label, Vec<FrameData>> = state
         .keys()
         .map(|l| (l.clone(), vec![FrameData::new(0, l.clone())]))
@@ -78,34 +82,193 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             let s = *state.get(&t).unwrap_or(&State::default());
             let easing = action.easing();
 
-            // Keyframe at the slide start = current state.
-            per_item.entry(t.clone()).or_default().push(FrameData {
-                frame_idx: start,
-                target: t.clone(),
-                x: s.x,
-                y: s.y,
-                scale: s.scale,
-                opacity: s.opacity,
-                rotation: s.rotation,
-                easing,
-            });
+            match action {
+                // ---- Instantaneous actions: no keyframes, just state change ----
+                Action::SaveState { slot, .. } => {
+                    saved.insert((t.clone(), slot.clone()), s);
+                    // No keyframes — SaveState is a snapshot, not an animation.
+                    continue;
+                }
+                Action::Show { .. } => {
+                    let ns = State { opacity: 1.0, ..s };
+                    state.insert(t.clone(), ns);
+                    // Single keyframe at slide start with full opacity.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: ns.x,
+                        y: ns.y,
+                        scale: ns.scale,
+                        opacity: ns.opacity,
+                        rotation: ns.rotation,
+                        easing: Easing::Linear,
+                    });
+                    continue;
+                }
+                Action::Hide { .. } => {
+                    let ns = State { opacity: 0.0, ..s };
+                    state.insert(t.clone(), ns);
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: ns.x,
+                        y: ns.y,
+                        scale: ns.scale,
+                        opacity: ns.opacity,
+                        rotation: ns.rotation,
+                        easing: Easing::Linear,
+                    });
+                    continue;
+                }
+                Action::SetColor { .. } => {
+                    // Color is tracked but doesn't affect transform state.
+                    // No keyframes; the renderer will handle color in a future
+                    // version with structured mobjects.
+                    continue;
+                }
 
-            apply(&mut state, &t, action);
+                // ---- Indication animations: out-and-back within the slide ----
+                Action::Indicate { factor, dx, dy, .. } => {
+                    // Start keyframe = current state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    // Mid keyframe (halfway) = scaled + shifted.
+                    let mid = ptr + slide.duration_frames / 2;
+                    let peak = State {
+                        scale: s.scale * factor,
+                        x: s.x + dx,
+                        y: s.y + dy,
+                        ..s
+                    };
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: mid,
+                        target: t.clone(),
+                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        easing: Easing::ThereAndBack,
+                    });
+                    // End keyframe = back to original (state unchanged).
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: end,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    // State unchanged — Indicate returns to origin.
+                    continue;
+                }
+                Action::Flash { factor, .. } => {
+                    // Start = current, mid = scaled up + fading, end = invisible.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    let mid = ptr + slide.duration_frames / 2;
+                    let peak = State {
+                        scale: s.scale * factor,
+                        opacity: s.opacity * 0.5,
+                        ..s
+                    };
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: mid,
+                        target: t.clone(),
+                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        easing: Easing::ThereAndBack,
+                    });
+                    // End: restored to original (Flash is a transient effect).
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: end,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    continue;
+                }
+                Action::Wiggle { degrees, .. } => {
+                    // Oscillate rotation. Start at 0, peak at ±degrees at mid,
+                    // return to 0 at end. The interpolator's Wiggle easing
+                    // handles the oscillation shape.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing: Easing::Wiggle,
+                    });
+                    let mid = ptr + slide.duration_frames / 2;
+                    let peak = State { rotation: s.rotation + degrees, ..s };
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: mid,
+                        target: t.clone(),
+                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        easing: Easing::Wiggle,
+                    });
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: end,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing: Easing::Wiggle,
+                    });
+                    continue;
+                }
 
-            let s = state[&t];
-            // Keyframe at the slide end = new state, carrying the action's
-            // easing so the interpolator knows how to shape the curve from
-            // `start` to `end`.
-            per_item.entry(t.clone()).or_default().push(FrameData {
-                frame_idx: end,
-                target: t.clone(),
-                x: s.x,
-                y: s.y,
-                scale: s.scale,
-                opacity: s.opacity,
-                rotation: s.rotation,
-                easing,
-            });
+                // ---- Restore: interpolate from current → saved ----
+                Action::Restore { slot, .. } => {
+                    let saved_state = saved.get(&(t.clone(), slot.clone())).copied().unwrap_or(s);
+                    // Start keyframe = current state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    // End keyframe = saved state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: end,
+                        target: t.clone(),
+                        x: saved_state.x, y: saved_state.y, scale: saved_state.scale, opacity: saved_state.opacity, rotation: saved_state.rotation,
+                        easing,
+                    });
+                    state.insert(t.clone(), saved_state);
+                    continue;
+                }
+
+                // ---- Core transforms: start keyframe + end keyframe ----
+                _ => {
+                    // Keyframe at the slide start = current state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
+                        easing,
+                    });
+
+                    apply(&mut state, &t, action);
+
+                    let s = state[&t];
+                    // Keyframe at the slide end = new state, carrying the action's
+                    // easing so the interpolator knows how to shape the curve from
+                    // `start` to `end`.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: end,
+                        target: t.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
+                        easing,
+                    });
+                }
+            }
         }
 
         ptr = end + 1;
@@ -136,6 +299,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
 }
 
 /// Apply a single action to a target's state.
+///
+/// Only called for core transform actions (MoveTo/Scale/Rotate/FadeIn/
+/// FadeOut/FadeTo). Indication animations, SaveState/Restore, Show/Hide, and
+/// SetColor are handled directly in `schedule` because they need custom
+/// keyframe logic.
 fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
     let s = *state.get(t).unwrap_or(&State::default());
     let ns = match action {
@@ -161,6 +329,16 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
             opacity: *opacity,
             ..s
         },
+        // The following actions are handled directly in `schedule` and never
+        // reach apply(). Listed here so the match is exhaustive.
+        Action::SaveState { .. }
+        | Action::Restore { .. }
+        | Action::Indicate { .. }
+        | Action::Flash { .. }
+        | Action::Wiggle { .. }
+        | Action::Show { .. }
+        | Action::Hide { .. }
+        | Action::SetColor { .. } => s,
     };
     state.insert(t.clone(), ns);
 }

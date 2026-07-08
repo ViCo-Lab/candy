@@ -28,7 +28,22 @@ use crate::core::error::CandyError;
 use crate::core::meta::PrivateMeta;
 
 /// The Candy symbol names recognized as directives.
-const CANDY: &[&str] = &["mobject", "animate", "pause", "audio", "play"];
+const CANDY: &[&str] = &[
+    "mobject",
+    "animate",
+    "pause",
+    "audio",
+    "play",
+    // Manim-inspired state / indication / visibility directives.
+    "save_state",
+    "restore",
+    "indicate",
+    "flash",
+    "wiggle",
+    "appear",
+    "disappear",
+    "set_color",
+];
 
 /// Parse `.tyx` file into a `Scene` AST.
 ///
@@ -146,6 +161,15 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "pause" => process_pause(&named, ctx),
         "audio" => process_audio(&pos, &named, node, raw, ctx),
         "play" => process_play(&pos, &named, node, raw, ctx),
+        // Manim-inspired directives.
+        "save_state" => process_save_state(&pos, &named, ctx),
+        "restore" => process_restore(&pos, &named, ctx),
+        "indicate" => process_indicate(&pos, &named, ctx),
+        "flash" => process_flash(&pos, &named, ctx),
+        "wiggle" => process_wiggle(&pos, &named, ctx),
+        "appear" => process_appear_disappear(&pos, true, ctx),
+        "disappear" => process_appear_disappear(&pos, false, ctx),
+        "set_color" => process_set_color(&pos, &named, ctx),
         _ => {}
     }
 }
@@ -355,6 +379,162 @@ fn process_play(
             target: label.clone(),
             easing: Easing::Linear,
         }],
+    });
+    ctx.cursor += duration;
+}
+
+// ---- Manim-inspired directive parsers ----
+
+/// Resolve the easing named arg, falling back to Linear with a warning.
+fn resolve_easing(named: &HashMap<String, Expr>, label: &Label) -> Easing {
+    match named.get("easing") {
+        Some(Expr::Str(s)) => {
+            let name = s.get();
+            match Easing::from_str(name.as_str()) {
+                Some(e) => e,
+                None => {
+                    eprintln!(
+                        "warn: unknown easing '{name}' for @{}, falling back to linear",
+                        label.0
+                    );
+                    Easing::Linear
+                }
+            }
+        }
+        _ => Easing::Linear,
+    }
+}
+
+/// Extract the target label (positional string arg or `target:` named arg).
+fn target_arg(pos: &[Expr], named: &HashMap<String, Expr>) -> Option<Label> {
+    let e = pos.first().or_else(|| named.get("target"))?;
+    match e {
+        Expr::Str(s) => Some(Label(s.get().to_string())),
+        _ => None,
+    }
+}
+
+/// `save_state(target, slot: "name")` — snapshot the target's current state.
+/// Inert under standard Typst. Produces no slide (0-duration); the action is
+/// attached to a 1-frame slide at the current cursor so the scheduler sees it.
+fn process_save_state(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let slot = named
+        .get("slot")
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "default".to_string());
+    // SaveState is instantaneous — emit a 1-frame slide so the scheduler
+    // processes the action at the current cursor position.
+    ctx.slides.push(Slide {
+        duration_frames: 1,
+        actions: vec![Action::SaveState { target: label, slot }],
+    });
+    ctx.cursor += 1;
+}
+
+/// `restore(target, slot: "name", duration: 30, easing: "linear")` —
+/// interpolate back to a previously saved state.
+fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let slot = named
+        .get("slot")
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "default".to_string());
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(30.0)
+        .max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::Restore { target: label, slot, easing }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 24, easing: "smooth")`
+/// — briefly scale + shift, then return to original.
+fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(24.0).max(1.0) as u32;
+    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(1.1);
+    let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
+    let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::Indicate { target: label, factor, dx, dy, easing }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `flash(target, factor: 2.0, duration: 18, easing: "smooth")` —
+/// briefly enlarge + fade, then return to original.
+fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(18.0).max(1.0) as u32;
+    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::Flash { target: label, factor, easing }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `wiggle(target, degrees: 15, duration: 20, easing: "wiggle")` —
+/// oscillate rotation, then return to original.
+fn process_wiggle(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(20.0).max(1.0) as u32;
+    let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(15.0);
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::Wiggle { target: label, degrees, easing }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `appear(target)` / `disappear(target)` — instantaneous visibility toggle.
+/// Emits a 1-frame slide. (`show`/`hide` would conflict with Typst keywords.)
+fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, &HashMap::new()) else { return };
+    let action = if appear {
+        Action::Show { target: label }
+    } else {
+        Action::Hide { target: label }
+    };
+    ctx.slides.push(Slide {
+        duration_frames: 1,
+        actions: vec![action],
+    });
+    ctx.cursor += 1;
+}
+
+/// `set_color(target, color: "red", duration: 1, easing: "linear")` —
+/// record a color change (tracked, renderer no-op for now).
+fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let color = named
+        .get("color")
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "black".to_string());
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(1.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::SetColor { target: label, color, easing }],
     });
     ctx.cursor += duration;
 }
@@ -601,4 +781,67 @@ mod tests {
         }
         std::fs::remove_file(&tmp).ok();
     }
+
+    /// Verify the Manim-inspired directives parse to the correct Action variants.
+    #[test]
+    fn parses_manim_directives() {
+        let src = r#"
+#import "candy": *
+#mobject("dot", circle(radius: 1cm))
+#save_state("dot", slot: "home")
+#animate("dot", to: (4cm, 0pt), duration: 20)
+#restore("dot", slot: "home", duration: 20, easing: "smooth")
+#indicate("dot", factor: 1.2, duration: 18)
+#flash("dot", factor: 1.8, duration: 12)
+#wiggle("dot", degrees: 12, duration: 16)
+#disappear("dot")
+#appear("dot")
+#set_color("dot", color: "red", duration: 1)
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_manim.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        // 1 mobject (no slide) + 1 save_state(1f) + 1 animate(20f) + 1 restore(20f)
+        // + 1 indicate(18f) + 1 flash(12f) + 1 wiggle(16f) + 1 hide(1f) + 1 show(1f)
+        // + 1 set_color(1f) = 9 slides
+        assert_eq!(scene.slides.len(), 9, "slides: {:?}", scene.slides);
+
+        // Verify each action variant.
+        assert!(matches!(scene.slides[0].actions[0], Action::SaveState { ref slot, .. } if slot == "home"));
+        assert!(matches!(scene.slides[1].actions[0], Action::MoveTo { .. }));
+        assert!(matches!(scene.slides[2].actions[0], Action::Restore { ref slot, .. } if slot == "home"));
+        assert!(matches!(scene.slides[3].actions[0], Action::Indicate { factor: 1.2, .. }));
+        assert!(matches!(scene.slides[4].actions[0], Action::Flash { factor: 1.8, .. }));
+        assert!(matches!(scene.slides[5].actions[0], Action::Wiggle { degrees: 12.0, .. }));
+        assert!(matches!(scene.slides[6].actions[0], Action::Hide { .. }));
+        assert!(matches!(scene.slides[7].actions[0], Action::Show { .. }));
+        assert!(matches!(scene.slides[8].actions[0], Action::SetColor { ref color, .. } if color == "red"));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Verify the new directives compile as valid standard Typst (lib.typ
+    /// defines them all as no-ops).
+    #[test]
+    fn std_typst_manim_api_compiles() {
+        let lib = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../typst/src/lib.typ"),
+        )
+        .expect("lib.typ should exist");
+        let src = format!(
+            "{lib}\n\
+             #mobject(\"dot\", circle(radius: 1cm))\n\
+             #save_state(\"dot\", slot: \"home\")\n\
+             #restore(\"dot\", slot: \"home\", duration: 10, easing: \"smooth\")\n\
+             #indicate(\"dot\", factor: 1.2, duration: 12)\n\
+             #flash(\"dot\", factor: 2.0, duration: 10)\n\
+             #wiggle(\"dot\", degrees: 10, duration: 14)\n\
+             #disappear(\"dot\")\n\
+             #appear(\"dot\")\n\
+             #set_color(\"dot\", color: \"red\", duration: 1)\n"
+        );
+        let out = crate::renderer::compile_svg_for_test(&src);
+        assert!(out.is_ok(), "std Typst failed to compile manim API: {out:?}");
+    }
 }
+

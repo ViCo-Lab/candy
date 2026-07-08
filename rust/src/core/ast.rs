@@ -47,8 +47,30 @@ impl Label {
 /// Each action carries its own [`Easing`], so a single slide can mix
 /// different rate functions per target (e.g. one object moves `linear` while
 /// another fades `smooth`).
+///
+/// # Manim-inspired actions
+///
+/// Beyond the core transform actions (MoveTo/Scale/Rotate/FadeTo), candy
+/// ports several Manim Community animation concepts:
+///
+/// - **State management**: [`Action::SaveState`] / [`Action::Restore`]
+///   mirror `mobject.save_state()` + `Restore(mobject)`. SaveState captures
+///   the current transform; Restore interpolates back to it from the current
+///   state — the universal "undo" pattern.
+/// - **Indication**: [`Action::Indicate`] briefly scales + color-shifts an
+///   object to draw attention, then returns to the original state (Manim's
+///   `Indicate`). [`Action::Flash`] briefly enlarges and fades out (Manim's
+///   `Flash`). [`Action::Wiggle`] oscillates the rotation (Manim's `Wiggle`).
+/// - **Color**: [`Action::SetColor`] is a no-op transform that records a
+///   color change for the renderer (Typst bodies are opaque, so candy can't
+///   truly recolor arbitrary content, but the action is tracked so future
+///   versions with structured mobjects can apply it).
+/// - **Visibility**: [`Action::Show`] / [`Action::Hide`] are instantaneous
+///   (0-duration) visibility toggles, useful for "appear/disappear without
+///   fading" effects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
+    // ---- Core transforms (candy v0.1) ----
     /// Move the target so its origin lands at `(x_cm, y_cm)`.
     MoveTo { target: Label, to: (f64, f64), easing: Easing },
     /// Scale the target uniformly by `to` (1.0 = original size).
@@ -62,6 +84,48 @@ pub enum Action {
     /// Fade the target to an explicit `opacity` in `[0, 1]`.
     /// (FadeIn/FadeOut are conveniences for `FadeTo { opacity: 1.0/0.0 }`.)
     FadeTo { target: Label, opacity: f64, easing: Easing },
+
+    // ---- Manim-style state management ----
+    /// Snapshot the target's current transform (x/y/scale/rotation/opacity)
+    /// into a named save slot. The slot can later be restored with
+    /// [`Action::Restore`]. Mirrors Manim's `mobject.save_state()`.
+    SaveState { target: Label, slot: String },
+    /// Interpolate the target from its current state back to a previously
+    /// saved state (see [`Action::SaveState`]). Mirrors Manim's
+    /// `Restore(mobject)`.
+    Restore { target: Label, slot: String, easing: Easing },
+
+    // ---- Manim-style indication animations ----
+    /// Briefly scale the target by `factor` (e.g. 1.1) and shift it by
+    /// `(dx, dy)` cm, then return to the original state — all within the
+    /// slide's duration. Mirrors Manim's `Indicate`. The "return" half uses
+    /// the [`Easing::ThereAndBack`] curve internally regardless of the
+    /// action's easing (which shapes the "out" half).
+    Indicate { target: Label, factor: f64, dx: f64, dy: f64, easing: Easing },
+    /// Briefly scale the target up by `factor` and fade it out, returning
+    /// to the original state at the end of the slide. Mirrors Manim's `Flash`.
+    Flash { target: Label, factor: f64, easing: Easing },
+    /// Oscillate the target's rotation by `±degrees` a few times within the
+    /// slide's duration, returning to the original rotation. Mirrors Manim's
+    /// `Wiggle`. Uses [`Easing::Wiggle`] internally.
+    Wiggle { target: Label, degrees: f64, easing: Easing },
+
+    // ---- Visibility (instantaneous, no interpolation) ----
+    /// Make the target visible at the slide start (sets opacity to its
+    /// "natural" value, typically 1.0). Instantaneous — the action's easing
+    /// and the slide's duration are irrelevant.
+    Show { target: Label },
+    /// Make the target invisible at the slide start (sets opacity to 0).
+    /// Instantaneous. Useful for "appear out of nowhere" effects when
+    /// combined with a subsequent `FadeIn`.
+    Hide { target: Label },
+
+    // ---- Color (tracked for future structured mobjects) ----
+    /// Record a color change for the target. The renderer currently treats
+    /// this as a no-op (Typst bodies are opaque strings), but the action is
+    /// tracked in the timeline so future versions with structured mobjects
+    /// can apply it. Mirrors Manim's `set_color`.
+    SetColor { target: Label, color: String, easing: Easing },
 }
 
 impl Action {
@@ -72,11 +136,23 @@ impl Action {
             | Action::Rotate { target, .. }
             | Action::FadeIn { target, .. }
             | Action::FadeOut { target, .. }
-            | Action::FadeTo { target, .. } => target,
+            | Action::FadeTo { target, .. }
+            | Action::SaveState { target, .. }
+            | Action::Restore { target, .. }
+            | Action::Indicate { target, .. }
+            | Action::Flash { target, .. }
+            | Action::Wiggle { target, .. }
+            | Action::Show { target }
+            | Action::Hide { target }
+            | Action::SetColor { target, .. } => target,
         }
     }
 
     /// The easing curve this action will be interpolated with.
+    ///
+    /// Instantaneous actions ([`Show`](Action::Show),
+    /// [`Hide`](Action::Hide), [`SaveState`](Action::SaveState)) have no
+    /// easing — they return [`Easing::Linear`] as a harmless default.
     pub fn easing(&self) -> Easing {
         match self {
             Action::MoveTo { easing, .. }
@@ -84,7 +160,13 @@ impl Action {
             | Action::Rotate { easing, .. }
             | Action::FadeIn { easing, .. }
             | Action::FadeOut { easing, .. }
-            | Action::FadeTo { easing, .. } => *easing,
+            | Action::FadeTo { easing, .. }
+            | Action::Restore { easing, .. }
+            | Action::Indicate { easing, .. }
+            | Action::Flash { easing, .. }
+            | Action::Wiggle { easing, .. }
+            | Action::SetColor { easing, .. } => *easing,
+            Action::SaveState { .. } | Action::Show { .. } | Action::Hide { .. } => Easing::Linear,
         }
     }
 }
