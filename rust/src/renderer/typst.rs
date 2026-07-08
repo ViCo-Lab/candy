@@ -245,6 +245,12 @@ impl Renderer {
     }
 
     /// Render the full scene at a frame index to an SVG string (draft / fallback).
+    ///
+    /// Unlike the older implementation, this applies per-object `opacity` by
+    /// rendering each mobject as its own SVG and composing them via nested
+    /// `<svg opacity="...">` elements. This closes the gap with the video path
+    /// (which always applied opacity via `composite_over`) — the SVG draft and
+    /// the encoded video now agree visually.
     pub fn render_frame_at(&mut self, frame_idx: u32, all_frames: &[FrameData]) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
         let mut states: HashMap<Label, FrameData> = HashMap::new();
@@ -259,31 +265,56 @@ impl Renderer {
                 .or_insert_with(|| self.initial_for(label.clone(), frame_idx));
         }
 
-        let mut src =
-            format!("#set page(width: {}pt, height: {}pt, margin: 0pt, fill: white)\n", self.page_w, self.page_h);
+        // Deterministic z-order (same as the video path).
         let mut labels: Vec<&Label> = states.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // White background, page-sized canvas.
+        let mut out = String::new();
+        out.push_str(&format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n",
+            self.page_w, self.page_h, self.page_w, self.page_h
+        ));
+        out.push_str(&format!(
+            "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"white\"/>\n",
+            self.page_w, self.page_h
+        ));
+
         for label in labels {
             let st = &states[label];
-            let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
-            let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
-            let abs_x_cm = nat_cm.0 + st.x;
-            let abs_y_cm = nat_cm.1 + st.y;
-            let scale_pct = st.scale * 100.0;
-            let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
-            src.push_str(&format!(
-                "#place(top + left, dx: {}cm, dy: {}cm)[ #scale(origin: top + left, {}%)[ {} ] ]\n",
-                abs_x_cm, abs_y_cm, scale_pct, body
-            ));
+            let obj_svg = self.render_object_svg(label, st)?;
+            // Wrap each object's SVG in a group with the per-frame opacity.
+            // SVG <g opacity> applies to all descendants (shapes + text).
+            let op = st.opacity.clamp(0.0, 1.0);
+            out.push_str(&format!("<g opacity=\"{op}\">\n{obj_svg}\n</g>\n"));
         }
+
+        out.push_str("</svg>\n");
+        Ok(out.into_bytes())
+    }
+
+    /// Render a single mobject at its placed position as an SVG string.
+    /// Uses the same placement math as `render_object_pixels`.
+    fn render_object_svg(&self, label: &Label, st: &FrameData) -> Result<String, CandyError> {
+        let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
+        let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+        let abs_x_cm = nat_cm.0 + st.x;
+        let abs_y_cm = nat_cm.1 + st.y;
+        let scale_pct = st.scale * 100.0;
+        let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
+
+        let src = format!(
+            "#set page(width: {}pt, height: {}pt, margin: 0pt, fill: none)\n\
+             #place(top + left, dx: {}cm, dy: {}cm)[ #scale(origin: top + left, {}%)[ {} ] ]\n",
+            self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, body
+        );
 
         let doc = self.compile(&src)?;
         let page = doc
             .pages()
             .first()
             .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        Ok(svg.into_bytes())
+        Ok(typst_svg::svg(page, &SvgOptions::default()))
     }
 
     /// Render a single target's frame as an isolated SVG (spec §4.4 style).
