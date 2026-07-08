@@ -195,11 +195,12 @@ the `renderer` compiles per-frame Typst in-process.
 
 Known v0.1 limitations:
 
-- HEVC/H.265 is not supported (no pure-Rust encoder; returns E007).
-- `@preview/<pkg>` packages are resolved from the local Typst cache
-  (`~/.cache/typst/packages` on Linux) but not downloaded at render time
-  — candy's renderer is offline-safe. Run `typst compile` once to populate
-  the cache if you need a package.
+- HEVC/H.265 self-contained encoding is not supported (no pure-Rust encoder);
+  use `--codec h265` with system ffmpeg, or `--codec av1` (default).
+- The `system-downloader` feature (default on) fetches `@preview` packages
+  from Typst Universe at render time. Disable with `--no-default-features`
+  for a fully offline build (packages must then be pre-cached via
+  `typst compile`).
 
 ## License
 

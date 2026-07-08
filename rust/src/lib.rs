@@ -199,7 +199,7 @@ pub fn build_input_with_gpu(
     #[cfg(feature = "gpu")]
     let gpu_ok = use_gpu;
     #[cfg(not(feature = "gpu"))]
-    let gpu_ok = false;
+    let _gpu_ok = false;
     #[cfg(feature = "gpu")]
     let mut gpu_renderer: Option<crate::renderer::gpu::GpuRenderer> = None;
     #[cfg(feature = "gpu")]

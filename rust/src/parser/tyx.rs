@@ -43,6 +43,11 @@ const CANDY: &[&str] = &[
     "appear",
     "disappear",
     "set_color",
+    // Manim-inspired composite animations.
+    "blink",
+    "spiral_in",
+    "focus_on",
+    "fade_transform",
 ];
 
 /// Parse `.tyx` file into a `Scene` AST.
@@ -170,6 +175,11 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "appear" => process_appear_disappear(&pos, true, ctx),
         "disappear" => process_appear_disappear(&pos, false, ctx),
         "set_color" => process_set_color(&pos, &named, ctx),
+        // Manim-inspired composite animations.
+        "blink" => process_blink(&pos, &named, ctx),
+        "spiral_in" => process_spiral_in(&pos, &named, ctx),
+        "focus_on" => process_focus_on(&pos, &named, ctx),
+        "fade_transform" => process_fade_transform(&pos, &named, ctx),
         _ => {}
     }
 }
@@ -560,6 +570,117 @@ fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
     ctx.slides.push(Slide {
         duration_frames: duration,
         actions: vec![Action::SetColor { target: label, color, easing }],
+    });
+    ctx.cursor += duration;
+}
+
+// ---- Manim-inspired composite animation parsers ----
+
+/// `blink(target, blinks: 3, duration: 30, easing: "linear")` — alternate
+/// opacity 1↔0 N times. Mirrors Manim's `Blink`.
+fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let blinks = named.get("blinks").and_then(expr_to_f64).unwrap_or(3.0).max(1.0) as u32;
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(30.0).max(1.0) as u32;
+    let per_blink = (duration / (blinks * 2)).max(1);
+    let easing = resolve_easing(named, &label);
+    // Each blink = FadeTo(0) + FadeTo(1).
+    for _ in 0..blinks {
+        ctx.slides.push(Slide {
+            duration_frames: per_blink,
+            actions: vec![Action::FadeTo {
+                target: label.clone(),
+                opacity: 0.0,
+                easing,
+            }],
+        });
+        ctx.slides.push(Slide {
+            duration_frames: per_blink,
+            actions: vec![Action::FadeTo {
+                target: label.clone(),
+                opacity: 1.0,
+                easing,
+            }],
+        });
+    }
+    ctx.cursor += per_blink * blinks * 2;
+}
+
+/// `spiral_in(target, scale: 3.0, rotate: 360, duration: 24, easing: "smooth")`
+/// — fly in from a scaled-up, rotated state to the natural position, fading in.
+/// Mirrors Manim's `SpiralIn`.
+fn process_spiral_in(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let scale = named.get("scale").and_then(expr_to_f64).unwrap_or(3.0);
+    let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(360.0);
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(24.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+    // Set initial state: scaled up, rotated, invisible.
+    ctx.slides.push(Slide {
+        duration_frames: 1,
+        actions: vec![
+            Action::ScaleBy { target: label.clone(), factor: scale, easing },
+            Action::RotateBy { target: label.clone(), delta_degrees: rotate, easing },
+            Action::Hide { target: label.clone() },
+        ],
+    });
+    // Animate to natural state: scale 1, rotate 0, visible.
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![
+            Action::Scale { target: label.clone(), to: 1.0, easing },
+            Action::Rotate { target: label.clone(), degrees: 0.0, easing },
+            Action::FadeIn { target: label, easing },
+        ],
+    });
+    ctx.cursor += 1 + duration;
+}
+
+/// `focus_on(target, factor: 0.5, duration: 20, easing: "smooth")` —
+/// shrink a "spotlight" onto the target. Implemented as a scale-down + fade
+/// on the target. Mirrors Manim's `FocusOn`.
+fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(0.5);
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(20.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![
+            Action::ScaleBy { target: label.clone(), factor, easing },
+            Action::FadeTo { target: label, opacity: 0.3, easing },
+        ],
+    });
+    ctx.cursor += duration;
+}
+
+/// `fade_transform(from: "old", to: "new", duration: 20, easing: "smooth")`
+/// — crossfade two mobjects: fade out `from` while fading in `to`. Both
+/// must be registered via `mobject`. Mirrors Manim's `FadeTransform` (simple
+/// crossfade variant).
+fn process_fade_transform(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let from = named
+        .get("from")
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(Label(s.get().to_string())),
+            _ => None,
+        });
+    let to = named
+        .get("to")
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(Label(s.get().to_string())),
+            _ => None,
+        });
+    let (Some(from), Some(to)) = (from, to) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(20.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &from);
+    // Fade out `from` and fade in `to` in the same slide (parallel).
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![
+            Action::FadeOut { target: from, easing },
+            Action::FadeIn { target: to, easing },
+        ],
     });
     ctx.cursor += duration;
 }

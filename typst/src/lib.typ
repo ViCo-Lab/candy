@@ -270,6 +270,66 @@
 /// Typst.
 #let zoom-to(rect, duration: 30, easing: "smooth") = none
 
+// ============================================================================
+// Manim-inspired composite animations
+//
+// These directives compose existing candy primitives into higher-level
+// effects inspired by Manim Community Edition.
+// ============================================================================
+
+/// Blink: alternate opacity 1↔0 N times. Mirrors Manim's `Blink`.
+///
+/// - `target`: the `label` of the object to blink.
+/// - `blinks`: number of on-off cycles (default `3`).
+/// - `duration`: total frames (default `30`, split evenly across blinks).
+/// - `easing`: rate curve (default `"linear"`).
+#let blink(target, blinks: 3, duration: 30, easing: "linear") = none
+
+/// Spiral-in: fly in from a scaled-up, rotated, invisible state to the natural
+/// position. Mirrors Manim's `SpiralIn`.
+///
+/// - `target`: the `label` of the object to spiral in.
+/// - `scale`: initial scale factor (default `3.0` — starts 3× size).
+/// - `rotate`: initial rotation in degrees (default `360` — one full turn).
+/// - `duration`: frames for the spiral-in (default `24`).
+/// - `easing`: rate curve (default `"smooth"`).
+#let spiral-in(
+  target,
+  scale: 3.0,
+  rotate: 360.0,
+  duration: 24,
+  easing: "smooth",
+) = none
+
+/// Focus-on: shrink a "spotlight" onto the target (scale down + dim).
+/// Mirrors Manim's `FocusOn`.
+///
+/// - `target`: the `label` of the object to focus on.
+/// - `factor`: scale-down factor (default `0.5` — shrinks to half size).
+/// - `duration`: frames (default `20`).
+/// - `easing`: rate curve (default `"smooth"`).
+#let focus-on(
+  target,
+  factor: 0.5,
+  duration: 20,
+  easing: "smooth",
+) = none
+
+/// Fade-transform: crossfade two mobjects — fade out `from` while fading in
+/// `to`. Both must be registered via `mobject`. Mirrors Manim's
+/// `FadeTransform` (simple crossfade variant; no stretch/alignment).
+///
+/// - `from`: the `label` of the source object (fades out).
+/// - `to`: the `label` of the target object (fades in).
+/// - `duration`: frames (default `20`).
+/// - `easing`: rate curve (default `"smooth"`).
+#let fade-transform(
+  from,
+  to,
+  duration: 20,
+  easing: "smooth",
+) = none
+
 #let dir-left = (-2.0, 0.0)
 #let dir-right = (2.0, 0.0)
 #let dir-up = (0.0, -2.0)
