@@ -133,11 +133,11 @@ the `renderer` compiles per-frame Typst in-process.
 
 Known v0.1 limitations:
 
-- `#mobject` bodies must be valid standalone Typst — the in-process `World`
-  provides no `file()`/`font()`/`source()` for non-main ids, so package
-  imports inside mobject bodies cannot be resolved. Workaround: keep mobject
-  bodies self-contained, or render via the SVG draft and import manually.
 - HEVC/H.265 is not supported (no pure-Rust encoder; returns E007).
+- `@preview/<pkg>` packages are resolved from the local Typst cache
+  (`~/.cache/typst/packages` on Linux) but not downloaded at render time
+  — candy's renderer is offline-safe. Run `typst compile` once to populate
+  the cache if you need a package.
 
 ## License
 

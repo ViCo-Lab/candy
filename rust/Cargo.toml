@@ -29,6 +29,18 @@ typst-layout = "0.15"
 typst-syntax = "0.15"
 typst-utils = "0.15"
 
+# typst-kit provides the same font discovery and package resolution that the
+# official `typst` CLI uses, so candy's in-process World behaves identically to
+# `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files"] }
+
+# Mature keyframe / easing library. candy's `Easing` enum delegates its math
+# to `keyframe::functions::*` so we get well-tested implementations of the
+# standard ease curves (linear, quadratic, cubic, sine, circular, exponential,
+# smoothstep, bezier) for free, and only hand-roll the Manim-specific curves
+# (there_and_back, wiggle, lingering) that keyframe doesn't ship.
+keyframe = "1.1"
+
 # Lightweight AV1 encoding backend (no FFmpeg, pure Rust).
 # `default-features = false` disables the nasm assembly backend so it builds
 # with the portable Rust/C implementation on any host.
@@ -39,11 +51,22 @@ rav1e = { version = "0.8", default-features = false }
 # system command (no `x264`/`x265`/FFmpeg CLI).
 openh264 = "0.7"
 
+# Optional GPU rasterization via vello (GPU compute 2D renderer) + wgpu.
+# Disabled by default — enable with `--features gpu`. When active, the
+# `--gpu` CLI flag rasterizes SVG frames on the GPU instead of via
+# `typst-render` (CPU). Falls back to CPU automatically if no GPU device.
+vello = { version = "0.9", optional = true }
+wgpu = { version = "23", optional = true }
+vello_svg = { version = "0.9", optional = true }
+
 [features]
 # AV1/H.264 video encoding. The build is fully self-contained: encoders run
 # in-process and containers (MP4 / Matroska) are written by candy itself, so no
 # external tool (FFmpeg, x264, x265) is ever invoked.
 default = ["video"]
 video = []
+# GPU-accelerated frame rasterization via vello + wgpu. Off by default because
+# it pulls in heavy native GPU deps; enable with `--features gpu`.
+gpu = ["dep:vello", "dep:wgpu", "dep:vello_svg"]
 
 [dev-dependencies]

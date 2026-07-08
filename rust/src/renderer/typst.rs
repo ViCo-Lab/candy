@@ -1,21 +1,34 @@
 //! Render `FrameData` into SVG (and, for the video path, RGBA) using the
 //! `typst` compiler library in-process — no `typst` CLI is spawned.
 //!
-//! Auto-positioning: each `mobject`'s body is laid out by Typst *naturally*
-//! (the user never specifies a position). To recover those positions we render
-//! a "natural" document — every body tagged with a `<__candy_<label>>` label —
-//! to SVG and read each labeled group's `transform` (Typst emits
-//! `data-typst-label` + `transform` on the group). Per animation frame we then
-//! place each body at `natural + delta` and `scale`/opacity it, compositing the
-//! objects (with per-object opacity) onto a single opaque-white canvas.
+//! World implementation: candy uses [`typst_kit`] (the same font discovery +
+//! package resolution crate that the official `typst` CLI uses) so the
+//! in-process compile is *identical* to `typst compile`:
+//!
+//! - System fonts are discovered via `fontdb` (Linux fontconfig, macOS
+//!   CoreText, Windows DirectWrite).
+//! - Embedded fallback fonts (Libertinus Serif, New Computer Modern, DejaVu
+//!   Sans Mono) are loaded from `typst-assets`.
+//! - `@preview/<pkg>` package imports resolve from the local cache
+//!   (`~/.cache/typst/packages` on Linux) and download on demand.
+//! - Local `#import "file.typ"` resolves relative to the project root (the
+//!   parent directory of the `.tyx` source).
+//!
+//! This closes candy's v0.1 "mobject bodies must be standalone Typst"
+//! limitation: any valid Typst document now compiles in candy's World.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use typst::{Library, LibraryExt, World};
+use typst_kit::files::{FileStore, FsRoot, SystemFiles};
+use typst_kit::fonts::FontStore;
+use typst_kit::packages::SystemPackages;
 use typst_layout::PagedDocument;
 use typst_library::diag::FileError;
 use typst_library::foundations::{Bytes, Datetime, Duration};
-use typst_library::text::{Font, FontBook};
+use typst_library::text::Font;
 use typst_render::{render, RenderOptions};
 use typst_svg::SvgOptions;
 use typst_syntax::{FileId, Source as TypstSource};
@@ -27,21 +40,80 @@ use crate::core::error::CandyError;
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 const PT_PER_CM: f64 = 28.346_456_692_913_385;
 
-/// A `World` that compiles a single detached source string with a shared
-/// library/book (so we don't rebuild the std library per frame).
+/// A no-op downloader for `@preview` packages. candy's renderer does not
+/// download packages at render time (a render should be deterministic and
+/// offline-safe); users who need `@preview` packages should `typst compile`
+/// once to populate the local cache, after which candy will find them.
+#[derive(Debug, Clone, Copy)]
+struct NoDownload;
+
+impl typst_kit::downloader::Downloader for NoDownload {
+    fn stream(
+        &self,
+        _key: &dyn std::any::Any,
+        _url: &str,
+    ) -> std::io::Result<(Option<usize>, Box<dyn std::io::Read>)> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "candy does not download packages at render time",
+        ))
+    }
+}
+
+/// Shared, reusable Typst World state (fonts + file resolver + standard
+/// library). Built once per [`Renderer`] and reused across every frame
+/// compile, so the cost of system font scanning is paid exactly once.
+struct WorldState {
+    library: LazyHash<Library>,
+    fonts: FontStore,
+    files: FileStore<SystemFiles>,
+}
+
+impl WorldState {
+    /// Build a World state with:
+    /// - the standard Typst library
+    /// - embedded fallback fonts + all system fonts
+    /// - a project root (the `.tyx` source's parent directory) so local
+    ///   `#import "file.typ"` works, and `@preview` packages resolve from
+    ///   the local cache
+    fn new(project_root: PathBuf) -> Self {
+        // Standard library — same as `typst compile` with no extra prelude.
+        let library = LazyHash::new(Library::default());
+
+        // Font store: embedded fallbacks first, then system fonts.
+        // Embedded fonts guarantee that `#set text(font: "New Computer Modern")`
+        // works even on systems with no installed fonts. Both sources are
+        // unconditionally enabled in candy's Cargo.toml.
+        let mut fonts = FontStore::new();
+        fonts.extend(typst_kit::fonts::embedded());
+        fonts.extend(typst_kit::fonts::system());
+
+        // File resolver: project files from the .tyx's parent directory,
+        // package files from the local Typst cache (~/.cache/typst/packages
+        // on Linux, ~/Library/Caches/typst/packages on macOS,
+        // %LOCALAPPDATA%\typst\packages on Windows).
+        let packages = SystemPackages::new(NoDownload);
+        let root = FsRoot::new(project_root);
+        let files = FileStore::new(SystemFiles::new(root, packages));
+
+        Self { library, fonts, files }
+    }
+}
+
+/// A per-compile `World` view that borrows the shared [`WorldState`] and
+/// fixes a specific `main` source.
 struct CandyWorld<'a> {
+    state: &'a WorldState,
     main: TypstSource,
-    library: &'a LazyHash<Library>,
-    book: &'a LazyHash<FontBook>,
 }
 
 impl<'a> World for CandyWorld<'a> {
     fn library(&self) -> &LazyHash<Library> {
-        self.library
+        &self.state.library
     }
 
-    fn book(&self) -> &LazyHash<FontBook> {
-        self.book
+    fn book(&self) -> &LazyHash<typst_library::text::FontBook> {
+        self.state.fonts.book()
     }
 
     fn main(&self) -> FileId {
@@ -50,18 +122,20 @@ impl<'a> World for CandyWorld<'a> {
 
     fn source(&self, id: FileId) -> Result<TypstSource, FileError> {
         if id == self.main.id() {
-            Ok(self.main.clone())
-        } else {
-            Err(FileError::NotFound(std::path::PathBuf::from("missing")))
+            return Ok(self.main.clone());
         }
+        // Delegate to the file store — this resolves local imports via FsRoot
+        // and package imports via SystemPackages. The store caches, so
+        // repeated imports of the same file are cheap.
+        self.state.files.source(id)
     }
 
-    fn file(&self, _id: FileId) -> Result<Bytes, FileError> {
-        Err(FileError::NotFound(std::path::PathBuf::from("missing")))
+    fn file(&self, id: FileId) -> Result<Bytes, FileError> {
+        self.state.files.file(id)
     }
 
-    fn font(&self, _index: usize) -> Option<Font> {
-        None
+    fn font(&self, index: usize) -> Option<Font> {
+        self.state.fonts.font(index)
     }
 
     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
@@ -72,8 +146,10 @@ impl<'a> World for CandyWorld<'a> {
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
     scene: Scene,
-    library: LazyHash<Library>,
-    book: LazyHash<FontBook>,
+    /// Shared World state (fonts + file resolver + library). Built once,
+    /// reused for every frame compile — pays the system-font-scan cost
+    /// exactly once per `Renderer::new`.
+    state: Arc<WorldState>,
     /// Natural (first-frame) position of each mobject, in Typst points.
     nat: HashMap<Label, (f64, f64)>,
     /// Full-canvas page size in points (from the natural document).
@@ -84,12 +160,20 @@ pub struct Renderer {
 
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
+    ///
+    /// `project_root` is the directory that local `#import "file.typ"`
+    /// resolves against — typically the parent directory of the `.tyx`
+    /// source. Pass `PathBuf::new()` (current dir) if you don't care.
     pub fn new(scene: Scene) -> Result<Self, CandyError> {
+        Self::with_root(scene, PathBuf::new())
+    }
+
+    /// Like [`new`] but with an explicit project root for local imports.
+    pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
         scene.validate().map_err(CandyError::Parse)?;
         Ok(Self {
+            state: Arc::new(WorldState::new(project_root)),
             scene,
-            library: LazyHash::new(Library::default()),
-            book: LazyHash::new(FontBook::new()),
             nat: HashMap::new(),
             page_w: 1.0,
             page_h: 1.0,
@@ -100,11 +184,7 @@ impl Renderer {
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
         let source = TypstSource::detached(src.to_string());
-        let world = CandyWorld {
-            main: source,
-            library: &self.library,
-            book: &self.book,
-        };
+        let world = CandyWorld { state: &self.state, main: source };
         let warned = typst::compile::<PagedDocument>(&world);
         warned
             .output
@@ -517,14 +597,12 @@ fn parse_floats(s: &str) -> Vec<f64> {
 /// shipped `lib.typ` is valid standard Typst).
 #[cfg(test)]
 pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
+    // Use the same WorldState as the production Renderer: system fonts +
+    // embedded fallbacks + local file resolver. This makes the test compile
+    // identical to `typst compile`.
+    let state = WorldState::new(PathBuf::new());
     let source = TypstSource::detached(src.to_string());
-    let library = LazyHash::new(Library::default());
-    let book = LazyHash::new(FontBook::new());
-    let world = CandyWorld {
-        main: source,
-        library: &library,
-        book: &book,
-    };
+    let world = CandyWorld { state: &state, main: source };
     let warned = typst::compile::<PagedDocument>(&world);
     match warned.output {
         Ok(doc) => {

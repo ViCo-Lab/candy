@@ -65,6 +65,18 @@ impl Input {
             Input::Svg(p) => extract_dsl_from_svg(p),
         }
     }
+
+    /// The project root for Typst file resolution: the parent directory of
+    /// the source file. Used to wire `Renderer::with_root` so local
+    /// `#import "file.typ"` calls resolve relative to the source.
+    pub fn project_root(&self) -> std::path::PathBuf {
+        match self {
+            Input::Tyx(p) | Input::Svg(p) => p
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 impl From<&std::path::Path> for Input {
@@ -127,9 +139,10 @@ pub fn build_input(
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
     let scene: Scene = input.parse()?; // Steps 1–2
+    let project_root = input.project_root();
     let keyframes = scheduler::schedule(&scene)?; // Step 3
     let frames = interpolator::interpolate(keyframes); // Step 4
-    let mut renderer = Renderer::new(scene.clone())?;
+    let mut renderer = Renderer::with_root(scene.clone(), project_root)?;
 
     let total = frames.iter().map(|f| f.frame_idx).max().unwrap_or(0);
 
