@@ -730,7 +730,7 @@ fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
 /// — crossfade two mobjects: fade out `from` while fading in `to`. Both
 /// must be registered via `mobject`. Mirrors Manim's `FadeTransform` (simple
 /// crossfade variant).
-fn process_fade_transform(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+fn process_fade_transform(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let from = named
         .get("from")
         .and_then(|e| match e {

@@ -74,11 +74,17 @@ impl GpuRenderer {
                 .await
                 .map_err(|e| CandyError::Encode(format!("wgpu adapter: {e}")))?;
 
+            // Request the adapter's actual limits rather than the conservative
+            // `downlevel_defaults()`, which caps `max_storage_buffers_per_shader_stage`
+            // at 4 — vello 0.7's compute shaders need 5, so the lower limit made
+            // device creation panic. The adapter's own limits always satisfy the
+            // device request and cover everything vello requires.
+            let required_limits = adapter.limits().clone();
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("candy gpu device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits,
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
                     memory_hints: wgpu::MemoryHints::default(),
                     trace: wgpu::Trace::Off,
@@ -112,7 +118,9 @@ impl GpuRenderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::COPY_SRC
+                | TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
@@ -129,10 +137,16 @@ impl GpuRenderer {
             .map_err(|e| CandyError::Encode(format!("vello render: {e}")))?;
 
         // 4. Copy texture → buffer → CPU.
-        let bytes_per_row = width * 4;
+        //
+        // wgpu requires `bytes_per_row` for copy_texture_to_buffer to be a
+        // multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256). The tight row width
+        // `width * 4` usually isn't, so we pad to the aligned stride and then
+        // de-pad row-by-row below to give the encoder a tightly-packed buffer.
+        let unpadded_bpr = (width as usize) * 4;
+        let aligned_bpr = unpadded_bpr.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
         let buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("candy frame readback"),
-            size: (bytes_per_row as u64) * (height as u64),
+            size: (aligned_bpr as u64) * (height as u64),
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -153,7 +167,7 @@ impl GpuRenderer {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
+                    bytes_per_row: Some(aligned_bpr as u32),
                     rows_per_image: Some(height),
                 },
             },
@@ -161,7 +175,7 @@ impl GpuRenderer {
         );
         self.queue.submit(Some(encoder.finish()));
 
-        // 5. Map buffer and read back.
+        // 5. Map buffer and read back, de-padding each row to a tight stride.
         let slice = buffer.slice(..);
         slice.map_async(MapMode::Read, |_| {});
         self.device
@@ -170,7 +184,13 @@ impl GpuRenderer {
 
         let rgba = {
             let data = slice.get_mapped_range();
-            data.to_vec()
+            let mut out = Vec::with_capacity(unpadded_bpr * height as usize);
+            for y in 0..height as usize {
+                let start = y * aligned_bpr;
+                let end = start + unpadded_bpr;
+                out.extend_from_slice(&data[start..end]);
+            }
+            out
         };
 
         Ok(RenderedFrame {

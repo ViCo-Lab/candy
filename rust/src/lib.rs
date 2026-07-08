@@ -170,7 +170,6 @@ pub fn build_input_with_gpu(
     let mut sample_times: Vec<u32> = frames.iter().map(|f| f.time_ms).collect();
     sample_times.sort();
     sample_times.dedup();
-    let n_frames = sample_times.len();
 
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
@@ -229,7 +228,7 @@ pub fn build_input_with_gpu(
         // GPU path is serial (single device); CPU path is parallel (rayon).
         #[cfg(feature = "gpu")]
         if let Some(g) = gpu_renderer.as_mut() {
-            let mut out = Vec::with_capacity(n_frames);
+            let mut out = Vec::with_capacity(sample_times.len());
             for &t_ms in &sample_times {
                 out.push(renderer.render_frame_pixels_gpu(t_ms, &frames, pixel_per_pt, g)?);
             }
