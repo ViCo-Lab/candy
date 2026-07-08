@@ -36,9 +36,45 @@ use std::path::Path;
 use crate::core::ast::Scene;
 use crate::core::interpolator;
 use crate::core::scheduler;
+use crate::parser::extract_dsl_from_svg;
 use crate::parser::parse_tyx;
 use crate::renderer::video::{self, Container, EncodedVideo};
 use crate::renderer::Renderer;
+
+/// Input source for the `build` pipeline.
+///
+/// Candy v0.1 only accepted a `.tyx` path. The `@preview/candy` Typst package
+/// also supports rendering an SVG with an embedded `candy-json` block, which
+/// `extract_dsl_from_svg` recovers. Exposing both paths from `build()` makes
+/// the SVG round-trip (Typst → SVG → candy) actually reachable, instead of
+/// leaving `extract_dsl_from_svg` as dead exported code.
+#[derive(Debug, Clone)]
+pub enum Input {
+    /// A `.tyx` Typst X-sheet (parsed via `parser::parse_tyx`).
+    Tyx(std::path::PathBuf),
+    /// An SVG rendered by `@preview/candy`, containing a `candy-json` block
+    /// (parsed via `parser::extract_dsl_from_svg`).
+    Svg(std::path::PathBuf),
+}
+
+impl Input {
+    /// Parse the input into a [`Scene`] AST.
+    pub fn parse(&self) -> Result<Scene, CandyError> {
+        match self {
+            Input::Tyx(p) => parse_tyx(p),
+            Input::Svg(p) => extract_dsl_from_svg(p),
+        }
+    }
+}
+
+impl From<&std::path::Path> for Input {
+    fn from(p: &std::path::Path) -> Self {
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("svg") => Input::Svg(p.to_path_buf()),
+            _ => Input::Tyx(p.to_path_buf()),
+        }
+    }
+}
 
 /// Output target for the `build` pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +98,10 @@ pub enum OutputFormat {
 /// * `codec`            — [`Codec`] (AV1 preferred; H264 optional; HEVC errors).
 /// * `fps`              — frames per second (video time base).
 /// * `pixel_per_pt`     — rasterization resolution for the video path.
+///
+/// Backward-compatible wrapper around [`build_input`]: dispatches on the
+/// file extension (`.svg` → SVG round-trip via `extract_dsl_from_svg`;
+/// anything else → `.tyx` parser).
 pub fn build(
     input: &Path,
     intermediate_dir: &Path,
@@ -71,7 +111,22 @@ pub fn build(
     fps: u32,
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
-    let scene: Scene = parse_tyx(input)?; // Steps 1–2
+    build_input(Input::from(input), intermediate_dir, output, format, codec, fps, pixel_per_pt)
+}
+
+/// Like [`build`], but takes an explicit [`Input`] so callers can force the
+/// SVG path even when the file extension is not `.svg` (e.g. an SVG produced
+/// by `@preview/candy` and saved with a `.txt` extension).
+pub fn build_input(
+    input: Input,
+    intermediate_dir: &Path,
+    output: &Path,
+    format: OutputFormat,
+    codec: Codec,
+    fps: u32,
+    pixel_per_pt: f32,
+) -> Result<(), CandyError> {
+    let scene: Scene = input.parse()?; // Steps 1–2
     let keyframes = scheduler::schedule(&scene)?; // Step 3
     let frames = interpolator::interpolate(keyframes); // Step 4
     let mut renderer = Renderer::new(scene.clone())?;

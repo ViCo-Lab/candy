@@ -96,17 +96,21 @@ cargo run -- build examples/dot_move.tyx --format mp4 --codec h264
 
 # SVG draft (one file per frame, written to .candy/<stem>/)
 cargo run -- build examples/dot_move.tyx --format svg
+
+# Build from an SVG rendered by @preview/candy (candy-json round-trip)
+cargo run -- build scene.svg --from-svg --format mp4
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `<input>` (positional) | required | Path to the `.tyx` X-sheet. |
+| `<input>` (positional) | required | Path to the `.tyx` X-sheet, or an SVG with a `candy-json` block (see `--from-svg`). |
+| `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `svg` (SVG draft → `.candy/`). |
 | `--codec` | `av1` | `av1` (preferred) / `h264` / `h265` (returns E007). |
-| `--fps` | `30` | Frames per second (video path). |
+| `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
 
 ### Artifacts

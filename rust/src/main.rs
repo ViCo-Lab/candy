@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use candy::{build, Codec, CandyError, OutputFormat};
+use candy::{build_input, Codec, CandyError, Input, OutputFormat};
 
 #[derive(Parser)]
 #[command(
@@ -30,8 +30,15 @@ struct Cli {
 enum Commands {
     /// Build a `.tyx` X-sheet into an animation.
     Build {
-        /// Path to the `.tyx` Typst X-sheet file.
+        /// Path to the `.tyx` Typst X-sheet file (or an SVG with a
+        /// `candy-json` block when `--from-svg` is given).
         input: PathBufOrStr,
+        /// Force the input to be parsed as an SVG rendered by
+        /// `@preview/candy` (containing a `candy-json` block). Without this
+        /// flag, the parser is selected by file extension: `.svg` → SVG
+        /// round-trip via `extract_dsl_from_svg`, anything else → `.tyx`.
+        #[arg(long)]
+        from_svg: bool,
         /// Output name hint (under `dist/` for videos; ignored for SVG drafts).
         #[arg(short, long, default_value = "out")]
         output: String,
@@ -81,6 +88,7 @@ fn main() -> Result<(), CandyError> {
     match cli.command {
         Commands::Build {
             input,
+            from_svg,
             output,
             format,
             codec,
@@ -109,8 +117,13 @@ fn main() -> Result<(), CandyError> {
 
             if out_fmt == OutputFormat::Svg {
                 // SVG draft → `.candy/<stem>/`, never `dist/`.
-                build(
-                    input,
+                let input_kind = if from_svg {
+                    Input::Svg(input.to_path_buf())
+                } else {
+                    Input::from(input.as_path())
+                };
+                build_input(
+                    input_kind,
                     &intermediate_dir,
                     &intermediate_dir.join("svg_draft"),
                     out_fmt,
@@ -123,8 +136,13 @@ fn main() -> Result<(), CandyError> {
             }
 
             let output = resolve_output(&output, &stem, container_ext);
-            build(
-                input,
+            let input_kind = if from_svg {
+                Input::Svg(input.to_path_buf())
+            } else {
+                Input::from(input.as_path())
+            };
+            build_input(
+                input_kind,
                 &intermediate_dir,
                 &output,
                 out_fmt,
