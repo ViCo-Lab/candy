@@ -1,3 +1,25 @@
-/rust/target/
+# Rust build artifacts
+rust/target/
+target/
+**/*.rs.bk
+
+# Candy build outputs (never commit rendered artifacts)
 .candy/
 dist/
+*.mp4
+*.mkv
+*.webm
+*.ivf
+*.rgba
+*.ogg
+*.opus
+*.aac
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Lock files: keep Cargo.lock for the binary crate (rust/Cargo.lock is committed).
