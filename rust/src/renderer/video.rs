@@ -219,7 +219,7 @@ pub fn mux(
 /// Parse every `candy.audio` track into a single merged [`AudioData`] (or
 /// `None` if there are none). The first track's codec wins; mismatched tracks
 /// are dropped with a warning.
-pub fn collect_audio(tracks: &[crate::core::ast::AudioTrack], fps: u32) -> Option<AudioData> {
+pub fn collect_audio(tracks: &[crate::core::ast::AudioTrack], _fps: u32) -> Option<AudioData> {
     let mut merged: Option<AudioData> = None;
     for t in tracks {
         let Ok(mut ad) = audio::parse_audio(t) else {
@@ -229,7 +229,7 @@ pub fn collect_audio(tracks: &[crate::core::ast::AudioTrack], fps: u32) -> Optio
             );
             continue;
         };
-        let off = (t.start_frame as u64) * 1000 / fps as u64;
+        let off = t.start_ms as u64; // already in ms
         for f in &mut ad.frames {
             f.timestamp_ms += off;
         }

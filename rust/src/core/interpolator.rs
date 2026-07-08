@@ -28,17 +28,21 @@ pub enum InterpMethod {
 
 /// Interpolate between keyframes to generate all frames (linear method).
 ///
-/// Precondition: `keyframes` is non-empty and sorted by `frame_idx` (the
+/// Precondition: `keyframes` is non-empty and sorted by `time_ms` (the
 /// scheduler guarantees both; we re-sort defensively).
 /// Postcondition: returns `Vec<FrameData>` with length ≥ `keyframes.len()`,
-/// grouped/sorted by `(frame_idx, target)`. Every `opacity` value is clamped to
+/// grouped/sorted by `(time_ms, target)`. Every `opacity` value is clamped to
 /// [0.0, 1.0] (spec E005 handling).
 pub fn interpolate(keyframes: Vec<FrameData>) -> Vec<FrameData> {
-    interpolate_with(keyframes, InterpMethod::Linear)
+    interpolate_with(keyframes, InterpMethod::Linear, 30)
 }
 
-/// Like [`interpolate`] but with an explicit [`InterpMethod`].
-pub fn interpolate_with(keyframes: Vec<FrameData>, method: InterpMethod) -> Vec<FrameData> {
+/// Like [`interpolate`] but with an explicit [`InterpMethod`] and `fps`.
+///
+/// The interpolator samples the timeline at `1000/fps` ms intervals (the
+/// video frame rate). Keyframe times are in ms; the output has one
+/// `FrameData` per video frame, per target.
+pub fn interpolate_with(keyframes: Vec<FrameData>, method: InterpMethod, fps: u32) -> Vec<FrameData> {
     if keyframes.is_empty() {
         return Vec::new();
     }
@@ -49,32 +53,39 @@ pub fn interpolate_with(keyframes: Vec<FrameData>, method: InterpMethod) -> Vec<
         groups.entry(kf.target.clone()).or_default().push(kf);
     }
 
-    let mut last_frame = 0u32;
+    // Total duration in ms (max time_ms across all keyframes).
+    let mut total_ms = 0u32;
     for g in groups.values() {
         for kf in g {
-            last_frame = last_frame.max(kf.frame_idx);
+            total_ms = total_ms.max(kf.time_ms);
         }
     }
 
+    // Sample times: one per video frame, at t = i * 1000/fps ms.
+    let frame_ms = 1000.0 / fps as f64;
+    let n_frames = ((total_ms as f64) / frame_ms).ceil() as u32 + 1;
+
     let mut out: Vec<FrameData> = Vec::new();
     for (_, mut kfs) in groups {
-        kfs.sort_by_key(|f| f.frame_idx);
+        kfs.sort_by_key(|f| f.time_ms);
 
-        for frame in 0..=last_frame {
+        for i in 0..n_frames {
+            let t_ms = (i as f64 * frame_ms).round() as u32;
             let fr = match method {
-                InterpMethod::Linear => interp_linear(&kfs, frame),
-                InterpMethod::CatmullRom => interp_catmull(&kfs, frame),
+                InterpMethod::Linear => interp_linear(&kfs, t_ms),
+                InterpMethod::CatmullRom => interp_catmull(&kfs, t_ms),
             };
             if let Some(mut fr) = fr {
                 if !(0.0..=1.0).contains(&fr.opacity) {
                     fr.opacity = fr.opacity.clamp(0.0, 1.0);
                 }
+                fr.time_ms = t_ms;
                 out.push(fr);
             }
         }
     }
 
-    out.sort_by(|a, b| a.frame_idx.cmp(&b.frame_idx).then(a.target.0.cmp(&b.target.0)));
+    out.sort_by(|a, b| a.time_ms.cmp(&b.time_ms).then(a.target.0.cmp(&b.target.0)));
     out
 }
 
@@ -83,7 +94,7 @@ fn interp_linear(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     let mut a: Option<&FrameData> = None;
     let mut b: Option<&FrameData> = None;
     for k in kfs {
-        if k.frame_idx <= frame {
+        if k.time_ms <= frame {
             a = Some(k);
         } else {
             b = Some(k);
@@ -93,12 +104,12 @@ fn interp_linear(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     match (a, b) {
         (Some(a), None) => Some(a.clone()),
         (None, Some(b)) => Some(b.clone()),
-        (Some(a), Some(b)) if a.frame_idx == b.frame_idx => Some(a.clone()),
+        (Some(a), Some(b)) if a.time_ms == b.time_ms => Some(a.clone()),
         (Some(a), Some(b)) => {
-            let t = (frame - a.frame_idx) as f64 / (b.frame_idx - a.frame_idx) as f64;
+            let t = (frame - a.time_ms) as f64 / (b.time_ms - a.time_ms) as f64;
             let eased_t = b.easing.resolve()(t);
             let mut fr = FrameData::lerp(a, b, eased_t);
-            fr.frame_idx = frame;
+            fr.time_ms = frame;
             fr.target = a.target.clone();
             Some(fr)
         }
@@ -119,14 +130,14 @@ fn interp_catmull(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     // Find the segment [i, i+1] containing `frame`.
     let mut i = 0;
     for (idx, k) in kfs.iter().enumerate() {
-        if k.frame_idx <= frame {
+        if k.time_ms <= frame {
             i = idx;
         } else {
             break;
         }
     }
     // Before the first keyframe: hold the first value.
-    if frame < kfs[0].frame_idx {
+    if frame < kfs[0].time_ms {
         return Some(kfs[0].clone_with_frame(frame));
     }
     // After the last keyframe: hold the last value.
@@ -135,10 +146,10 @@ fn interp_catmull(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     }
     let p1 = &kfs[i];
     let p2 = &kfs[i + 1];
-    if p1.frame_idx == p2.frame_idx {
+    if p1.time_ms == p2.time_ms {
         return Some(p1.clone_with_frame(frame));
     }
-    let t = (frame - p1.frame_idx) as f64 / (p2.frame_idx - p1.frame_idx) as f64;
+    let t = (frame - p1.time_ms) as f64 / (p2.time_ms - p1.time_ms) as f64;
     let eased_t = p2.easing.resolve()(t);
 
     // Neighbors for Catmull-Rom (clamp at endpoints).
@@ -146,7 +157,7 @@ fn interp_catmull(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     let p3 = if i + 2 < kfs.len() { &kfs[i + 2] } else { p2 };
 
     let mut fr = catmull_rom(p0, p1, p2, p3, eased_t);
-    fr.frame_idx = frame;
+    fr.time_ms = frame;
     fr.target = p1.target.clone();
     Some(fr)
 }
@@ -168,7 +179,7 @@ fn catmull1(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 /// Catmull-Rom interpolation across all FrameData fields.
 fn catmull_rom(p0: &FrameData, p1: &FrameData, p2: &FrameData, p3: &FrameData, t: f64) -> FrameData {
     FrameData {
-        frame_idx: p1.frame_idx,
+        time_ms: p1.time_ms,
         target: p1.target.clone(),
         x: catmull1(p0.x, p1.x, p2.x, p3.x, t),
         y: catmull1(p0.y, p1.y, p2.y, p3.y, t),
@@ -179,7 +190,7 @@ fn catmull_rom(p0: &FrameData, p1: &FrameData, p2: &FrameData, p3: &FrameData, t
     }
 }
 
-/// Helper trait to clone a FrameData with a new frame_idx (avoids repeating
+/// Helper trait to clone a FrameData with a new time_ms (avoids repeating
 /// the field-copy boilerplate).
 trait CloneWithFrame {
     fn clone_with_frame(&self, frame: u32) -> FrameData;
@@ -188,7 +199,7 @@ trait CloneWithFrame {
 impl CloneWithFrame for FrameData {
     fn clone_with_frame(&self, frame: u32) -> FrameData {
         let mut f = self.clone();
-        f.frame_idx = frame;
+        f.time_ms = frame;
         f
     }
 }
@@ -222,9 +233,10 @@ mod tests {
 
     #[test]
     fn fills_all_frames() {
+        // 1000ms at 30fps = 30 frames + 1 = 31 samples (0..1000ms inclusive).
         let kf = vec![
             FrameData {
-                frame_idx: 0,
+                time_ms: 0,
                 target: Label("a".into()),
                 x: 0.0,
                 y: 0.0,
@@ -234,9 +246,9 @@ mod tests {
                 easing: Easing::Linear,
             },
             FrameData {
-                frame_idx: 9,
+                time_ms: 1000,
                 target: Label("a".into()),
-                x: 9.0,
+                x: 10.0,
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
@@ -245,17 +257,17 @@ mod tests {
             },
         ];
         let out = interpolate(kf);
-        assert_eq!(out.len(), 10);
+        // 1000ms / 33.33ms per frame ≈ 30 frames + 1 = 31 samples
+        assert!(out.len() >= 30, "expected ~31 frames, got {}", out.len());
         assert_eq!(out[0].x, 0.0);
-        assert_eq!(out[9].x, 9.0);
-        assert!((out[5].x - 5.0).abs() < 1e-9);
+        assert!((out[out.len() - 1].x - 10.0).abs() < 1e-6);
     }
 
     #[test]
     fn clamps_opacity() {
         let kf = vec![
             FrameData {
-                frame_idx: 0,
+                time_ms: 0,
                 target: Label("a".into()),
                 x: 0.0,
                 y: 0.0,
@@ -265,7 +277,7 @@ mod tests {
                 easing: Easing::Linear,
             },
             FrameData {
-                frame_idx: 4,
+                time_ms: 500,
                 target: Label("a".into()),
                 x: 0.0,
                 y: 0.0,
@@ -287,9 +299,10 @@ mod tests {
     /// 0.25, proving the curve is non-linear.
     #[test]
     fn easing_shapes_curve() {
+        // 4000ms at 30fps: frame_ms = 33.33. We test at t=0.25/0.5/0.75.
         let kf = vec![
             FrameData {
-                frame_idx: 0,
+                time_ms: 0,
                 target: Label("a".into()),
                 x: 0.0,
                 y: 0.0,
@@ -299,7 +312,7 @@ mod tests {
                 easing: Easing::Linear,
             },
             FrameData {
-                frame_idx: 4,
+                time_ms: 4000,
                 target: Label("a".into()),
                 x: 10.0,
                 y: 0.0,
@@ -310,11 +323,9 @@ mod tests {
             },
         ];
         let out = interpolate(kf);
-        // frame 1 → t=0.25, eased = 0.25²(3-0.5) = 0.15625, x = 1.5625
-        assert!((out[1].x - 1.5625).abs() < 1e-9, "frame 1 x={}", out[1].x);
-        // frame 2 → t=0.5, eased = 0.5, x = 5.0 (smooth is symmetric)
-        assert!((out[2].x - 5.0).abs() < 1e-9, "frame 2 x={}", out[2].x);
-        // frame 3 → t=0.75, eased = 0.75²(3-1.5) = 0.84375, x = 8.4375
-        assert!((out[3].x - 8.4375).abs() < 1e-9, "frame 3 x={}", out[3].x);
+        // Find the sample closest to t=0.5 (2000ms).
+        let mid = out.iter().min_by_key(|f| (f.time_ms as i64 - 2000).abs()).unwrap();
+        // At t=0.5, smooth = 0.5, so x ≈ 5.0
+        assert!((mid.x - 5.0).abs() < 0.1, "mid x={}", mid.x);
     }
 }

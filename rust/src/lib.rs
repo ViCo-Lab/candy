@@ -163,18 +163,22 @@ pub fn build_input_with_gpu(
     let scene: Scene = input.parse()?; // Steps 1–2
     let project_root = input.project_root();
     let keyframes = scheduler::schedule(&scene)?; // Step 3
-    let frames = interpolator::interpolate(keyframes); // Step 4
+    let frames = interpolator::interpolate_with(keyframes, interpolator::InterpMethod::Linear, fps); // Step 4
     let mut renderer = Renderer::with_root(scene.clone(), project_root)?;
 
-    let total = frames.iter().map(|f| f.frame_idx).max().unwrap_or(0);
+    // Collect the unique sample times (one per video frame), sorted.
+    let mut sample_times: Vec<u32> = frames.iter().map(|f| f.time_ms).collect();
+    sample_times.sort();
+    sample_times.dedup();
+    let n_frames = sample_times.len();
 
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
         std::fs::create_dir_all(intermediate_dir)?;
-        for f in 0..=total {
-            let svg = renderer.render_frame_at(f, &frames)?; // Step 5
+        for (i, &t_ms) in sample_times.iter().enumerate() {
+            let svg = renderer.render_frame_at(t_ms, &frames)?; // Step 5
             std::fs::write(
-                intermediate_dir.join(format!("frame_{:05}.svg", f)),
+                intermediate_dir.join(format!("frame_{:05}.svg", i)),
                 svg,
             )?;
         }
@@ -225,22 +229,22 @@ pub fn build_input_with_gpu(
         // GPU path is serial (single device); CPU path is parallel (rayon).
         #[cfg(feature = "gpu")]
         if let Some(g) = gpu_renderer.as_mut() {
-            let mut out = Vec::with_capacity((total + 1) as usize);
-            for f in 0..=total {
-                out.push(renderer.render_frame_pixels_gpu(f, &frames, pixel_per_pt, g)?);
+            let mut out = Vec::with_capacity(n_frames);
+            for &t_ms in &sample_times {
+                out.push(renderer.render_frame_pixels_gpu(t_ms, &frames, pixel_per_pt, g)?);
             }
             out
         } else {
-            (0..=total)
-                .into_par_iter()
-                .map(|f| renderer.render_frame_pixels_par(f, &frames, pixel_per_pt))
+            sample_times
+                .par_iter()
+                .map(|&t_ms| renderer.render_frame_pixels_par(t_ms, &frames, pixel_per_pt))
                 .collect::<Result<_, _>>()?
         }
         #[cfg(not(feature = "gpu"))]
         {
-            (0..=total)
-                .into_par_iter()
-                .map(|f| renderer.render_frame_pixels_par(f, &frames, pixel_per_pt))
+            sample_times
+                .par_iter()
+                .map(|&t_ms| renderer.render_frame_pixels_par(t_ms, &frames, pixel_per_pt))
                 .collect::<Result<_, _>>()?
         }
     };
@@ -270,10 +274,10 @@ pub fn build_input_with_gpu(
                     "warn: [{}] ffmpeg encode failed, wrote SVG draft to .candy: {e}",
                     e.code()
                 );
-                for f in 0..=total {
-                    let svg = renderer.render_frame_at(f, &frames)?;
+                for (i, &t_ms) in sample_times.iter().enumerate() {
+                    let svg = renderer.render_frame_at(t_ms, &frames)?;
                     std::fs::write(
-                        intermediate_dir.join(format!("frame_{:05}.svg", f)),
+                        intermediate_dir.join(format!("frame_{:05}.svg", i)),
                         svg,
                     )?;
                 }
@@ -289,10 +293,10 @@ pub fn build_input_with_gpu(
                     "warn: [{}] video encode failed, wrote SVG draft to .candy: {e}",
                     e.code()
                 );
-                for f in 0..=total {
-                    let svg = renderer.render_frame_at(f, &frames)?;
+                for (i, &t_ms) in sample_times.iter().enumerate() {
+                    let svg = renderer.render_frame_at(t_ms, &frames)?;
                     std::fs::write(
-                        intermediate_dir.join(format!("frame_{:05}.svg", f)),
+                        intermediate_dir.join(format!("frame_{:05}.svg", i)),
                         svg,
                     )?;
                 }

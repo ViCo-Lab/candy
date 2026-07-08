@@ -1,0 +1,7 @@
+#import "../typst/src/lib.typ": *
+
+#set page(width: 20cm, height: 10cm, margin: 0pt, fill: white)
+
+#mobject("dot", circle(radius: 1cm, fill: blue))
+
+#animate("dot", to: (8cm, 5cm), duration: 1000, easing: "smooth")

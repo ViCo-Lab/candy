@@ -1,10 +1,8 @@
 #import "../typst/src/lib.typ": *
 
-// Candy example: a green square rotates 90° clockwise while fading to 30%
-// opacity, then rotates back (there-and-back) to its original orientation.
-// Demonstrates the Rotate action, the FadeTo action (arbitrary opacity, not
-// just 0/1), and the there-and-back easing curve.
+// Candy example: a green square rotates 90° while fading to 30% opacity,
+// then rotates back with there-and-back easing.
 #mobject("sq", rect(width: 2cm, height: 2cm, fill: green))
 
-#animate("sq", rotate: 90, opacity: 0.3, duration: 24, easing: "cubic-in-out")
-#animate("sq", rotate: 0, opacity: 1.0, duration: 24, easing: "there-and-back")
+#animate("sq", rotate: 90, opacity: 0.3, duration: 800, easing: "cubic-in-out")
+#animate("sq", rotate: 0, opacity: 1.0, duration: 800, easing: "there-and-back")

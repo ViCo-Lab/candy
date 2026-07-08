@@ -197,15 +197,13 @@ impl Renderer {
         if self.natural_computed {
             return Ok(());
         }
-        // Use a fixed, presentation-friendly page size (16:9, 16cm × 9cm = a
-        // standard slide). This ensures every frame has a consistent, visible
-        // canvas instead of the tiny auto-sized page (which produced
-        // ~14px-tall videos). Objects are laid out in document flow and their
-        // natural positions are read back from the SVG.
-        //
-        // 16cm = 453.54pt, 9cm = 255.12pt (1cm = 28.3465pt).
-        let page_w_cm = 16.0;
-        let page_h_cm = 9.0;
+        // Use the page size from the .tyx source if set (`#set page(width:..,
+        // height:..)`), otherwise default to 16:9 (16cm × 9cm).
+        let (page_w_cm, page_h_cm) = self
+            .scene
+            .page_size
+            .map(|(w, h)| (w / PT_PER_CM, h / PT_PER_CM))
+            .unwrap_or((16.0, 9.0));
         self.page_w = page_w_cm * PT_PER_CM;
         self.page_h = page_h_cm * PT_PER_CM;
 
@@ -239,10 +237,10 @@ impl Renderer {
     }
 
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
-    fn initial_for(&self, label: Label, frame_idx: u32) -> FrameData {
+    fn initial_for(&self, label: Label, time_ms: u32) -> FrameData {
         match self.scene.initial.get(&label) {
             Some(f) => FrameData {
-                frame_idx,
+                time_ms,
                 target: label,
                 x: f.x,
                 y: f.y,
@@ -251,7 +249,7 @@ impl Renderer {
                 rotation: f.rotation,
                 easing: f.easing,
             },
-            None => FrameData::new(frame_idx, label),
+            None => FrameData::new(time_ms, label),
         }
     }
 
@@ -291,12 +289,12 @@ impl Renderer {
     /// Composite all mobjects (per-object opacity) onto an opaque-white canvas.
     pub fn render_frame_pixels(
         &mut self,
-        frame_idx: u32,
+        time_ms: u32,
         all_frames: &[FrameData],
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         self.ensure_natural()?;
-        self.render_frame_pixels_par(frame_idx, all_frames, pixel_per_pt)
+        self.render_frame_pixels_par(time_ms, all_frames, pixel_per_pt)
     }
 
     /// Parallel-safe variant of [`render_frame_pixels`](Self::render_frame_pixels).
@@ -307,20 +305,20 @@ impl Renderer {
     /// `page_h`). The [`Renderer::ensure_natural_public`] method exposes this.
     pub fn render_frame_pixels_par(
         &self,
-        frame_idx: u32,
+        time_ms: u32,
         all_frames: &[FrameData],
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         let mut states: HashMap<Label, FrameData> = HashMap::new();
         for f in all_frames {
-            if f.frame_idx == frame_idx {
+            if f.time_ms == time_ms {
                 states.insert(f.target.clone(), f.clone());
             }
         }
         for label in self.scene.items.keys() {
             states
                 .entry(label.clone())
-                .or_insert_with(|| self.initial_for(label.clone(), frame_idx));
+                .or_insert_with(|| self.initial_for(label.clone(), time_ms));
         }
 
         let mut labels: Vec<&Label> = states.keys().collect();
@@ -370,13 +368,13 @@ impl Renderer {
     #[cfg(feature = "gpu")]
     pub fn render_frame_pixels_gpu(
         &mut self,
-        frame_idx: u32,
+        time_ms: u32,
         all_frames: &[FrameData],
         pixel_per_pt: f32,
         gpu: &mut crate::renderer::gpu::GpuRenderer,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         // 1. Produce the composite SVG for this frame (with opacity baked in).
-        let svg_bytes = self.render_frame_at(frame_idx, all_frames)?;
+        let svg_bytes = self.render_frame_at(time_ms, all_frames)?;
         let svg_str = std::str::from_utf8(&svg_bytes)
             .map_err(|e| CandyError::Typst(format!("svg utf8: {e}")))?;
 
@@ -395,18 +393,18 @@ impl Renderer {
     /// `<svg opacity="...">` elements. This closes the gap with the video path
     /// (which always applied opacity via `composite_over`) — the SVG draft and
     /// the encoded video now agree visually.
-    pub fn render_frame_at(&mut self, frame_idx: u32, all_frames: &[FrameData]) -> Result<Vec<u8>, CandyError> {
+    pub fn render_frame_at(&mut self, time_ms: u32, all_frames: &[FrameData]) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
         let mut states: HashMap<Label, FrameData> = HashMap::new();
         for f in all_frames {
-            if f.frame_idx == frame_idx {
+            if f.time_ms == time_ms {
                 states.insert(f.target.clone(), f.clone());
             }
         }
         for label in self.scene.items.keys() {
             states
                 .entry(label.clone())
-                .or_insert_with(|| self.initial_for(label.clone(), frame_idx));
+                .or_insert_with(|| self.initial_for(label.clone(), time_ms));
         }
 
         // Deterministic z-order (same as the video path).

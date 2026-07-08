@@ -107,8 +107,8 @@ fn build_moov(
             let mut p = vec![];
             p.extend_from_slice(&0u32.to_be_bytes());
             p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&1u32.to_be_bytes()); // timescale 1000
-            p.extend_from_slice(&(total_ms as u32).to_be_bytes());
+            p.extend_from_slice(&1000u32.to_be_bytes()); // timescale 1000 (ms)
+            p.extend_from_slice(&(total_ms as u32).to_be_bytes()); // duration in ms
             p.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate
             p.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
             p.extend_from_slice(&[0u8; 10]);

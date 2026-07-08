@@ -30,15 +30,15 @@ impl Default for State {
 
 /// Generate keyframe `FrameData` from the `Scene` AST.
 ///
-/// Precondition: every `slide.duration_frames ≥ 1` (enforced by
+/// Precondition: every `slide.duration_ms ≥ 1` (enforced by
 /// `Scene::validate`).
 /// Postcondition: returns `Vec<FrameData>`; for every `Action::MoveTo` the
-/// `frame_idx` increments monotonically within a single target's keyframe list
+/// `time_ms` increments monotonically within a single target's keyframe list
 /// (validated below). Every animatable item also gets a frame-0 default
 /// keyframe (seeded from `scene.initial`) and a final keyframe at the last
 /// frame.
 ///
-/// Errors: returns `CandyError::Parse` (E002) if a non-monotonic `frame_idx`
+/// Errors: returns `CandyError::Parse` (E002) if a non-monotonic `time_ms`
 /// is detected for a target — previously this panicked, violating spec §6
 /// ("production code must not panic").
 pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
@@ -75,7 +75,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
     let mut ptr: u32 = 0;
     for slide in &scene.slides {
         let start = ptr;
-        let end = ptr + slide.duration_frames.saturating_sub(1);
+        let end = ptr + slide.duration_ms;
 
         for action in &slide.actions {
             let t = action.target().clone();
@@ -94,7 +94,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     state.insert(t.clone(), ns);
                     // Single keyframe at slide start with full opacity.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: ns.x,
                         y: ns.y,
@@ -109,7 +109,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     let ns = State { opacity: 0.0, ..s };
                     state.insert(t.clone(), ns);
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: ns.x,
                         y: ns.y,
@@ -131,13 +131,13 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 Action::Indicate { factor, dx, dy, .. } => {
                     // Start keyframe = current state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
                     });
                     // Mid keyframe (halfway) = scaled + shifted.
-                    let mid = ptr + slide.duration_frames / 2;
+                    let mid = ptr + slide.duration_ms / 2;
                     let peak = State {
                         scale: s.scale * factor,
                         x: s.x + dx,
@@ -145,14 +145,14 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         ..s
                     };
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: mid,
+                        time_ms: mid,
                         target: t.clone(),
                         x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
                         easing: Easing::ThereAndBack,
                     });
                     // End keyframe = back to original (state unchanged).
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: end,
+                        time_ms: end,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
@@ -163,26 +163,26 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 Action::Flash { factor, .. } => {
                     // Start = current, mid = scaled up + fading, end = invisible.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
                     });
-                    let mid = ptr + slide.duration_frames / 2;
+                    let mid = ptr + slide.duration_ms / 2;
                     let peak = State {
                         scale: s.scale * factor,
                         opacity: s.opacity * 0.5,
                         ..s
                     };
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: mid,
+                        time_ms: mid,
                         target: t.clone(),
                         x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
                         easing: Easing::ThereAndBack,
                     });
                     // End: restored to original (Flash is a transient effect).
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: end,
+                        time_ms: end,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
@@ -194,21 +194,21 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     // return to 0 at end. The interpolator's Wiggle easing
                     // handles the oscillation shape.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing: Easing::Wiggle,
                     });
-                    let mid = ptr + slide.duration_frames / 2;
+                    let mid = ptr + slide.duration_ms / 2;
                     let peak = State { rotation: s.rotation + degrees, ..s };
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: mid,
+                        time_ms: mid,
                         target: t.clone(),
                         x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
                         easing: Easing::Wiggle,
                     });
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: end,
+                        time_ms: end,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing: Easing::Wiggle,
@@ -220,13 +220,13 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 Action::Restore { slot, .. } => {
                     let saved_state = saved.get(&(t.clone(), slot.clone())).copied().unwrap_or(s);
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
                     });
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: end,
+                        time_ms: end,
                         target: t.clone(),
                         x: saved_state.x, y: saved_state.y, scale: saved_state.scale, opacity: saved_state.opacity, rotation: saved_state.rotation,
                         easing,
@@ -241,10 +241,10 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         continue;
                     }
                     let n = points.len() as u32;
-                    let seg = slide.duration_frames / n.max(1);
+                    let seg = slide.duration_ms / n.max(1);
                     // Start keyframe = current state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
@@ -254,7 +254,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         let kf_frame = start + (i as u32 + 1) * seg;
                         let kf_frame = kf_frame.min(end);
                         per_item.entry(t.clone()).or_default().push(FrameData {
-                            frame_idx: kf_frame,
+                            time_ms: kf_frame,
                             target: t.clone(),
                             x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                             easing,
@@ -270,7 +270,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 _ => {
                     // Keyframe at the slide start = current state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: start,
+                        time_ms: start,
                         target: t.clone(),
                         x: s.x,
                         y: s.y,
@@ -287,7 +287,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     // easing so the interpolator knows how to shape the curve from
                     // `start` to `end`.
                     per_item.entry(t.clone()).or_default().push(FrameData {
-                        frame_idx: end,
+                        time_ms: end,
                         target: t.clone(),
                         x: s.x,
                         y: s.y,
@@ -300,14 +300,14 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             }
         }
 
-        ptr = end + 1;
+        ptr = end;
     }
 
     // Ensure every item has a keyframe at the final frame.
     let last = ptr.saturating_sub(1);
     for (l, st) in &state {
         per_item.entry(l.clone()).or_default().push(FrameData {
-            frame_idx: last,
+            time_ms: last,
             target: l.clone(),
             x: st.x,
             y: st.y,
@@ -319,9 +319,9 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
     }
 
     let mut all: Vec<FrameData> = per_item.into_values().flatten().collect();
-    all.sort_by(|a, b| a.frame_idx.cmp(&b.frame_idx).then(a.target.0.cmp(&b.target.0)));
+    all.sort_by(|a, b| a.time_ms.cmp(&b.time_ms).then(a.target.0.cmp(&b.target.0)));
 
-    // Mandatory validation: monotonic frame_idx per target. Returns E002
+    // Mandatory validation: monotonic time_ms per target. Returns E002
     // (Parse) instead of panicking, honoring spec §6.
     validate_monotonic(&all)?;
     Ok(all)
@@ -386,20 +386,20 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
     state.insert(t.clone(), ns);
 }
 
-/// Validation helper: within each target's keyframe list, `frame_idx` must be
+/// Validation helper: within each target's keyframe list, `time_ms` must be
 /// non-decreasing. Returns `CandyError::Parse` (E002) on violation.
 fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
     let mut last: Option<(Label, u32)> = None;
     for f in frames {
         if let Some((ref lbl, idx)) = last {
-            if lbl == &f.target && f.frame_idx < idx {
+            if lbl == &f.target && f.time_ms < idx {
                 return Err(CandyError::Parse(format!(
-                    "scheduler: non-monotonic frame_idx for @{} ({} < {})",
-                    f.target.0, f.frame_idx, idx
+                    "scheduler: non-monotonic time_ms for @{} ({} < {})",
+                    f.target.0, f.time_ms, idx
                 )));
             }
         }
-        last = Some((f.target.clone(), f.frame_idx));
+        last = Some((f.target.clone(), f.time_ms));
     }
     Ok(())
 }
@@ -415,7 +415,7 @@ mod tests {
         Scene {
             slides: vec![
                 Slide {
-                    duration_frames: 10,
+                    duration_ms: 10000,
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
                         to: (3.0, 0.0),
@@ -423,7 +423,7 @@ mod tests {
                     }],
                 },
                 Slide {
-                    duration_frames: 5,
+                    duration_ms: 5000,
                     actions: vec![Action::FadeOut {
                         target: Label("a".into()),
                         easing: Easing::Smooth,
@@ -437,6 +437,7 @@ mod tests {
             },
             initial: std::collections::HashMap::new(),
             audio: Vec::new(),
+            page_size: None,
             private_metadata: PrivateMeta::default(),
         }
     }
@@ -444,9 +445,9 @@ mod tests {
     #[test]
     fn keyframes_cover_bounds() {
         let kf = schedule(&scene()).unwrap();
-        // first keyframe at frame 0, last at frame 14 (10 + 5 - 1)
-        assert_eq!(kf.iter().map(|f| f.frame_idx).min(), Some(0));
-        assert_eq!(kf.iter().map(|f| f.frame_idx).max(), Some(14));
+        // first keyframe at frame 0, last at 15000ms (10000+5000)
+        assert_eq!(kf.iter().map(|f| f.time_ms).min(), Some(0));
+        assert_eq!(kf.iter().map(|f| f.time_ms).max(), Some(15000));
         // frame 0 default + start/end for slide0 + start/end for slide1 + final
         assert!(kf.len() >= 5);
     }
@@ -456,9 +457,9 @@ mod tests {
     #[test]
     fn easing_propagates_to_keyframes() {
         let kf = schedule(&scene()).unwrap();
-        // slide 1 (FadeOut, Smooth) keyframes: find the end keyframe at frame 14.
-        let end = kf.iter().find(|f| f.target.0 == "a" && f.frame_idx == 14);
-        let end = end.expect("end keyframe at frame 14 must exist");
+        // slide 1 (FadeOut, Smooth) keyframes: find the end keyframe at 15000ms.
+        let end = kf.iter().find(|f| f.target.0 == "a" && f.time_ms == 15000);
+        let end = end.expect("end keyframe at 15000ms must exist");
         assert_eq!(end.easing, Easing::Smooth);
     }
 
@@ -467,8 +468,8 @@ mod tests {
     #[test]
     fn non_monotonic_returns_err_not_panic() {
         let frames = vec![
-            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
-            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
+            FrameData { time_ms: 5000, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
+            FrameData { time_ms: 3000, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
         ];
         let err = validate_monotonic(&frames).unwrap_err();
         assert_eq!(err.code(), "E002");

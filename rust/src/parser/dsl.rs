@@ -55,7 +55,7 @@ mod tests {
     fn round_trips_through_json() {
         let scene = Scene {
             slides: vec![Slide {
-                duration_frames: 12,
+                duration_ms: 12,
                 actions: vec![Action::MoveTo {
                     target: Label("x".into()),
                     to: (1.0, 2.0),
@@ -69,6 +69,7 @@ mod tests {
             },
             initial: HashMap::new(),
             audio: Vec::new(),
+            page_size: None,
             private_metadata: PrivateMeta::default(),
         };
         let json = serde_json::to_string(&scene).unwrap();
@@ -78,7 +79,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("candy_test_dsl.svg");
         std::fs::write(&tmp, svg).unwrap();
         let back = extract_dsl_from_svg(&tmp).unwrap();
-        assert_eq!(back.slides[0].duration_frames, 12);
+        assert_eq!(back.slides[0].duration_ms, 12);
         assert_eq!(back.private_metadata.version_codename, "Orange Candy");
         // Easing survives the JSON round-trip.
         if let Action::MoveTo { easing, .. } = &back.slides[0].actions[0] {
@@ -98,7 +99,7 @@ mod tests {
         // Construct JSON by hand to simulate a v0.1 Scene. We strip the
         // `easing` field from the action and from FrameData.
         let json = r#"{
-            "slides": [{"duration_frames": 5, "actions": [
+            "slides": [{"duration_ms": 5, "actions": [
                 {"MoveTo": {"target": "x", "to": [1.0, 2.0], "easing": "linear"}}
             ]}],
             "items": {"x": "circle()"},

@@ -197,8 +197,14 @@ impl Action {
 /// One slide (a "shot") of the animation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Slide {
-    /// Number of frames this slide lasts. Must be ≥ 1.
-    pub duration_frames: u32,
+    /// Duration of this slide in **milliseconds**. Must be ≥ 1.
+    ///
+    /// Internally candy works in milliseconds everywhere; the `--fps` CLI
+    /// flag only affects the final video timebase (how many frames per
+    /// second are rasterized and encoded). A 1000ms slide at 30fps produces
+    /// 30 frames; at 60fps it produces 60 frames — the wall-clock duration
+    /// is the same.
+    pub duration_ms: u32,
     /// Actions applied across this slide's duration.
     pub actions: Vec<Action>,
 }
@@ -209,7 +215,7 @@ pub struct AudioTrack {
     /// Path to the audio file (`.opus`/`.ogg` for WebM/MKV, `.aac` for MP4).
     pub path: String,
     /// Frame index at which the clip starts playing.
-    pub start_frame: u32,
+    pub start_ms: u32,
     /// If `true`, the timeline blocks until the clip finishes.
     pub blocking: bool,
     /// If `true`, the clip loops until the next audio/end.
@@ -238,54 +244,54 @@ pub struct Scene {
     /// Audio tracks attached via `candy.audio`.
     #[serde(default)]
     pub audio: Vec<AudioTrack>,
+    /// Page size in Typst points, if the `.tyx` source sets a page size via
+    /// `#set page(width:.., height:..)` or `#scene(width:.., height:..)`.
+    /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide).
+    #[serde(default)]
+    pub page_size: Option<(f64, f64)>,
     pub private_metadata: PrivateMeta,
 }
 
 impl Scene {
-    /// Mandatory pipeline assertion: every `duration_frames ≥ 1`.
-    ///
-    /// NOTE: an empty `slides` list is now allowed — it produces a single static
-    /// first-frame (e.g. a `.tyx` that only declares `mobject`s with no
-    /// `animate`). Such a file is still valid standard Typst.
+    /// Mandatory pipeline assertion: every `duration_ms ≥ 1`.
     pub fn validate(&self) -> Result<(), String> {
         for (i, s) in self.slides.iter().enumerate() {
-            if s.duration_frames < 1 {
-                return Err(format!("slide {i}: duration_frames must be >= 1"));
+            if s.duration_ms < 1 {
+                return Err(format!("slide {i}: duration_ms must be >= 1"));
             }
         }
         Ok(())
     }
 
-    /// Total frame count across all slides (0 when there are no slides).
-    pub fn total_frames(&self) -> u32 {
-        self.slides.iter().map(|s| s.duration_frames).sum()
+    /// Total duration in milliseconds across all slides.
+    pub fn total_ms(&self) -> u32 {
+        self.slides.iter().map(|s| s.duration_ms).sum()
     }
 }
 
 /// Per-frame rendering parameters passed to the renderer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameData {
-    pub frame_idx: u32,
+    /// Time offset in **milliseconds** from the start of the animation.
+    pub time_ms: u32,
     pub target: Label,
     pub x: f64, // cm
     pub y: f64, // cm
     pub scale: f64, // Default 1.0
     pub opacity: f64, // 0.0–1.0
     /// Clockwise rotation in degrees around the object's origin.
-    /// Default 0.0.
     #[serde(default)]
     pub rotation: f64,
     /// Easing curve used to interpolate *from the previous keyframe* to this
-    /// one. Defaults to [`Easing::Linear`]. The frame-0 keyframe's easing is
-    /// unused (there is no previous keyframe).
+    /// one. Defaults to [`Easing::Linear`].
     #[serde(default)]
     pub easing: Easing,
 }
 
 impl FrameData {
-    pub fn new(frame_idx: u32, target: Label) -> Self {
+    pub fn new(time_ms: u32, target: Label) -> Self {
         Self {
-            frame_idx,
+            time_ms,
             target,
             x: 0.0,
             y: 0.0,
@@ -297,14 +303,10 @@ impl FrameData {
     }
 
     /// Linear interpolation between two keyframes (clamps `t` to [0, 1]).
-    ///
-    /// Note: the easing of the *target* keyframe `b` is what determines the
-    /// curve. Apply `b.easing.resolve()(t)` to `t` before calling this if you
-    /// want eased interpolation.
     pub fn lerp(a: &FrameData, b: &FrameData, t: f64) -> FrameData {
         let t = t.clamp(0.0, 1.0);
         FrameData {
-            frame_idx: a.frame_idx,
+            time_ms: a.time_ms,
             target: a.target.clone(),
             x: lerp(a.x, b.x, t),
             y: lerp(a.y, b.y, t),
@@ -329,7 +331,7 @@ mod tests {
         Scene {
             slides: vec![
                 Slide {
-                    duration_frames: 10,
+                    duration_ms: 10000,
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
                         to: (3.0, 0.0),
@@ -337,7 +339,7 @@ mod tests {
                     }],
                 },
                 Slide {
-                    duration_frames: 5,
+                    duration_ms: 5000,
                     actions: vec![Action::Scale {
                         target: Label("a".into()),
                         to: 2.0,
@@ -352,6 +354,7 @@ mod tests {
             },
             initial: HashMap::new(),
             audio: Vec::new(),
+            page_size: None,
             private_metadata: PrivateMeta::default(),
         }
     }
@@ -367,12 +370,12 @@ mod tests {
     fn scene_validates() {
         assert!(scene_two_slides().validate().is_ok());
         let mut s = scene_two_slides();
-        s.slides[0].duration_frames = 0;
+        s.slides[0].duration_ms = 0;
         assert!(s.validate().is_err());
     }
 
     #[test]
-    fn total_frames_sums() {
-        assert_eq!(scene_two_slides().total_frames(), 15);
+    fn total_ms_sums() {
+        assert_eq!(scene_two_slides().total_ms(), 15000);
     }
 }
