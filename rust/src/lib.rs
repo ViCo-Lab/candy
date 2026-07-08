@@ -72,7 +72,7 @@ pub fn build(
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
     let scene: Scene = parse_tyx(input)?; // Steps 1–2
-    let keyframes = scheduler::schedule(&scene); // Step 3
+    let keyframes = scheduler::schedule(&scene)?; // Step 3
     let frames = interpolator::interpolate(keyframes); // Step 4
     let mut renderer = Renderer::new(scene.clone())?;
 

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::core::ast::{Action, FrameData, Label, Scene};
+use crate::core::error::CandyError;
 
 /// Per-target animation state. Internal to the scheduler.
 #[derive(Debug, Clone, Copy)]
@@ -30,10 +31,14 @@ impl Default for State {
 /// `Scene::validate`).
 /// Postcondition: returns `Vec<FrameData>`; for every `Action::MoveTo` the
 /// `frame_idx` increments monotonically within a single target's keyframe list
-/// (asserted below). Every animatable item also gets a frame-0 default
+/// (validated below). Every animatable item also gets a frame-0 default
 /// keyframe (seeded from `scene.initial`) and a final keyframe at the last
 /// frame.
-pub fn schedule(scene: &Scene) -> Vec<FrameData> {
+///
+/// Errors: returns `CandyError::Parse` (E002) if a non-monotonic `frame_idx`
+/// is detected for a target — previously this panicked, violating spec §6
+/// ("production code must not panic").
+pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
     // Seed each item's starting state from `scene.initial` (the `candy.mobject`
     // `at`/`scale`/`opacity`), falling back to the origin/scale-1 default.
     let mut state: HashMap<Label, State> = scene
@@ -111,9 +116,10 @@ pub fn schedule(scene: &Scene) -> Vec<FrameData> {
     let mut all: Vec<FrameData> = per_item.into_values().flatten().collect();
     all.sort_by(|a, b| a.frame_idx.cmp(&b.frame_idx).then(a.target.0.cmp(&b.target.0)));
 
-    // Mandatory assertion: monotonic frame_idx per target.
-    assert_monotonic(&all);
-    all
+    // Mandatory validation: monotonic frame_idx per target. Returns E002
+    // (Parse) instead of panicking, honoring spec §6.
+    validate_monotonic(&all)?;
+    Ok(all)
 }
 
 /// Apply a single action to a target's state.
@@ -138,21 +144,22 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
     state.insert(t.clone(), ns);
 }
 
-/// Assertion helper: within each target's keyframe list, `frame_idx` must be
-/// non-decreasing.
-fn assert_monotonic(frames: &[FrameData]) {
+/// Validation helper: within each target's keyframe list, `frame_idx` must be
+/// non-decreasing. Returns `CandyError::Parse` (E002) on violation.
+fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
     let mut last: Option<(Label, u32)> = None;
     for f in frames {
         if let Some((ref lbl, idx)) = last {
             if lbl == &f.target && f.frame_idx < idx {
-                panic!(
+                return Err(CandyError::Parse(format!(
                     "scheduler: non-monotonic frame_idx for @{} ({} < {})",
                     f.target.0, f.frame_idx, idx
-                );
+                )));
             }
         }
         last = Some((f.target.clone(), f.frame_idx));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -191,11 +198,27 @@ mod tests {
 
     #[test]
     fn keyframes_cover_bounds() {
-        let kf = schedule(&scene());
+        let kf = schedule(&scene()).unwrap();
         // first keyframe at frame 0, last at frame 14 (10 + 5 - 1)
         assert_eq!(kf.iter().map(|f| f.frame_idx).min(), Some(0));
         assert_eq!(kf.iter().map(|f| f.frame_idx).max(), Some(14));
         // frame 0 default + start/end for slide0 + start/end for slide1 + final
         assert!(kf.len() >= 5);
+    }
+
+    /// Regression: scheduler must NOT panic on non-monotonic input. Previously
+    /// `assert_monotonic` called `panic!`; now it returns `CandyError::Parse`.
+    #[test]
+    fn non_monotonic_returns_err_not_panic() {
+        // Hand-construct a scene whose keyframes would be non-monotonic.
+        // The scheduler's own logic produces monotonic output for valid input,
+        // so this test asserts the validator function itself returns Err.
+        let frames = vec![
+            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0 },
+            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0 },
+        ];
+        let err = validate_monotonic(&frames).unwrap_err();
+        assert_eq!(err.code(), "E002");
+        assert!(err.to_string().contains("non-monotonic"));
     }
 }
