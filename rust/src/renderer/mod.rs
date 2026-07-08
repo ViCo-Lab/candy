@@ -1,12 +1,16 @@
 //! `renderer` — turn `FrameData` into output (spec §4.4).
 //!
 //! * [`typst`] renders frames via the Typst compiler library in-process.
+//! * [`gpu`] (feature-gated `gpu`) rasterizes SVG frames on the GPU via
+//!   vello + wgpu. Falls back to [`typst`] when no GPU is available.
 //! * [`video`] encodes rasterized frames to AV1 (rav1e) / H.264 (openh264) and
 //!   muxes them into MP4 / Matroska (WebM/MKV) — all self-contained, no
 //!   FFmpeg, no `x264`/`x265` CLI, no system commands.
 
 pub mod audio;
 pub mod container;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod h264;
 pub mod rav1e;
 pub mod typst;

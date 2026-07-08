@@ -112,12 +112,33 @@ cargo run -- build scene.svg --from-svg --format mp4
 | `--codec` | `av1` | `av1` (preferred) / `h264` / `h265` (returns E007). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
+| `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |
 
 ### Artifacts
 
 - `.candy/<stem>/` — intermediates: `frames.rgba` (raw RGBA bundle),
   `frame_*.svg` (draft frames, also written on encode failure).
 - `dist/<stem>.<ext>` — final video (MP4 / MKV / WebM).
+
+### GPU rasterization (optional)
+
+Candy's default rasterizer is `typst-render` (CPU, pure Rust). For faster
+rasterization on systems with a GPU, candy can use [vello](https://crates.io/crates/vello)
+(GPU compute 2D renderer) + [wgpu](https://crates.io/crates/wgpu). This is
+opt-in because it pulls in heavy native GPU dependencies:
+
+```sh
+# Build with GPU support
+cargo build --features gpu
+
+# Use GPU rasterization (falls back to CPU if no GPU adapter is found)
+cargo run --features gpu -- build examples/box_anim.tyx --gpu
+```
+
+The GPU path produces frames in the same RGBA8 format as the CPU path, so the
+downstream video encoder (rav1e/openh264) consumes them unchanged. GPU
+rasterization is most beneficial at high resolutions (`-p 4` or above) where
+CPU rasterization becomes the bottleneck.
 
 > **Note on encoding fallback:** `rav1e` 0.8 can panic on certain frame
 > geometries; candy wraps the encoder in `catch_unwind` and falls back to

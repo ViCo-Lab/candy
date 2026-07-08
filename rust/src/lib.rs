@@ -138,6 +138,26 @@ pub fn build_input(
     fps: u32,
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
+    build_input_with_gpu(input, intermediate_dir, output, format, codec, fps, pixel_per_pt, false)
+}
+
+/// Like [`build_input`], but with an explicit `use_gpu` flag.
+///
+/// When `use_gpu` is true and the `gpu` cargo feature is enabled, candy
+/// rasterizes each frame on the GPU via vello + wgpu. If the `gpu` feature is
+/// not compiled in, `use_gpu` is silently ignored (CPU path is used). If the
+/// feature is enabled but no GPU adapter is available, candy falls back to
+/// the CPU path automatically and emits a warning.
+pub fn build_input_with_gpu(
+    input: Input,
+    intermediate_dir: &Path,
+    output: &Path,
+    format: OutputFormat,
+    codec: Codec,
+    fps: u32,
+    pixel_per_pt: f32,
+    use_gpu: bool,
+) -> Result<(), CandyError> {
     let scene: Scene = input.parse()?; // Steps 1–2
     let project_root = input.project_root();
     let keyframes = scheduler::schedule(&scene)?; // Step 3
@@ -166,9 +186,43 @@ pub fn build_input(
         OutputFormat::Svg => unreachable!(),
     };
 
-    // Step 5: rasterize every frame.
+    // Step 5: rasterize every frame. Try GPU first if requested.
+    #[cfg(feature = "gpu")]
+    let gpu_ok = use_gpu;
+    #[cfg(not(feature = "gpu"))]
+    let gpu_ok = false;
+    #[cfg(feature = "gpu")]
+    let mut gpu_renderer: Option<crate::renderer::gpu::GpuRenderer> = None;
+    #[cfg(feature = "gpu")]
+    if gpu_ok {
+        match crate::renderer::gpu::GpuRenderer::new() {
+            Ok(g) => {
+                eprintln!("info: GPU rasterization enabled (vello + wgpu)");
+                gpu_renderer = Some(g);
+            }
+            Err(e) => {
+                eprintln!("warn: GPU unavailable, falling back to CPU: {e}");
+            }
+        }
+    } else if use_gpu {
+        eprintln!("warn: --gpu requested but candy was built without the 'gpu' feature; using CPU");
+    }
+    #[cfg(not(feature = "gpu"))]
+    if use_gpu {
+        eprintln!("warn: --gpu requested but candy was built without the 'gpu' feature; using CPU");
+    }
+    // Suppress unused-variable warning when gpu feature is off.
+    #[allow(unused_variables)]
+    let gpu_ok_unused = gpu_ok;
+
     let probe: Vec<_> = (0..=total)
-        .map(|f| renderer.render_frame_pixels(f, &frames, pixel_per_pt))
+        .map(|f| {
+            #[cfg(feature = "gpu")]
+            if let Some(g) = gpu_renderer.as_mut() {
+                return renderer.render_frame_pixels_gpu(f, &frames, pixel_per_pt, g);
+            }
+            renderer.render_frame_pixels(f, &frames, pixel_per_pt)
+        })
         .collect::<Result<_, _>>()?;
 
     // Draft: persist the RGBA frames under `.candy/` for inspection.

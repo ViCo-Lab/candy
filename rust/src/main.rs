@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use candy::{build_input, Codec, CandyError, Input, OutputFormat};
+use candy::{build_input_with_gpu, Codec, CandyError, Input, OutputFormat};
 
 #[derive(Parser)]
 #[command(
@@ -55,6 +55,12 @@ enum Commands {
         /// Pixels per Typst point (video path; higher = sharper, slower).
         #[arg(short = 'p', long, default_value_t = 2.0)]
         pixel_per_pt: f32,
+        /// Use GPU rasterization (vello + wgpu) for the video path. Requires
+        /// candy to be built with `--features gpu`. If the feature is not
+        /// enabled or no GPU adapter is available, candy silently falls back
+        /// to CPU rasterization (typst-render). Has no effect on `--format svg`.
+        #[arg(long, default_value_t = false)]
+        gpu: bool,
     },
 }
 
@@ -94,6 +100,7 @@ fn main() -> Result<(), CandyError> {
             codec,
             fps,
             pixel_per_pt,
+            gpu,
         } => {
             let input = &input.0;
             let stem = input
@@ -115,14 +122,16 @@ fn main() -> Result<(), CandyError> {
                 CodecArg::H265 => Codec::H265,
             };
 
+            let input_kind = if from_svg {
+                Input::Svg(input.to_path_buf())
+            } else {
+                Input::from(input.as_path())
+            };
+
             if out_fmt == OutputFormat::Svg {
-                // SVG draft → `.candy/<stem>/`, never `dist/`.
-                let input_kind = if from_svg {
-                    Input::Svg(input.to_path_buf())
-                } else {
-                    Input::from(input.as_path())
-                };
-                build_input(
+                // SVG draft → `.candy/<stem>/`, never `dist/`. GPU flag is
+                // irrelevant for SVG drafts (no rasterization).
+                build_input_with_gpu(
                     input_kind,
                     &intermediate_dir,
                     &intermediate_dir.join("svg_draft"),
@@ -130,18 +139,14 @@ fn main() -> Result<(), CandyError> {
                     codec,
                     fps,
                     pixel_per_pt,
+                    false,
                 )?;
                 println!("draft: .candy/{stem}/frame_*.svg");
                 return Ok(());
             }
 
             let output = resolve_output(&output, &stem, container_ext);
-            let input_kind = if from_svg {
-                Input::Svg(input.to_path_buf())
-            } else {
-                Input::from(input.as_path())
-            };
-            build_input(
+            build_input_with_gpu(
                 input_kind,
                 &intermediate_dir,
                 &output,
@@ -149,6 +154,7 @@ fn main() -> Result<(), CandyError> {
                 codec,
                 fps,
                 pixel_per_pt,
+                gpu,
             )?;
             println!("wrote: {}", output.display());
         }

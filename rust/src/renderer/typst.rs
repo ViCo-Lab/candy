@@ -321,6 +321,39 @@ impl Renderer {
         })
     }
 
+    /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).
+    ///
+    /// Available only when the `gpu` cargo feature is enabled. Renders the
+    /// frame to SVG (same as `render_frame_at`, with per-object opacity
+    /// already applied via `<g opacity>` wrappers), then rasterizes the SVG on
+    /// the GPU via vello + wgpu. The result is identical to the CPU path
+    /// (modulo GPU rasterization differences like anti-aliasing quality), so
+    /// the downstream video encoder consumes it unchanged.
+    ///
+    /// Pass a reusable [`crate::renderer::gpu::GpuRenderer`] — constructing a
+    /// wgpu device is expensive, so it should be created once and reused
+    /// across every frame in the animation.
+    #[cfg(feature = "gpu")]
+    pub fn render_frame_pixels_gpu(
+        &mut self,
+        frame_idx: u32,
+        all_frames: &[FrameData],
+        pixel_per_pt: f32,
+        gpu: &mut crate::renderer::gpu::GpuRenderer,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+        // 1. Produce the composite SVG for this frame (with opacity baked in).
+        let svg_bytes = self.render_frame_at(frame_idx, all_frames)?;
+        let svg_str = std::str::from_utf8(&svg_bytes)
+            .map_err(|e| CandyError::Typst(format!("svg utf8: {e}")))?;
+
+        // 2. Compute target pixel dimensions from the page size + ppi.
+        let width = (self.page_w * pixel_per_pt as f64).round().max(1.0) as u32;
+        let height = (self.page_h * pixel_per_pt as f64).round().max(1.0) as u32;
+
+        // 3. Rasterize on the GPU.
+        gpu.render_svg(svg_str, width, height)
+    }
+
     /// Render the full scene at a frame index to an SVG string (draft / fallback).
     ///
     /// Unlike the older implementation, this applies per-object `opacity` by
