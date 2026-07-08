@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::easing::Easing;
 use crate::core::meta::PrivateMeta;
 
 /// Unique identifier for an animatable element.
@@ -42,16 +43,20 @@ impl Label {
 }
 
 /// An animation action applied to a target element within a slide.
+///
+/// Each action carries its own [`Easing`], so a single slide can mix
+/// different rate functions per target (e.g. one object moves `linear` while
+/// another fades `smooth`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
     /// Move the target so its origin lands at `(x_cm, y_cm)`.
-    MoveTo { target: Label, to: (f64, f64) },
+    MoveTo { target: Label, to: (f64, f64), easing: Easing },
     /// Scale the target uniformly by `to` (1.0 = original size).
-    Scale { target: Label, to: f64 },
+    Scale { target: Label, to: f64, easing: Easing },
     /// Fade the target in to full opacity.
-    FadeIn { target: Label },
+    FadeIn { target: Label, easing: Easing },
     /// Fade the target out to zero opacity.
-    FadeOut { target: Label },
+    FadeOut { target: Label, easing: Easing },
 }
 
 impl Action {
@@ -59,8 +64,18 @@ impl Action {
         match self {
             Action::MoveTo { target, .. }
             | Action::Scale { target, .. }
-            | Action::FadeIn { target }
-            | Action::FadeOut { target } => target,
+            | Action::FadeIn { target, .. }
+            | Action::FadeOut { target, .. } => target,
+        }
+    }
+
+    /// The easing curve this action will be interpolated with.
+    pub fn easing(&self) -> Easing {
+        match self {
+            Action::MoveTo { easing, .. }
+            | Action::Scale { easing, .. }
+            | Action::FadeIn { easing, .. }
+            | Action::FadeOut { easing, .. } => *easing,
         }
     }
 }
@@ -142,6 +157,11 @@ pub struct FrameData {
     pub y: f64, // cm
     pub scale: f64, // Default 1.0
     pub opacity: f64, // 0.0–1.0
+    /// Easing curve used to interpolate *from the previous keyframe* to this
+    /// one. Defaults to [`Easing::Linear`]. The frame-0 keyframe's easing is
+    /// unused (there is no previous keyframe).
+    #[serde(default)]
+    pub easing: Easing,
 }
 
 impl FrameData {
@@ -153,10 +173,15 @@ impl FrameData {
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            easing: Easing::Linear,
         }
     }
 
     /// Linear interpolation between two keyframes (clamps `t` to [0, 1]).
+    ///
+    /// Note: the easing of the *target* keyframe `b` is what determines the
+    /// curve. Apply `b.easing.resolve()(t)` to `t` before calling this if you
+    /// want eased interpolation.
     pub fn lerp(a: &FrameData, b: &FrameData, t: f64) -> FrameData {
         let t = t.clamp(0.0, 1.0);
         FrameData {
@@ -166,6 +191,7 @@ impl FrameData {
             y: lerp(a.y, b.y, t),
             scale: lerp(a.scale, b.scale, t),
             opacity: lerp(a.opacity, b.opacity, t),
+            easing: b.easing,
         }
     }
 }
@@ -187,6 +213,7 @@ mod tests {
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
                         to: (3.0, 0.0),
+                        easing: Easing::Linear,
                     }],
                 },
                 Slide {
@@ -194,6 +221,7 @@ mod tests {
                     actions: vec![Action::Scale {
                         target: Label("a".into()),
                         to: 2.0,
+                        easing: Easing::Smooth,
                     }],
                 },
             ],

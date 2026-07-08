@@ -23,6 +23,7 @@ use typst_syntax::parse;
 use typst_syntax::SyntaxNode;
 
 use crate::core::ast::{Action, AudioTrack, FrameData, Label, Scene, Slide};
+use crate::core::easing::Easing;
 use crate::core::error::CandyError;
 use crate::core::meta::PrivateMeta;
 
@@ -181,11 +182,16 @@ fn process_mobject(
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            easing: Easing::Linear,
         },
     );
 }
 
 /// `animate(target, to:, scale:, opacity:, duration:, easing:)`.
+///
+/// The `easing` named argument accepts a string (`"linear"`, `"smooth"`,
+/// `"ease-in-out"`, …) and falls back to `Easing::Linear` if missing or
+/// unrecognized. Unrecognized names emit a warning to stderr and continue.
 fn process_animate(
     pos: &[Expr],
     named: &HashMap<String, Expr>,
@@ -205,12 +211,31 @@ fn process_animate(
         .unwrap_or(30.0)
         .max(1.0) as u32;
 
+    let easing = match named.get("easing") {
+        Some(Expr::Str(s)) => {
+            let name = s.get();
+            match Easing::from_str(name.as_str()) {
+                Some(e) => e,
+                None => {
+                    eprintln!(
+                        "warn: unknown easing '{name}' for @{}, falling back to linear",
+                        label.0
+                    );
+                    Easing::Linear
+                }
+            }
+        }
+        // Missing or non-string easing → linear (candy v0.1 behavior).
+        _ => Easing::Linear,
+    };
+
     let mut actions = Vec::new();
     if let Some(to_e) = named.get("to") {
         if let Some((x, y)) = tuple_cm(to_e, raw, node) {
             actions.push(Action::MoveTo {
                 target: label.clone(),
                 to: (x, y),
+                easing,
             });
         }
     }
@@ -218,16 +243,19 @@ fn process_animate(
         actions.push(Action::Scale {
             target: label.clone(),
             to: s,
+            easing,
         });
     }
     if let Some(o) = named.get("opacity").and_then(expr_to_f64) {
         if o <= 0.0 {
             actions.push(Action::FadeOut {
                 target: label.clone(),
+                easing,
             });
         } else {
             actions.push(Action::FadeIn {
                 target: label.clone(),
+                easing,
             });
         }
     }
@@ -311,12 +339,14 @@ fn process_play(
             y: 0.0,
             scale: 1.0,
             opacity: 0.0,
+            easing: Easing::Linear,
         },
     );
     ctx.slides.push(Slide {
         duration_frames: duration,
         actions: vec![Action::FadeIn {
             target: label.clone(),
+            easing: Easing::Linear,
         }],
     });
     ctx.cursor += duration;

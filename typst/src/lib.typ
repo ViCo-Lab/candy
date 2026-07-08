@@ -37,6 +37,14 @@
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
 /// - `scale`: a uniform scale factor (e.g. `1.5`).
 /// - `opacity`: a target opacity in `[0, 1]` (`0` fades out, `1` fades in).
+/// - `duration`: number of frames the animation spans (default `30`).
+/// - `easing`: a string naming the rate curve (default `"linear"`). One of:
+///   `"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
+///   `"quad-in"` / `"quad-out"` / `"quad-in-out"`,
+///   `"cubic-in"` / `"cubic-out"` / `"cubic-in-out"` (aliases: `"ease-in"`,
+///   `"ease-out"`, `"ease-in-out"`),
+///   `"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
+///   Unknown names fall back to `linear` with a warning.
 ///
 /// Any of `to` / `scale` / `opacity` may be omitted to keep the current value.
 /// Inert under standard Typst (returns `none`), so the animation stays hidden

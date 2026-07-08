@@ -154,6 +154,7 @@ impl Renderer {
                 y: f.y,
                 scale: f.scale,
                 opacity: f.opacity,
+                easing: f.easing,
             },
             None => FrameData::new(frame_idx, label),
         }

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::core::ast::{Action, FrameData, Label, Scene};
+use crate::core::easing::Easing;
 use crate::core::error::CandyError;
 
 /// Per-target animation state. Internal to the scheduler.
@@ -72,6 +73,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
         for action in &slide.actions {
             let t = action.target().clone();
             let s = *state.get(&t).unwrap_or(&State::default());
+            let easing = action.easing();
 
             // Keyframe at the slide start = current state.
             per_item.entry(t.clone()).or_default().push(FrameData {
@@ -81,12 +83,15 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 y: s.y,
                 scale: s.scale,
                 opacity: s.opacity,
+                easing,
             });
 
             apply(&mut state, &t, action);
 
             let s = state[&t];
-            // Keyframe at the slide end = new state.
+            // Keyframe at the slide end = new state, carrying the action's
+            // easing so the interpolator knows how to shape the curve from
+            // `start` to `end`.
             per_item.entry(t.clone()).or_default().push(FrameData {
                 frame_idx: end,
                 target: t.clone(),
@@ -94,6 +99,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 y: s.y,
                 scale: s.scale,
                 opacity: s.opacity,
+                easing,
             });
         }
 
@@ -110,6 +116,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             y: st.y,
             scale: st.scale,
             opacity: st.opacity,
+            easing: Easing::Linear,
         });
     }
 
@@ -166,6 +173,7 @@ fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
 mod tests {
     use super::*;
     use crate::core::ast::{Action, Label, Scene, Slide};
+    use crate::core::easing::Easing;
     use crate::core::meta::PrivateMeta;
 
     fn scene() -> Scene {
@@ -176,12 +184,14 @@ mod tests {
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
                         to: (3.0, 0.0),
+                        easing: Easing::Linear,
                     }],
                 },
                 Slide {
                     duration_frames: 5,
                     actions: vec![Action::FadeOut {
                         target: Label("a".into()),
+                        easing: Easing::Smooth,
                     }],
                 },
             ],
@@ -206,16 +216,24 @@ mod tests {
         assert!(kf.len() >= 5);
     }
 
+    /// The action's easing must propagate to the keyframes so the
+    /// interpolator can shape the curve.
+    #[test]
+    fn easing_propagates_to_keyframes() {
+        let kf = schedule(&scene()).unwrap();
+        // slide 1 (FadeOut, Smooth) keyframes: find the end keyframe at frame 14.
+        let end = kf.iter().find(|f| f.target.0 == "a" && f.frame_idx == 14);
+        let end = end.expect("end keyframe at frame 14 must exist");
+        assert_eq!(end.easing, Easing::Smooth);
+    }
+
     /// Regression: scheduler must NOT panic on non-monotonic input. Previously
     /// `assert_monotonic` called `panic!`; now it returns `CandyError::Parse`.
     #[test]
     fn non_monotonic_returns_err_not_panic() {
-        // Hand-construct a scene whose keyframes would be non-monotonic.
-        // The scheduler's own logic produces monotonic output for valid input,
-        // so this test asserts the validator function itself returns Err.
         let frames = vec![
-            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0 },
-            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0 },
+            FrameData { frame_idx: 5, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, easing: Easing::Linear },
+            FrameData { frame_idx: 3, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, easing: Easing::Linear },
         ];
         let err = validate_monotonic(&frames).unwrap_err();
         assert_eq!(err.code(), "E002");

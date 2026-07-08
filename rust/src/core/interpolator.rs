@@ -56,7 +56,12 @@ pub fn interpolate(keyframes: Vec<FrameData>) -> Vec<FrameData> {
                     } else {
                         (frame - a.frame_idx) as f64 / (b.frame_idx - a.frame_idx) as f64
                     };
-                    let mut fr = FrameData::lerp(a, b, t);
+                    // Apply the *target* keyframe's easing to shape the curve.
+                    // The frame-0 keyframe carries Easing::Linear (default),
+                    // so static segments remain linear — backward compatible
+                    // with candy v0.1.
+                    let eased_t = b.easing.resolve()(t);
+                    let mut fr = FrameData::lerp(a, b, eased_t);
                     fr.frame_idx = frame;
                     fr.target = a.target.clone();
                     fr
@@ -101,6 +106,7 @@ pub fn interp_scalar(track: &[(u32, f64)], frame: u32) -> f64 {
 mod tests {
     use super::*;
     use crate::core::ast::Label;
+    use crate::core::easing::Easing;
 
     #[test]
     fn fills_all_frames() {
@@ -112,6 +118,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                easing: Easing::Linear,
             },
             FrameData {
                 frame_idx: 9,
@@ -120,6 +127,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                easing: Easing::Linear,
             },
         ];
         let out = interpolate(kf);
@@ -139,6 +147,7 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: 1.0,
+                easing: Easing::Linear,
             },
             FrameData {
                 frame_idx: 4,
@@ -147,11 +156,47 @@ mod tests {
                 y: 0.0,
                 scale: 1.0,
                 opacity: -2.0,
+                easing: Easing::Linear,
             },
         ];
         let out = interpolate(kf);
         for f in &out {
             assert!((0.0..=1.0).contains(&f.opacity));
         }
+    }
+
+    /// Easing must shape the interpolation curve. With `Smooth` (Hermite
+    /// `t²(3-2t)`), the midpoint at t=0.5 maps to 0.5 (symmetry), but at
+    /// t=0.25 the eased value is `0.25²(3-0.5) = 0.15625` — below the linear
+    /// 0.25, proving the curve is non-linear.
+    #[test]
+    fn easing_shapes_curve() {
+        let kf = vec![
+            FrameData {
+                frame_idx: 0,
+                target: Label("a".into()),
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 1.0,
+                easing: Easing::Linear,
+            },
+            FrameData {
+                frame_idx: 4,
+                target: Label("a".into()),
+                x: 10.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 1.0,
+                easing: Easing::Smooth,
+            },
+        ];
+        let out = interpolate(kf);
+        // frame 1 → t=0.25, eased = 0.25²(3-0.5) = 0.15625, x = 1.5625
+        assert!((out[1].x - 1.5625).abs() < 1e-9, "frame 1 x={}", out[1].x);
+        // frame 2 → t=0.5, eased = 0.5, x = 5.0 (smooth is symmetric)
+        assert!((out[2].x - 5.0).abs() < 1e-9, "frame 2 x={}", out[2].x);
+        // frame 3 → t=0.75, eased = 0.75²(3-1.5) = 0.84375, x = 8.4375
+        assert!((out[3].x - 8.4375).abs() < 1e-9, "frame 3 x={}", out[3].x);
     }
 }
