@@ -94,6 +94,15 @@ pub enum Action {
     /// Fade the target to an explicit `opacity` in `[0, 1]`.
     /// (FadeIn/FadeOut are conveniences for `FadeTo { opacity: 1.0/0.0 }`.)
     FadeTo { target: Label, opacity: f64, easing: Easing },
+    /// Move the target along a polyline through `points` (in cm, absolute).
+    /// The scheduler generates a keyframe at each point, distributed evenly
+    /// across the slide's duration. Mirrors Manim's `MoveAlongPath` (for
+    /// linear paths; arc/bezier paths are approximated as polylines).
+    MoveAlongPath {
+        target: Label,
+        points: Vec<(f64, f64)>,
+        easing: Easing,
+    },
 
     // ---- Manim-style state management ----
     /// Snapshot the target's current transform (x/y/scale/rotation/opacity)
@@ -143,6 +152,7 @@ impl Action {
         match self {
             Action::MoveTo { target, .. }
             | Action::MoveBy { target, .. }
+            | Action::MoveAlongPath { target, .. }
             | Action::Scale { target, .. }
             | Action::ScaleBy { target, .. }
             | Action::Rotate { target, .. }
@@ -166,6 +176,7 @@ impl Action {
         match self {
             Action::MoveTo { easing, .. }
             | Action::MoveBy { easing, .. }
+            | Action::MoveAlongPath { easing, .. }
             | Action::Scale { easing, .. }
             | Action::ScaleBy { easing, .. }
             | Action::Rotate { easing, .. }

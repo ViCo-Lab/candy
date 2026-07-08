@@ -197,7 +197,23 @@ impl Renderer {
         if self.natural_computed {
             return Ok(());
         }
-        let mut src = String::from("#set page(width: auto, height: auto, margin: 0pt, fill: white)\n");
+        // Use a fixed, presentation-friendly page size (16:9, 16cm × 9cm = a
+        // standard slide). This ensures every frame has a consistent, visible
+        // canvas instead of the tiny auto-sized page (which produced
+        // ~14px-tall videos). Objects are laid out in document flow and their
+        // natural positions are read back from the SVG.
+        //
+        // 16cm = 453.54pt, 9cm = 255.12pt (1cm = 28.3465pt).
+        let page_w_cm = 16.0;
+        let page_h_cm = 9.0;
+        self.page_w = page_w_cm * PT_PER_CM;
+        self.page_h = page_h_cm * PT_PER_CM;
+
+        let mut src = format!(
+            "#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: white)\n",
+            w = self.page_w,
+            h = self.page_h,
+        );
         // Deterministic order so positions are stable.
         let mut labels: Vec<&Label> = self.scene.items.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
@@ -212,13 +228,9 @@ impl Renderer {
             .pages()
             .first()
             .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let size = page.frame.size();
-        let (w, h) = (size.x.to_pt(), size.y.to_pt());
         let svg = typst_svg::svg(page, &SvgOptions::default());
         let positions = parse_svg_positions(&svg)?;
 
-        self.page_w = w;
-        self.page_h = h;
         self.nat = positions;
         self.natural_computed = true;
         Ok(())

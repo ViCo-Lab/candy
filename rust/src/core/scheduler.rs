@@ -219,14 +219,12 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 // ---- Restore: interpolate from current → saved ----
                 Action::Restore { slot, .. } => {
                     let saved_state = saved.get(&(t.clone(), slot.clone())).copied().unwrap_or(s);
-                    // Start keyframe = current state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         frame_idx: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing,
                     });
-                    // End keyframe = saved state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         frame_idx: end,
                         target: t.clone(),
@@ -234,6 +232,37 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         easing,
                     });
                     state.insert(t.clone(), saved_state);
+                    continue;
+                }
+
+                // ---- MoveAlongPath: keyframe at each point ----
+                Action::MoveAlongPath { points, .. } => {
+                    if points.is_empty() {
+                        continue;
+                    }
+                    let n = points.len() as u32;
+                    let seg = slide.duration_frames / n.max(1);
+                    // Start keyframe = current state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        frame_idx: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing,
+                    });
+                    // One keyframe per path point, evenly distributed.
+                    for (i, &(px, py)) in points.iter().enumerate() {
+                        let kf_frame = start + (i as u32 + 1) * seg;
+                        let kf_frame = kf_frame.min(end);
+                        per_item.entry(t.clone()).or_default().push(FrameData {
+                            frame_idx: kf_frame,
+                            target: t.clone(),
+                            x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                            easing,
+                        });
+                    }
+                    // Update state to the last point.
+                    let last = *points.last().unwrap();
+                    state.insert(t.clone(), State { x: last.0, y: last.1, ..s });
                     continue;
                 }
 
@@ -346,6 +375,7 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
         // reach apply(). Listed here so the match is exhaustive.
         Action::SaveState { .. }
         | Action::Restore { .. }
+        | Action::MoveAlongPath { .. }
         | Action::Indicate { .. }
         | Action::Flash { .. }
         | Action::Wiggle { .. }

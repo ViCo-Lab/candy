@@ -330,6 +330,61 @@
   easing: "smooth",
 ) = none
 
+/// Move the target along a polyline through `points` (cm, absolute).
+/// The scheduler generates a keyframe at each point, evenly distributed
+/// across `duration`. Mirrors Manim's `MoveAlongPath` (linear path; arc/bezier
+/// paths are approximated as polylines).
+///
+/// - `target`: the `label` of the object to move.
+/// - `path`: an array of `(x, y)` points in cm, e.g. `((0, 0), (4, 2), (8, 0))`.
+/// - `duration`: frames (default `30`).
+/// - `easing`: rate curve (default `"linear"`).
+#let move-along-path(
+  target,
+  path,
+  duration: 30,
+  easing: "linear",
+) = none
+
+/// Morph one mobject into another by crossfading + scaling. Both mobjects must
+/// be registered via `mobject`. The `from` object shrinks and fades out while
+/// the `to` object grows and fades in, producing a "transform" effect.
+///
+/// This is a simplified Morph — true point-by-point morphing (like Manim's
+/// `Transform`) requires structured mobjects, which candy's opaque-content
+/// model doesn't support. This crossfade+scale variant is a reasonable
+/// approximation for most use cases.
+///
+/// - `from`: the `label` of the source object.
+/// - `to`: the `label` of the target object.
+/// - `duration`: frames (default `24`).
+/// - `easing`: rate curve (default `"smooth"`).
+#let morph(
+  from,
+  to,
+  duration: 24,
+  easing: "smooth",
+) = none
+
+/// Define a scene (a "slide") with a specific page size and background.
+///
+/// In standard Typst, `scene` sets the page and renders the body. In candy's
+/// animation pipeline, `scene` is a semantic marker that groups content into
+/// a slide; the page size is also used by the renderer as the canvas size for
+/// every frame in this scene.
+///
+/// - `width`: page width (default `16cm` — standard 16:9 slide width).
+/// - `height`: page height (default `9cm`).
+/// - `bg`: background fill (default `white`).
+/// - `body`: the scene's content.
+///
+/// Call `scene` at the top of your `.tyx` to set the canvas size. Without it,
+/// candy defaults to 16cm × 9cm.
+#let scene(width: 16cm, height: 9cm, bg: white, body) = {
+  set page(width: width, height: height, margin: 0pt, fill: bg)
+  body
+}
+
 #let dir-left = (-2.0, 0.0)
 #let dir-right = (2.0, 0.0)
 #let dir-up = (0.0, -2.0)

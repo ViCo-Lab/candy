@@ -48,6 +48,8 @@ const CANDY: &[&str] = &[
     "spiral_in",
     "focus_on",
     "fade_transform",
+    "move_along_path",
+    "morph",
 ];
 
 /// Parse `.tyx` file into a `Scene` AST.
@@ -180,6 +182,8 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "spiral_in" => process_spiral_in(&pos, &named, ctx),
         "focus_on" => process_focus_on(&pos, &named, ctx),
         "fade_transform" => process_fade_transform(&pos, &named, ctx),
+        "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
+        "morph" => process_morph(&pos, &named, ctx),
         _ => {}
     }
 }
@@ -683,6 +687,82 @@ fn process_fade_transform(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut
         ],
     });
     ctx.cursor += duration;
+}
+
+/// `move_along_path(target, path: ((x1,y1), (x2,y2), ...), duration: 30, easing: "linear")`
+/// — move the target along a polyline through the given points (cm, absolute).
+/// Mirrors Manim's `MoveAlongPath`.
+fn process_move_along_path(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+    node: &LinkedNode,
+    raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    let Some(label) = target_arg(pos, named) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(30.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+
+    // Parse the `path` named arg as an array of (x, y) tuples.
+    let points: Vec<(f64, f64)> = match named.get("path") {
+        Some(Expr::Array(arr)) => {
+            arr.items()
+                .filter_map(|item| match item {
+                    ast::ArrayItem::Pos(e) => tuple_cm(&e, raw, node),
+                    ast::ArrayItem::Spread(_) => None,
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    if points.is_empty() {
+        return;
+    }
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![Action::MoveAlongPath {
+            target: label,
+            points,
+            easing,
+        }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `morph(from, to, duration: 24, easing: "smooth")` — crossfade + scale
+/// transform from one mobject to another. The `from` object shrinks and fades
+/// out while the `to` object grows and fades in. Both must be registered via
+/// `mobject`. A simplified approximation of Manim's `Transform`.
+fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let from = pos.first().and_then(|e| match e {
+        Expr::Str(s) => Some(Label(s.get().to_string())),
+        _ => None,
+    });
+    let to = pos.get(1).and_then(|e| match e {
+        Expr::Str(s) => Some(Label(s.get().to_string())),
+        _ => None,
+    });
+    let (Some(from), Some(to)) = (from, to) else { return };
+    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(24.0).max(1.0) as u32;
+    let easing = resolve_easing(named, &from);
+
+    // Hide the `to` object initially (it will fade in).
+    ctx.slides.push(Slide {
+        duration_frames: 1,
+        actions: vec![Action::Hide { target: to.clone() }],
+    });
+
+    // Morph: `from` shrinks + fades out, `to` grows + fades in (parallel).
+    ctx.slides.push(Slide {
+        duration_frames: duration,
+        actions: vec![
+            Action::ScaleBy { target: from.clone(), factor: 0.01, easing },
+            Action::FadeOut { target: from, easing },
+            Action::ScaleBy { target: to.clone(), factor: 100.0, easing },
+            Action::FadeIn { target: to, easing },
+        ],
+    });
+    ctx.cursor += 1 + duration;
 }
 
 /// Recover the source byte range of `target` by identity (pointer) within the

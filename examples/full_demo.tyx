@@ -1,0 +1,20 @@
+#import "../typst/src/lib.typ": *
+
+#scene(width: 16cm, height: 9cm)[
+
+  // A red circle that moves along a triangular path.
+  #mobject("ball", circle(radius: 0.4cm, fill: red))
+
+  // A blue square that will morph into a green circle.
+  #mobject("square", rect(width: 1.5cm, height: 1.5cm, fill: blue))
+  #mobject("circle", circle(radius: 0.75cm, fill: green))
+
+  // Move the ball along a triangular path.
+  #move-along-path("ball", path: ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 40, easing: "smooth")
+
+  // Morph the square into the circle.
+  #morph("square", "circle", duration: 24, easing: "smooth")
+
+  // Indicate the ball.
+  #indicate("ball", factor: 1.5, duration: 16)
+]
