@@ -41,13 +41,15 @@ pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, C
     let a_bytes: usize = a_sizes.iter().map(|s| *s as usize).sum();
 
     let ftyp = b(
-        b"isom",
+        b"ftyp",
         {
             let mut p = vec![];
-            p.extend_from_slice(b"isom");
-            p.extend_from_slice(&[0, 0, 0, 0]);
-            p.extend_from_slice(b"isom");
-            p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" });
+            p.extend_from_slice(b"isom"); // major_brand
+            p.extend_from_slice(&[0, 0, 0, 0]); // minor_version
+            p.extend_from_slice(b"isom"); // compatible_brand
+            p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" }); // compatible_brand
+            p.extend_from_slice(b"mp42"); // compatible_brand (MP4 v2)
+            p.extend_from_slice(b"mmp4"); // compatible_brand (mobile MP4)
             p
         },
     );
@@ -127,12 +129,13 @@ fn build_moov(
         }
     }
 
-    let mut moov = full_box(b"moov", 0, 0, vec![]);
-    moov.extend_from_slice(&mvhd);
+    let mut moov_payload = vec![];
+    moov_payload.extend_from_slice(&mvhd);
     for t in traks {
-        moov.extend_from_slice(&t);
+        moov_payload.extend_from_slice(&t);
     }
-    moov
+    // moov is a plain box (not a full box) containing mvhd + trak children.
+    b(b"moov", moov_payload)
 }
 
 fn build_video_trak(
@@ -248,11 +251,24 @@ fn build_video_trak(
         p
     });
 
+    // stss (sync sample table): marks keyframes. openh264 encodes every frame
+    // as an IDR (keyframe), so all frames are listed. Mobile players (iOS/
+    // Android hardware decoders) require this box to seek/play correctly.
+    let stss = full_box(b"stss", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&nframes.to_be_bytes()); // entry_count
+        for i in 1..=nframes {
+            p.extend_from_slice(&i.to_be_bytes()); // sample_number (1-based)
+        }
+        p
+    });
+
     let stbl = b(b"stbl", {
         let mut p = vec![];
         p.extend_from_slice(&stsd);
         p.extend_from_slice(&stts);
         p.extend_from_slice(&stsc);
+        p.extend_from_slice(&stss);
         p.extend_from_slice(&stsz);
         p.extend_from_slice(&stco);
         p
@@ -473,9 +489,19 @@ fn desc(tag: u8, payload: Vec<u8>) -> Vec<u8> {
     v
 }
 
-const MATRIX: [u8; 44] = [
-    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0,
+/// Identity matrix for tkhd/mvhd: 9 × u32 = 36 bytes.
+/// `[1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]` in 16.16 fixed-point
+/// (except the last element which is 0x40000000 in 2.30 fixed-point).
+const MATRIX: [u8; 36] = [
+    0x00, 0x01, 0x00, 0x00, // a = 1.0
+    0, 0, 0, 0,             // b = 0
+    0, 0, 0, 0,             // u = 0
+    0, 0, 0, 0,             // c = 0
+    0x00, 0x01, 0x00, 0x00, // d = 1.0
+    0, 0, 0, 0,             // v = 0
+    0, 0, 0, 0,             // x = 0
+    0, 0, 0, 0,             // y = 0
+    0x40, 0x00, 0x00, 0x00, // w = 1.0 (2.30 fixed-point)
 ];
 
 /// Build a box: `[size:4][type:4][payload]`.

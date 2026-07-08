@@ -875,7 +875,7 @@ fn expr_to_bool(e: &Expr) -> Option<bool> {
 }
 
 /// Evaluate a `(x, y)` length tuple to centimeters.
-fn tuple_cm(e: &Expr, raw: &str, node: &LinkedNode) -> Option<(f64, f64)> {
+fn tuple_cm(e: &Expr, _raw: &str, _node: &LinkedNode) -> Option<(f64, f64)> {
     let arr: ast::Array = match e {
         Expr::Array(a) => a.clone(),
         Expr::Parenthesized(p) => match p.expr() {
@@ -886,12 +886,14 @@ fn tuple_cm(e: &Expr, raw: &str, node: &LinkedNode) -> Option<(f64, f64)> {
     };
     let mut vals = Vec::with_capacity(2);
     for it in arr.items() {
-        // Re-slice the literal text from the node's source span (units live there).
-        let text = match range_of(node, it.to_untyped()) {
-            Some(r) => &raw[r],
-            None => "",
+        // AST-based: extract the length directly from the expression node,
+        // no string parsing. This handles `4cm`, `0pt`, `10mm`, `1in` via
+        // typst_syntax's Numeric AST node (which carries the value + unit).
+        let expr = match it {
+            ast::ArrayItem::Pos(e) => e,
+            ast::ArrayItem::Spread(_) => return None,
         };
-        vals.push(parse_length_cm(text)?);
+        vals.push(expr_length_cm(&expr)?);
     }
     if vals.len() == 2 {
         Some((vals[0], vals[1]))
@@ -900,38 +902,6 @@ fn tuple_cm(e: &Expr, raw: &str, node: &LinkedNode) -> Option<(f64, f64)> {
     }
 }
 
-/// Parse a length such as `4cm`, `0pt`, `10mm`, `1in` into centimeters.
-/// A bare number is treated as centimeters.
-fn parse_length_cm(s: &str) -> Option<f64> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && !matches!(bytes[i], b'0'..=b'9' | b'.' | b'-' | b'+') {
-        i += 1;
-    }
-    if i >= bytes.len() {
-        return None;
-    }
-    let start = i;
-    while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b'.' | b'-' | b'+' | b'e' | b'E') {
-        i += 1;
-    }
-    let num: f64 = s[start..i].parse().ok()?;
-    let rest = s[i..].trim_start();
-    let unit = rest
-        .chars()
-        .take_while(|c| c.is_alphabetic())
-        .collect::<String>()
-        .to_lowercase();
-    let factor = match unit.as_str() {
-        "cm" | "" => 1.0,
-        "mm" => 0.1,
-        "pt" => 1.0 / 28.346_456_692_913_385,
-        "in" => 2.54,
-        "px" => 1.0 / 28.346_456_692_913_385 * 72.0 / 96.0,
-        _ => 1.0,
-    };
-    Some(num * factor)
-}
 
 #[cfg(test)]
 mod tests {
