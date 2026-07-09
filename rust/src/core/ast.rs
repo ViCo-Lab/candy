@@ -145,6 +145,15 @@ pub enum Action {
     /// tracked in the timeline so future versions with structured mobjects
     /// can apply it. Mirrors Manim's `set_color`.
     SetColor { target: Label, color: String, easing: Easing },
+
+    // ---- Manim-style content transform ----
+    /// Morph a single mobject's content into a new body. Handled natively by
+    /// the scheduler (not via generic `apply`): it crossfades the original
+    /// `target` content (parked on `old`) out while the transformed `target`
+    /// content (swapped in via `Scene.content_timeline` at the slide start)
+    /// fades in, both inheriting `target`'s current transform so there is no
+    /// positional jump and no scale accumulation. Mirrors Manim's `Transform`.
+    Transform { target: Label, old: Label, easing: Easing },
 }
 
 impl Action {
@@ -167,7 +176,8 @@ impl Action {
             | Action::Wiggle { target, .. }
             | Action::Show { target }
             | Action::Hide { target }
-            | Action::SetColor { target, .. } => target,
+            | Action::SetColor { target, .. }
+            | Action::Transform { target, .. } => target,
         }
     }
 
@@ -188,7 +198,8 @@ impl Action {
             | Action::Indicate { easing, .. }
             | Action::Flash { easing, .. }
             | Action::Wiggle { easing, .. }
-            | Action::SetColor { easing, .. } => *easing,
+            | Action::SetColor { easing, .. }
+            | Action::Transform { easing, .. } => *easing,
             Action::SaveState { .. } | Action::Show { .. } | Action::Hide { .. } => Easing::Linear,
         }
     }
@@ -237,6 +248,15 @@ pub struct Scene {
     /// Without it the pipeline cannot render, so it is added here.
     #[serde(default)]
     pub items: HashMap<Label, String>,
+    /// CORRECTION (beyond the original spec): a per-label **content timeline**
+    /// recording when an mobject's body is swapped to a new one (used by
+    /// `transform`). Each entry is `(time_ms, new_body)`: for a given frame,
+    /// the renderer uses the latest `new_body` whose `time_ms <= frame`, else
+    /// falls back to `items[label]`. This lets a single label hold different
+    /// content before/after a `transform` without corrupting earlier slides'
+    /// rendered content.
+    #[serde(default)]
+    pub content_timeline: HashMap<Label, Vec<(u32, String)>>,
     /// Initial per-object transform (frame 0). Seeded from `candy.mobject`'s
     /// `at`/`scale`/`opacity`. Objects absent here default to origin/scale 1.
     #[serde(default)]
@@ -360,6 +380,7 @@ mod tests {
                 m.insert(Label("a".into()), "circle(radius: 1cm)".into());
                 m
             },
+            content_timeline: HashMap::new(),
             initial: HashMap::new(),
             audio: Vec::new(),
             imports: Vec::new(),

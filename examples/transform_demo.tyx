@@ -1,0 +1,27 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates Manim-style smooth object transitions via `#transform`.
+//
+// `transform(target, to: <content>)` morphs a single mobject's content into new
+// inline content (crossfade + scale) and keeps the original `target` label
+// holding the new content, so you can keep animating it afterwards. Works for
+// ordinary shapes AND for formulas (equations).
+//
+// Run:  candy build examples/transform_demo.tyx
+
+#scene(width: 16cm, height: 9cm)[
+  // 1) Object transition: a blue square first slides, then smoothly morphs
+  //    into a red circle. After the transform the "shape" label holds the
+  //    circle, so the following fade-out animates the circle (not the square).
+  #mobject("shape", rect(width: 3cm, height: 3cm, fill: blue))
+  #animate("shape", to: (5cm, 0cm), duration: 1000, easing: "smooth")
+  #transform("shape", to: circle(radius: 1.6cm, fill: red), duration: 1000, easing: "smooth")
+  #animate("shape", opacity: 0.3, duration: 1000, easing: "ease-in-out")
+
+  // 2) Formula transition: an equation smoothly transitions to a new equation
+  //    (the old one crossfades out while the new one grows + fades in).
+  #mobject("eq", [$a + b = c$])
+  #animate("eq", to: (0cm, 3cm), duration: 1000, easing: "smooth")
+  #transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
+  #transform("eq", to: [$a + b + d + e = c$], duration: 1000, easing: "smooth")
+]

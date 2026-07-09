@@ -366,6 +366,29 @@
   easing: "smooth",
 ) = none
 
+/// Morph a single mobject's content into new inline content. This is candy's
+/// Manim-style `Transform` / `ReplacementTransform`: the `target` mobject's
+/// current body is smoothly replaced by `to` (a Typst body — e.g. an equation
+/// `[$a + b = c$]`), and the **original `target` label keeps the new content**
+/// afterwards, so you can keep animating it. Under the hood it is a crossfade +
+/// scale (the same mechanism as `morph`), but the old content is parked on a
+/// synthetic mobject that ends invisible, so only the transformed target remains.
+///
+/// - `target`: the `label` of the mobject to transform (must be registered via
+///   `mobject`).
+/// - `to`: the new content (a bare block / element / equation), e.g.
+///   `circle(radius: 2cm)` or `[$a + b + d = c$]`.
+/// - `duration`: frames (default `24`).
+/// - `easing`: rate curve (default `"smooth"`).
+///
+/// Inert under standard Typst (returns `none`).
+#let transform(
+  target,
+  to: none,
+  duration: 24,
+  easing: "smooth",
+) = none
+
 /// Define a scene (a "slide") with a specific page size and background.
 ///
 /// In standard Typst, `scene` sets the page and renders the body. In candy's

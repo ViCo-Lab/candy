@@ -69,7 +69,23 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
 
     let mut per_item: HashMap<Label, Vec<FrameData>> = state
         .keys()
-        .map(|l| (l.clone(), vec![FrameData::new(0, l.clone())]))
+        .map(|l| {
+            let seed = scene
+                .initial
+                .get(l)
+                .map(|f| FrameData {
+                    time_ms: 0,
+                    target: l.clone(),
+                    x: f.x,
+                    y: f.y,
+                    scale: f.scale,
+                    opacity: f.opacity,
+                    rotation: f.rotation,
+                    easing: f.easing,
+                })
+                .unwrap_or_else(|| FrameData::new(0, l.clone()));
+            (l.clone(), vec![seed])
+        })
         .collect();
 
     let mut ptr: u32 = 0;
@@ -266,6 +282,87 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     continue;
                 }
 
+                // ---- Transform: crossfade old→new content, inheriting
+                //      `target`'s current transform (no position jump, no scale
+                //      accumulation). The old content lives on `old` (a parked
+                //      synthetic mobject); the new content is swapped onto
+                //      `target` via `Scene.content_timeline` at the slide start.
+                Action::Transform { target, old, .. } => {
+                    let s = *state.get(target).unwrap_or(&State::default());
+                    // Start the morph 1ms after the slide start so it does not
+                    // collide with the previous slide's end keyframe (which is
+                    // emitted at `start`) for the same target.
+                    let start_t = start + 1;
+                    let end_t = end;
+                    let small = (s.scale * 0.05).max(1e-3);
+                    // Old content: full → tiny + transparent, at `target`'s
+                    // current position/rotation.
+                    per_item.entry(old.clone()).or_default().push(FrameData {
+                        time_ms: start_t,
+                        target: old.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
+                        easing,
+                    });
+                    per_item.entry(old.clone()).or_default().push(FrameData {
+                        time_ms: end_t,
+                        target: old.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: small,
+                        opacity: 0.0,
+                        rotation: s.rotation,
+                        easing,
+                    });
+                    // New content (`target`): tiny + transparent → full, at the
+                    // same position. `scale` returns to `s.scale` (so repeated
+                    // transforms don't accumulate).
+                    per_item.entry(target.clone()).or_default().push(FrameData {
+                        time_ms: start_t,
+                        target: target.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: small,
+                        opacity: 0.0,
+                        rotation: s.rotation,
+                        easing,
+                    });
+                    per_item.entry(target.clone()).or_default().push(FrameData {
+                        time_ms: end_t,
+                        target: target.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: 1.0,
+                        rotation: s.rotation,
+                        easing,
+                    });
+                    // Update state: target keeps its transform, now showing the
+                    // new content; `old` ends invisible.
+                    state.insert(
+                        target.clone(),
+                        State {
+                            opacity: 1.0,
+                            scale: s.scale,
+                            ..s
+                        },
+                    );
+                    state.insert(
+                        old.clone(),
+                        State {
+                            x: s.x,
+                            y: s.y,
+                            scale: small,
+                            opacity: 0.0,
+                            rotation: s.rotation,
+                        },
+                    );
+                    continue;
+                }
+
                 // ---- Core transforms: start keyframe + end keyframe ----
                 _ => {
                     // Keyframe at the slide start = current state.
@@ -381,7 +478,8 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
         | Action::Wiggle { .. }
         | Action::Show { .. }
         | Action::Hide { .. }
-        | Action::SetColor { .. } => s,
+        | Action::SetColor { .. }
+        | Action::Transform { .. } => s,
     };
     state.insert(t.clone(), ns);
 }
@@ -435,6 +533,7 @@ mod tests {
                 m.insert(Label("a".into()), String::new());
                 m
             },
+            content_timeline: std::collections::HashMap::new(),
             initial: std::collections::HashMap::new(),
             audio: Vec::new(),
             imports: Vec::new(),

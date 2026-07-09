@@ -15,6 +15,9 @@ and encoding backend. Inspired by 3Blue1Brown's
 - Self-contained video encoding via [`rav1e`](https://crates.io/crates/rav1e) (AV1) and [`openh264`](https://crates.io/crates/openh264) (H.264) — **no FFmpeg, no external codec CLI**.
 - Hand-written MP4 / Matroska / WebM muxers in pure Rust.
 - Audio muxing for Opus (`.opus`/`.ogg` → MKV/WebM) and AAC (`.aac` → MP4).
+- Smooth **object transitions** (Manim-style `Transform`): morph a mobject into
+  new inline content — including **formulas** — via `#transform`, keeping the
+  original label reusable; `#morph` / `#fade-transform` crossfade two mobjects.
 - Familiar appearance for Manim users.
 
 ## The `.tyx` format (Typst X-sheet)
@@ -44,6 +47,13 @@ them into per-frame Typst documents that are rendered and (optionally) encoded.
   / audio track (`.opus`/`.ogg` for WebM/MKV, `.aac` for MP4).
 - `#play(body, duration: N)` — show `body` for `N` frames as its own
   animation unit (block-level, controllable like a mobject).
+- `#transform(target, to: <content>, duration: N, easing:..)` — Manim-style
+  `Transform` / `ReplacementTransform`: smoothly morph `target`'s content into
+  the new inline `content` (a shape or a formula such as `[$a + b + d = c$]`);
+  the original `target` label keeps the new content, so you can keep animating
+  it. See `examples/transform_demo.tyx`.
+- `#morph(from, to, duration: N, easing:..)` / `#fade-transform(from, to, ..)` —
+  crossfade two pre-registered mobjects (simplified `Transform` variant).
 
 The `@preview/candy` Typst package (the `typst/` directory) exposes this DSL.
 Each directive is *valid, standard Typst*: `typst compile` renders the first

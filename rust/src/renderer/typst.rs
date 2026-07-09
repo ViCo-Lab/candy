@@ -261,6 +261,7 @@ impl Renderer {
         &self,
         label: &Label,
         st: &FrameData,
+        time_ms: u32,
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
@@ -268,9 +269,9 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
+        let body = content_for(&self.scene, label, time_ms);
         let preamble = imports_preamble(&self.scene);
-        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble);
+        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble);
 
         let doc = self.compile(&placed)?;
         let page = doc
@@ -330,7 +331,7 @@ impl Renderer {
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
             let st = states.get(*label).unwrap();
-            let frame = self.render_object_pixels(*label, st, pixel_per_pt)?;
+            let frame = self.render_object_pixels(*label, st, time_ms, pixel_per_pt)?;
             objs.push((st.opacity, frame));
         }
 
@@ -427,7 +428,7 @@ impl Renderer {
 
         for label in labels {
             let st = &states[label];
-            let obj_svg = self.render_object_svg(label, st)?;
+            let obj_svg = self.render_object_svg(label, st, time_ms)?;
             // Wrap each object's SVG in a group with the per-frame opacity.
             // SVG <g opacity> applies to all descendants (shapes + text).
             let op = st.opacity.clamp(0.0, 1.0);
@@ -440,16 +441,16 @@ impl Renderer {
 
     /// Render a single mobject at its placed position as an SVG string.
     /// Uses the same placement math as `render_object_pixels`.
-    fn render_object_svg(&self, label: &Label, st: &FrameData) -> Result<String, CandyError> {
+    fn render_object_svg(&self, label: &Label, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
+        let body = content_for(&self.scene, label, time_ms);
         let preamble = imports_preamble(&self.scene);
 
-        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble);
+        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble);
 
         if !self.scene.imports.is_empty() {
             eprintln!("DEBUG ensure_natural src:\n{src}");
@@ -464,11 +465,13 @@ impl Renderer {
 
     /// Render a single target's frame as an isolated SVG (spec §4.4 style).
     pub fn render_frame(&mut self, frame: &FrameData) -> Result<Vec<u8>, CandyError> {
-        if !self.scene.items.contains_key(&frame.target) {
+        if !self.scene.items.contains_key(&frame.target)
+            && !self.scene.content_timeline.contains_key(&frame.target)
+        {
             return Err(CandyError::LabelNotFound(frame.target.clone()));
         }
         self.ensure_natural()?;
-        let doc = self.compile(&self.object_source(frame))?;
+        let doc = self.compile(&self.object_source(frame, frame.time_ms))?;
         let page = doc
             .pages()
             .first()
@@ -478,15 +481,15 @@ impl Renderer {
     }
 
     /// Build the isolated per-object source for a single target.
-    fn object_source(&self, st: &FrameData) -> String {
+    fn object_source(&self, st: &FrameData, time_ms: u32) -> String {
         let nat = self.nat.get(&st.target).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self.scene.items.get(&st.target).map(|s| s.as_str()).unwrap_or("");
+        let body = content_for(&self.scene, &st.target, time_ms);
         let preamble = imports_preamble(&self.scene);
-        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble)
+        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble)
     }
 }
 
@@ -513,6 +516,28 @@ fn imports_preamble(scene: &Scene) -> String {
         }
         s
     }
+}
+
+/// Resolve the Typst body for `label` at frame time `time_ms`.
+///
+/// A `transform` records content switches on `Scene.content_timeline` as
+/// `(time_ms, new_body)` pairs. For a given frame we use the latest switch
+/// whose `time_ms <= frame`, falling back to `items[label]` (the original
+/// body) before any transform. This lets a single label render different
+/// content before/after a `transform` without corrupting earlier slides.
+fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> String {
+    if let Some(timeline) = scene.content_timeline.get(label) {
+        let mut chosen: Option<&String> = None;
+        for (t, body) in timeline {
+            if *t <= time_ms {
+                chosen = Some(body);
+            }
+        }
+        if let Some(b) = chosen {
+            return b.clone();
+        }
+    }
+    scene.items.get(label).cloned().unwrap_or_default()
 }
 
 fn place_source(
@@ -711,4 +736,42 @@ pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
         }
         Err(e) => Err(CandyError::Typst(format!("{:?}", e))),
     }
+}
+
+/// Verify the content timeline actually swaps an mobject's rendered body
+/// between frames (this is what makes `transform` show the OLD content before
+/// the switch and the NEW content after, without corrupting earlier frames).
+#[test]
+fn content_timeline_swaps_rendered_body() {
+    use crate::core::ast::{FrameData, Label, Scene, Slide};
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    let mut items = HashMap::new();
+    items.insert(Label("box".into()), "rect(width: 2cm, height: 2cm)".into());
+    let mut timeline = HashMap::new();
+    timeline.insert(
+        Label("box".into()),
+        vec![(50u32, "circle(radius: 1cm)".to_string())],
+    );
+    let scene = Scene {
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
+        items,
+        content_timeline: timeline,
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        private_metadata: PrivateMeta::default(),
+    };
+
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    // Before the switch (t=0): should render the original `rect`.
+    let before = r.render_frame_at(0, &[]).unwrap();
+    // After the switch (t=100): should render the new `circle`.
+    let after = r.render_frame_at(100, &[]).unwrap();
+    assert_ne!(before, after, "content timeline did not change rendered body");
 }

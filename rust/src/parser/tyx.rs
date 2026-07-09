@@ -50,6 +50,10 @@ const CANDY: &[&str] = &[
     "fade_transform",
     "move_along_path",
     "morph",
+    // Manim-style single-object content transform (the headline `Transform` /
+    // `ReplacementTransform`): morph a target mobject into NEW inline content
+    // (e.g. an equation), keeping the original label reusable afterwards.
+    "transform",
 ];
 
 /// Parse `.tyx` file into a `Scene` AST.
@@ -69,6 +73,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     let scene = Scene {
         slides: ctx.slides,
         items: ctx.items,
+        content_timeline: ctx.content_timeline,
         initial: ctx.initial,
         audio: ctx.audio,
         imports: ctx.imports.clone(),
@@ -155,6 +160,11 @@ struct ParseCtx {
     /// Top-level `@preview`/package import lines (raw source) to re-inject into
     /// per-object compile snippets so mobject bodies can use external packages.
     imports: Vec<String>,
+    /// Per-label content switches recorded by `transform` (`(time_ms, new_body)`).
+    content_timeline: HashMap<Label, Vec<(u32, String)>>,
+    /// Monotonic counter for synthetic `__xf_<label>_<n>` mobjects created by
+    /// `transform`, so repeated transforms on the same label don't clash.
+    xf_counter: usize,
 }
 
 /// Recursively walk the syntax tree.
@@ -278,6 +288,7 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "fade_transform" => process_fade_transform(&pos, &named, ctx),
         "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
         "morph" => process_morph(&pos, &named, ctx),
+        "transform" => process_transform(&pos, &named, node, raw, ctx),
         _ => {}
     }
 }
@@ -859,6 +870,117 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     ctx.cursor += 1 + duration;
 }
 
+/// `transform(target, to: <content>, duration: 24, easing: "smooth")` —
+/// Manim's `Transform` / `ReplacementTransform`: morph a single mobject's
+/// content into a new inline `content` (a Typst body, e.g. an equation
+/// `[$a + b = c$]`). Unlike `morph` (which needs two pre-registered mobjects),
+/// `transform` takes the new content inline and keeps the **original label**
+/// holding the new content afterwards, so subsequent `#animate` calls operate on
+/// the transformed object.
+///
+/// Implemented as a crossfade + scale (the same mechanism as `morph`), but the
+/// old content is parked on a synthetic `__xf_<label>` mobject that fades out and
+/// shrinks while the target (now showing the new content) fades in and grows.
+/// The synthetic mobject ends invisible, so the final frame shows only the
+/// transformed target.
+fn process_transform(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+    node: &LinkedNode,
+    raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    let label = target_arg(pos, named);
+    let Some(label) = label else { return };
+
+    // `to` may be the 2nd positional arg or the `to:` named arg.
+    let to_expr = pos.get(1).or_else(|| named.get("to"));
+    let Some(to_expr) = to_expr else { return };
+    let new_body = expr_src(raw, node, to_expr).to_string();
+    if new_body.is_empty() {
+        return;
+    }
+
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(800.0)
+        .max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+
+    // Capture the current content of `target` before we replace it.
+    let old_body = ctx.items.get(&label).cloned().unwrap_or_default();
+
+    // No existing mobject → just fade the new content in.
+    if old_body.is_empty() {
+        ctx.initial.insert(
+            label.clone(),
+            FrameData {
+                time_ms: 0,
+                target: label.clone(),
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 0.0,
+                rotation: 0.0,
+                easing: Easing::Linear,
+            },
+        );
+        ctx.items.insert(label.clone(), new_body);
+        ctx.slides.push(Slide {
+            duration_ms: duration,
+            actions: vec![Action::FadeIn { target: label, easing }],
+        });
+        ctx.cursor += duration;
+        return;
+    }
+
+    // Synthetic mobject holding the OLD content. It is invisible until the
+    // transform slide (so earlier frames render `target` only, not a duplicate)
+    // and uses a *unique* label per transform so repeated transforms on the
+    // same label don't clash.
+    let tmp = Label(format!("__xf_{}_{}", label.0, ctx.xf_counter));
+    ctx.xf_counter += 1;
+    ctx.items.insert(tmp.clone(), old_body.clone());
+    ctx.initial.insert(
+        tmp.clone(),
+        FrameData {
+            time_ms: 0,
+            target: tmp.clone(),
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            opacity: 0.0,
+            rotation: 0.0,
+            easing: Easing::Linear,
+        },
+    );
+
+    // IMPORTANT: do NOT overwrite `items[label]`. The original body must stay
+    // in `items` so every frame *before* this transform still renders the old
+    // content. Instead we record a *content switch* on the timeline: from
+    // `old_body` (the current `items[label]`) to `new_body`, taking effect 1ms
+    // into the morph slide. The renderer picks the latest switch ≤ frame time.
+    let switch_at = ctx.cursor + 1;
+    ctx.content_timeline
+        .entry(label.clone())
+        .or_default()
+        .push((switch_at, new_body.clone()));
+
+    // Single morph slide: the scheduler's native `Transform` action crossfades
+    // `old` out while `target` (now showing `new_body`) fades in, inheriting
+    // `target`'s current transform — no positional jump, no scale accumulation.
+    ctx.slides.push(Slide {
+        duration_ms: duration,
+        actions: vec![Action::Transform {
+            target: label.clone(),
+            old: tmp,
+            easing,
+        }],
+    });
+    ctx.cursor += duration;
+}
+
 /// Recover the source byte range of `target` by identity (pointer) within the
 /// `LinkedNode` subtree. This works even for *detached* sources, where Typst
 /// assigns no resolvable span numbers and `LinkedNode::find` would fail.
@@ -1109,6 +1231,107 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    /// Verify `transform(target, to: <content>)` parks the old content on a
+    /// unique synthetic `__xf_<label>_<n>` mobject, keeps `items[target]` as
+    /// the ORIGINAL body (so earlier slides still render it), records the
+    /// content switch on `content_timeline`, and emits a single `Transform`
+    /// slide.
+    #[test]
+    fn parses_transform() {
+        let src = r#"
+#import "candy": *
+#mobject("eq", [$a + b = c$])
+#transform("eq", to: [$a + b + d = c$], duration: 20, easing: "smooth")
+#mobject("box", rect(width: 2cm, height: 2cm))
+#transform("box", to: circle(radius: 1.5cm, fill: blue))
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_transform.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        // eq: 1 mobject + 1 Transform slide; box: 1 mobject + 1 Transform slide.
+        // total = 2 slides.
+        assert_eq!(scene.slides.len(), 2, "slides: {:?}", scene.slides);
+
+        // `items[eq]` / `items[box]` keep their ORIGINAL bodies — the new
+        // content is recorded on the timeline instead.
+        assert_eq!(scene.items[&Label("eq".into())], "[$a + b = c$]");
+        assert_eq!(scene.items[&Label("box".into())], "rect(width: 2cm, height: 2cm)");
+
+        // The old content is parked on a unique synthetic mobject. The counter
+        // is global per parse, so eq→`__xf_eq_0` and box→`__xf_box_1`.
+        assert_eq!(scene.items[&Label("__xf_eq_0".into())], "[$a + b = c$]");
+        assert_eq!(scene.items[&Label("__xf_box_1".into())], "rect(width: 2cm, height: 2cm)");
+
+        // The content switch is recorded on the timeline at `cursor + 1`.
+        assert_eq!(
+            scene.content_timeline[&Label("eq".into())],
+            vec![(1u32, "[$a + b + d = c$]".to_string())]
+        );
+        assert_eq!(
+            scene.content_timeline[&Label("box".into())],
+            vec![(21u32, "circle(radius: 1.5cm, fill: blue)".to_string())]
+        );
+
+        // Each transform emits a single `Transform` action on its target.
+        assert!(matches!(
+            &scene.slides[0].actions[..],
+            [Action::Transform { target, .. }] if target.0 == "eq"
+        ));
+        assert!(matches!(
+            &scene.slides[1].actions[..],
+            [Action::Transform { target, .. }] if target.0 == "box"
+        ));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Regression: a sequence of `transform`s must NOT accumulate `scale`
+    /// (the old `ScaleBy 100` approach blew up to 100×100 = 10000), and the
+    /// parked old-content mobject must INHERIT the target's current position
+    /// (so the old content does not jump to the origin `(0,0)`).
+    #[test]
+    fn transform_keeps_scale_bounded_and_inherits_position() {
+        let src = r#"
+#import "candy": *
+#mobject("shape", rect(width: 3cm, height: 3cm, fill: blue))
+#animate("shape", to: (5cm, 0cm), duration: 30)
+#transform("shape", to: circle(radius: 1.6cm, fill: red), duration: 30)
+#transform("shape", to: rect(width: 1cm), duration: 30)
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_transform_sched.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        let frames = crate::core::scheduler::schedule(&scene).unwrap();
+
+        // scale must stay bounded for every label (no explosion).
+        for f in &frames {
+            assert!(f.scale <= 2.0, "scale blew up to {}", f.scale);
+            assert!(f.scale >= 1e-4, "scale shrank to {}", f.scale);
+        }
+
+        // The parked `__xf_shape_*` mobject must track the target's position
+        // (5cm, 0cm) during the transform, not sit at the origin.
+        let xf: Vec<&crate::core::ast::FrameData> = frames
+            .iter()
+            .filter(|f| f.target.0.starts_with("__xf_shape"))
+            .collect();
+        assert!(!xf.is_empty(), "old-content mobject missing");
+        for f in &xf {
+            if f.time_ms > 30 {
+                assert!(
+                    (f.x - 5.0).abs() < 1e-6,
+                    "old content x should inherit target (5cm), got {}",
+                    f.x
+                );
+                assert!(
+                    (f.y - 0.0).abs() < 1e-6,
+                    "old content y should inherit target (0cm), got {}",
+                    f.y
+                );
+            }
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
     /// Verify the new directives compile as valid standard Typst (lib.typ
     /// defines them all as no-ops).
     #[test]
@@ -1134,4 +1357,3 @@ mod tests {
         assert!(out.is_ok(), "std Typst failed to compile manim API: {out:?}");
     }
 }
-

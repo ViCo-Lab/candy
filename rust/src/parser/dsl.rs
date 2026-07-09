@@ -67,6 +67,7 @@ mod tests {
                 m.insert(Label("x".into()), "circle()".into());
                 m
             },
+            content_timeline: HashMap::new(),
             initial: HashMap::new(),
             audio: Vec::new(),
             imports: Vec::new(),
