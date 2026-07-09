@@ -10,71 +10,99 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build the `candy` Rust binary on every supported platform.
-  # Build only — no publishing. The binary is uploaded as a workflow artifact.
-  # ---------------------------------------------------------------------------
   build:
-    name: Build (${{ matrix.os }})
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: true
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            cross: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain (stable, edition 2024)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry + build
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build candy (release)
-        run: cargo build --release --manifest-path rust/Cargo.toml
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ matrix.target }}-cargo-
+      - if: '!matrix.cross'
+        run: cargo build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
-
-      - name: Upload candy binary
-        uses: actions/upload-artifact@v4
+      - if: matrix.cross
+        run: cross build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+        shell: bash
+      - id: binpath
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            echo "bin=rust/target/${{ matrix.target }}/release/candy.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "bin=rust/target/${{ matrix.target }}/release/candy" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
         with:
-          name: candy-${{ matrix.os }}
-          path: |
-            rust/target/release/candy
-            rust/target/release/candy.exe
+          name: candy-${{ matrix.target }}
+          path: ${{ steps.binpath.outputs.bin }}
           if-no-files-found: warn
 
-  # ---------------------------------------------------------------------------
-  # Package the Typst library as an @preview-compatible source tarball.
-  # Platform-independent, so it runs once on Linux. Uploaded as an artifact.
-  # (Typst 0.15 has no `typst package` CLI subcommand; the package source is
-  # just the `typst/` directory — tar it up for distribution.)
-  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: test-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: test-cargo-
+      - run: cargo test --manifest-path rust/Cargo.toml
+        shell: bash
+
   typst-package:
     name: Package Typst library
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build Typst package tarball
-        shell: bash
+      - uses: actions/checkout@v4
+      - shell: bash
         run: |
           VERSION=$(grep -m1 '^version' typst/typst.toml | sed -E 's/.*= *"([^"]+)".*/\1/')
-          echo "Typst package version: ${VERSION}"
           tar -czf "candy-typst-${VERSION}.tar.gz" -C typst .
-          echo "Created candy-typst-${VERSION}.tar.gz"
-
-      - name: Upload Typst package
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: candy-typst
           path: candy-typst-*.tar.gz
