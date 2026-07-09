@@ -23,14 +23,30 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
     #[cfg(feature = "video")]
     {
-        // `rav1e` 0.8 can hit an internal tiling assert that *panics* (and may
-        // abort) for certain frame geometries. Wrap it so a panic is converted
-        // into a recoverable `E007`; the caller then falls back to H.264.
-        match catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps))) {
+        // `rav1e` 0.8.1 can hit an internal tiling assert that *panics* (and may
+        // abort) during inter-prediction (motion estimation) for certain frame
+        // geometries. No rav1e release newer than 0.8.1 exists yet, so instead of
+        // blanket-forcing all-intra (which throws away all temporal compression),
+        // we first try *full-quality* AV1 (inter-prediction on). If that panics we
+        // transparently retry in all-intra mode (every frame a keyframe → no ME →
+        // no panic). The output is valid AV1 either way; only the
+        // temporal-compression efficiency differs. (A panic still results in a
+        // clean `E007` rather than a process abort.)
+        match catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, false))) {
             Ok(r) => r,
-            Err(_) => Err(CandyError::Encode(
-                "rav1e aborted during AV1 encoding (E007); falling back to H.264".into(),
-            )),
+            Err(_) => {
+                eprintln!(
+                    "warn: [E007] rav1e inter-prediction panicked; retrying AV1 in \
+                     all-intra mode (valid but no temporal compression)"
+                );
+                catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, true)))
+                    .unwrap_or_else(|_| {
+                        Err(CandyError::Encode(
+                            "rav1e aborted during AV1 encoding (E007); falling back to H.264"
+                                .into(),
+                        ))
+                    })
+            }
         }
     }
     #[cfg(not(feature = "video"))]
@@ -45,8 +61,13 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
 }
 
 /// Core AV1 encoder (compiled only with the `video` feature).
+///
+/// `all_intra` forces every frame to be a keyframe (disabling inter-prediction
+/// / motion estimation), which sidesteps the `rav1e` 0.8.1 tiling assert that
+/// panics during ME for some frame geometries. It is only set by [`encode`] on
+/// the fallback retry.
 #[cfg(feature = "video")]
-fn encode_inner(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
+fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {
         return Err(CandyError::Encode("cannot encode an empty animation".into()));
     }
@@ -71,14 +92,13 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, Cand
     enc_cfg.chroma_sampling = ChromaSampling::Cs444;
     enc_cfg.time_base = Rational::new(1, fps as u64);
     enc_cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
-    // Workaround for a rav1e 0.8.1 tiling panic (`rect.y >= -(cfg.yorigin)` in
-    // tiling/plane_region.rs) that fires during INTER-prediction (motion
-    // estimation) for these frame geometries. It runs on a rayon worker thread
-    // and aborts the process if not intercepted (see the `catch_unwind` above).
-    // Forcing a keyframe on every frame disables inter prediction, so the AV1
-    // output is valid (all-intra). Revisit when rav1e is bumped past 0.8.1.
+    // Default: allow inter-prediction (temporal compression). `max_key_frame_interval
+    // = 0` leaves rav1e's default GOP, so inter frames are produced. When
+    // `all_intra` is set (the panic-retry path) we force a keyframe on every
+    // frame, which disables ME and avoids the 0.8.1 tiling panic
+    // (`rect.y >= -(cfg.yorigin)` in tiling/plane_region.rs).
     enc_cfg.min_key_frame_interval = 0;
-    enc_cfg.max_key_frame_interval = 1;
+    enc_cfg.max_key_frame_interval = if all_intra { 1 } else { 0 };
 
     let cfg = Config::default().with_encoder_config(enc_cfg);
     let mut ctx: Context<u8> = cfg

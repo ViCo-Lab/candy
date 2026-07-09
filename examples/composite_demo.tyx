@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 #mobject("title", text(24pt, weight: "bold", fill: blue)[Candy Animation Engine])
 #mobject("circle1", circle(radius: 1cm, fill: red))

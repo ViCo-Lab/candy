@@ -21,7 +21,8 @@
 //! No external tools are ever invoked: the Typst compilation, the video
 //! encoding, and the container muxing all run in-process. Build artifacts:
 //! intermediates (RGBA drafts, SVG drafts) live under `.candy/`; only the final
-//! video file is written to `dist/`.
+//! video file is written to `dist/`. On a successful video build the CLI drops
+//! the per-build `.candy/<stem>/` directory automatically (see `--keep-intermediates`).
 
 pub mod core;
 pub mod parser;
@@ -95,7 +96,7 @@ impl From<&std::path::Path> for Input {
 pub enum OutputFormat {
     /// SVG draft written to `.candy/` (not a video, never enters `dist/`).
     Svg,
-    /// MP4 container (default), AV1 unless `--codec h264` is given.
+    /// MP4 container (default), H.264 unless `--codec av1` is given.
     Mp4,
     /// Matroska (`.mkv`).
     Mkv,

@@ -71,6 +71,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         items: ctx.items,
         initial: ctx.initial,
         audio: ctx.audio,
+        imports: ctx.imports.clone(),
         page_size: ctx.page_size_cm.map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
         private_metadata: private,
     };
@@ -151,6 +152,9 @@ struct ParseCtx {
     block_counter: usize,
     /// Page size in cm, detected from `#set page(width:.., height:..)`.
     page_size_cm: Option<(f64, f64)>,
+    /// Top-level `@preview`/package import lines (raw source) to re-inject into
+    /// per-object compile snippets so mobject bodies can use external packages.
+    imports: Vec<String>,
 }
 
 /// Recursively walk the syntax tree.
@@ -163,12 +167,34 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         }
     }
     if let Some(imp) = node.get().cast::<ast::ModuleImport>() {
+        // Capture package imports (paths starting with '@') so they can be
+        // re-injected into candy's per-object compile snippets (which are
+        // detached Typst modules and would otherwise lose the binding). Local
+        // relative imports are skipped — they cannot resolve in a detached module.
+        if let Some(src) = module_import_path(&imp) {
+            if src.starts_with('@') {
+                // The ModuleImport AST node's range excludes the leading `#`
+                // escape, so re-add it so the injected line is valid Typst.
+                let text = format!("#{}", raw[node.range()].trim());
+                if !ctx.imports.contains(&text) {
+                    ctx.imports.push(text);
+                }
+            }
+        }
         process_import(imp, ctx);
     } else if let Some(call) = node.get().cast::<ast::FuncCall>() {
         process_call(call, node, raw, ctx);
     }
     for child in node.children() {
         walk(&child, raw, ctx);
+    }
+}
+
+/// Extract the package/path string from a `#import "..."` statement.
+fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
+    match imp.source() {
+        Expr::Str(s) => Some(s.get().to_string()),
+        _ => None,
     }
 }
 

@@ -1,0 +1,23 @@
+#import "@preview/candy:0.1.0": *
+#import "@preview/cetz:0.4.0": *
+
+// Demonstrates that candy's in-process World (via typst-kit) resolves and
+// downloads external `@preview` Typst packages on demand, and that the
+// top-level `@preview` import is re-injected into each per-object compile
+// snippet so mobject bodies can call package functions such as `draw.*`.
+//
+// Run:  candy build examples/preview_demo.tyx
+// (the `system-downloader` feature is on by default, so `cetz` is fetched
+//  automatically on first build)
+#scene(width: 16cm, height: 9cm)[
+  #mobject("c1", canvas({
+    draw.circle((0, 0), radius: 1cm, fill: blue)
+  }))
+
+  #mobject("c2", canvas({
+    draw.circle((0, 0), radius: 1cm, fill: red)
+  }))
+
+  #animate("c1", to: (6cm, 2cm), duration: 30, easing: "smooth")
+  #animate("c2", to: (2cm, 4cm), duration: 30, easing: "smooth")
+]

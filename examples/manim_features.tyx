@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 // Candy example: demonstrate Manim-inspired directives.
 // A blue circle moves, saves state, moves again, then restores back. Then it

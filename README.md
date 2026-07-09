@@ -27,7 +27,7 @@ them into per-frame Typst documents that are rendered and (optionally) encoded.
 
 ```typst
 // dot_move.tyx — valid standard Typst; candy build renders the clip.
-#import "candy": *
+#import "@preview/candy:0.1.0": *
 
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
@@ -47,7 +47,7 @@ them into per-frame Typst documents that are rendered and (optionally) encoded.
 
 The `@preview/candy` Typst package (the `typst/` directory) exposes this DSL.
 Each directive is *valid, standard Typst*: `typst compile` renders the first
-frame; `candy build` renders the full clip by reading the AST directly.
+frame (no animation); `candy build` renders the full clip by reading the AST directly.
 
 ## Architecture
 
@@ -85,21 +85,23 @@ Strict layered pipeline (no circular deps, no cross-module side effects):
 ## Usage
 
 ```sh
-# Default: AV1 in an MP4 container, written to dist/<stem>.mp4
-cargo run -- build examples/dot_move.tyx
+# Default: H.264 in an MP4 container, written to dist/<stem>.mp4
+candy build examples/dot_move.tyx
 
 # AV1 in WebM (Matroska with webm doctype)
-cargo run -- build examples/dot_move.tyx --format webm
+candy build examples/dot_move.tyx --format webm --codec av1
 
-# H.264 in MP4 (fallback when rav1e is unavailable)
-cargo run -- build examples/dot_move.tyx --format mp4 --codec h264
+# H.264 in MP4 (default self-contained codec; opt into AV1 with --codec av1)
+candy build examples/dot_move.tyx --format mp4 --codec h264
 
 # SVG draft (one file per frame, written to .candy/<stem>/)
-cargo run -- build examples/dot_move.tyx --format svg
+candy build examples/dot_move.tyx --format svg
 
 # Build from an SVG rendered by @preview/candy (candy-json round-trip)
-cargo run -- build scene.svg --from-svg --format mp4
+candy build scene.svg --from-svg --format mp4
 ```
+
+**When Debugging, use `cargo run -- <args>` instead of `candy <args>`.**
 
 ### Flags
 
@@ -109,15 +111,19 @@ cargo run -- build scene.svg --from-svg --format mp4
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `svg` (SVG draft → `.candy/`). |
-| `--codec` | `av1` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`. The first three are self-contained (rav1e/openh264); the rest shell out to system ffmpeg (runtime-detected, no cargo dep). See [Codecs](#codecs). |
+| `--codec` | `h264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`. The first three are self-contained (rav1e/openh264); the rest shell out to system ffmpeg (runtime-detected, no cargo dep). See [Codecs](#codecs). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
 | `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |
+| `--keep-intermediates` | off | Keep the `.candy/<stem>/` intermediate directory after a successful build (e.g. `frames.rgba`). By default candy deletes it once the final video is written. Has no effect on `--format svg`. |
 
 ### Artifacts
 
 - `.candy/<stem>/` — intermediates: `frames.rgba` (raw RGBA bundle),
-  `frame_*.svg` (draft frames, also written on encode failure).
+  `frame_*.svg` (draft frames, also written on encode failure). For video
+  builds this directory is **removed automatically** after a successful run
+  unless `--keep-intermediates` is passed; `--format svg` keeps it (that draft
+  *is* the output).
 - `dist/<stem>.<ext>` — final video (MP4 / MKV / WebM).
 
 ### GPU rasterization (optional)
@@ -146,8 +152,8 @@ Candy ships two **self-contained** video encoders (no system dependencies):
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `av1` (default) | rav1e (pure Rust) | MP4/MKV/WebM | Falls back to H.264 if rav1e fails. |
-| `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264. |
+| `h264` (default) | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; falls back to AV1 if openh264 fails. |
+| `av1` | rav1e (pure Rust) | MP4/MKV/WebM | Tries full-quality AV1 (inter-prediction); if rav1e 0.8.1 panics on the frame geometry it automatically retries in all-intra mode, then falls back to H.264. |
 | `h265` | — | — | Self-contained build returns E007; with system ffmpeg, uses x265. |
 
 When the system has **`ffmpeg`** on `$PATH`, candy can shell out to it for
@@ -176,16 +182,20 @@ cargo run -- build anim.tyx --codec h265-vaapi
 cargo run -- build anim.tyx --codec h264-videotoolbox
 ```
 
-The ffmpeg path pipes raw RGBA frames to ffmpeg's stdin and reads the muxed
-container from stdout — no temp files. If ffmpeg is not found, candy falls
-back to the self-contained codecs (av1/h264) or returns E007 (h265/x264/x265
-without ffmpeg).
+The ffmpeg path pipes raw RGBA frames to ffmpeg's stdin and writes the muxed
+container to a unique temp file (ffmpeg muxers require a seekable output), then
+reads the bytes back. Hardware encoders (VAAPI / VideoToolbox / QSV) upload the
+RGBA frames to a hardware surface (`format=nv12,hwupload`) and use
+codec-appropriate rate control. If ffmpeg is not found, candy falls back to the
+self-contained codecs (av1/h264) or returns E007 (h265/x264/x265 without ffmpeg).
 
-> **Note on encoding fallback:** `rav1e` 0.8 can panic on certain frame
-> geometries; candy wraps the encoder in `catch_unwind` and falls back to
-> H.264 automatically. If both encoders fail, candy writes an SVG draft to
-> `.candy/` and surfaces E007 — the command never aborts without producing
-> *some* output.
+> **Note on encoding fallback:** `rav1e` 0.8.1 (the latest published release)
+> can panic during inter-prediction on certain frame geometries. Candy first
+> tries full-quality AV1, and on that panic automatically retries in all-intra
+> mode (valid AV1, no temporal compression); only if that also fails does it
+> fall back to H.264. The panic is caught (`catch_unwind`) so the command never
+> aborts — if every encoder fails, candy writes an SVG draft to `.candy/` and
+> surfaces E007.
 
 ## Project status
 

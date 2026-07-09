@@ -8,7 +8,9 @@
 //! ```
 //!
 //! Artifacts: intermediates (RGBA/SVG drafts) under `.candy/`; the final video
-//! under `dist/` (only video files ever reach `dist/`).
+//! under `dist/` (only video files ever reach `dist/`). For video builds, the
+//! per-build `.candy/<stem>/` directory is removed automatically after a
+//! successful run unless `--keep-intermediates` is passed.
 
 use std::path::Path;
 
@@ -45,9 +47,10 @@ enum Commands {
         /// Output container. Default `mp4`. `svg` produces a draft in `.candy/`.
         #[arg(long, value_enum, default_value = "mp4")]
         format: FormatArg,
-        /// Video codec. Default `av1` (priority). `h264` optional. `hevc` is not
-        /// available in this self-contained build.
-        #[arg(long, value_enum, default_value = "av1")]
+        /// Video codec. Default `h264` (self-contained, via openh264). `av1`
+        /// (rav1e) is the fallback/alternative; `hevc`/`x264`/`x265`/hardware
+        /// codecs shell out to system ffmpeg when available.
+        #[arg(long, value_enum, default_value = "h264")]
         codec: CodecArg,
         /// Frames per second (video path).
         #[arg(short, long, default_value_t = 30)]
@@ -61,6 +64,13 @@ enum Commands {
         /// to CPU rasterization (typst-render). Has no effect on `--format svg`.
         #[arg(long, default_value_t = false)]
         gpu: bool,
+        /// Keep intermediate files (`.candy/<stem>/`, e.g. `frames.rgba` and
+        /// any draft `frame_*.svg`) after a successful build. By default candy
+        /// removes that per-build intermediate directory automatically once the
+        /// final video is written. Has no effect on `--format svg` (whose
+        /// output *is* the `.candy/` draft).
+        #[arg(long, default_value_t = false)]
+        keep_intermediates: bool,
     },
 }
 
@@ -84,9 +94,9 @@ enum FormatArg {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum CodecArg {
-    /// AV1 via rav1e (pure Rust, self-contained). Default.
+    /// AV1 via rav1e (pure Rust, self-contained).
     Av1,
-    /// H.264 via openh264 (self-contained).
+    /// H.264 via openh264 (self-contained). Default.
     H264,
     /// H.265/HEVC. Uses system ffmpeg + x265 if available; E007 otherwise.
     H265,
@@ -126,6 +136,7 @@ fn main() -> Result<(), CandyError> {
             fps,
             pixel_per_pt,
             gpu,
+            keep_intermediates,
         } => {
             let input = &input.0;
             let stem = input
@@ -163,7 +174,8 @@ fn main() -> Result<(), CandyError> {
 
             if out_fmt == OutputFormat::Svg {
                 // SVG draft → `.candy/<stem>/`, never `dist/`. GPU flag is
-                // irrelevant for SVG drafts (no rasterization).
+                // irrelevant for SVG drafts (no rasterization). The draft IS
+                // the deliverable here, so we never auto-clean it.
                 build_input_with_gpu(
                     input_kind,
                     &intermediate_dir,
@@ -189,6 +201,11 @@ fn main() -> Result<(), CandyError> {
                 pixel_per_pt,
                 gpu,
             )?;
+            // Successful video build: drop the per-build intermediate dir
+            // (`.candy/<stem>`) unless the user asked to keep it.
+            if !keep_intermediates {
+                cleanup_intermediate(&intermediate_dir);
+            }
             println!("wrote: {}", output.display());
         }
     }
@@ -203,5 +220,34 @@ fn resolve_output(output: &str, stem: &str, ext: &str) -> std::path::PathBuf {
             Path::new("dist").join(name.to_string_lossy().into_owned())
         }
         _ => Path::new("dist").join(format!("{stem}.{ext}")),
+    }
+}
+
+/// Best-effort removal of a per-build intermediate directory (`.candy/<stem>`).
+///
+/// Called after a successful video build (unless `--keep-intermediates` is
+/// given). Errors are non-fatal: we only `warn` and move on, so a file held
+/// open by another process won't abort the run. If removing the directory
+/// leaves the parent `.candy/` empty, that parent is pruned too to keep the
+/// tree tidy.
+fn cleanup_intermediate(dir: &Path) {
+    if !dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        eprintln!(
+            "warn: could not remove intermediate dir {}: {e}",
+            dir.display()
+        );
+        return;
+    }
+    if let Some(parent) = dir.parent() {
+        let is_candy = parent
+            .file_name()
+            .map(|n| n == "candy" || n == ".candy")
+            .unwrap_or(false);
+        if is_candy {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }

@@ -437,6 +437,7 @@ mod tests {
             },
             initial: std::collections::HashMap::new(),
             audio: Vec::new(),
+            imports: Vec::new(),
             page_size: None,
             private_metadata: PrivateMeta::default(),
         }

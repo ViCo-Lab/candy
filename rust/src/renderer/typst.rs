@@ -207,8 +207,10 @@ impl Renderer {
         self.page_w = page_w_cm * PT_PER_CM;
         self.page_h = page_h_cm * PT_PER_CM;
 
+        let preamble = imports_preamble(&self.scene);
         let mut src = format!(
-            "#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: white)\n",
+            "{preamble}\n#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: white)\n",
+            preamble = preamble,
             w = self.page_w,
             h = self.page_h,
         );
@@ -267,7 +269,8 @@ impl Renderer {
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
-        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body);
+        let preamble = imports_preamble(&self.scene);
+        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble);
 
         let doc = self.compile(&placed)?;
         let page = doc
@@ -444,9 +447,13 @@ impl Renderer {
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(label).map(|s| s.as_str()).unwrap_or("");
+        let preamble = imports_preamble(&self.scene);
 
-        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body);
+        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble);
 
+        if !self.scene.imports.is_empty() {
+            eprintln!("DEBUG ensure_natural src:\n{src}");
+        }
         let doc = self.compile(&src)?;
         let page = doc
             .pages()
@@ -478,7 +485,8 @@ impl Renderer {
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
         let body = self.scene.items.get(&st.target).map(|s| s.as_str()).unwrap_or("");
-        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body)
+        let preamble = imports_preamble(&self.scene);
+        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, body, &preamble)
     }
 }
 
@@ -490,6 +498,23 @@ impl Renderer {
 /// generated source minimal for the common case (and matching the v0.1 output
 /// exactly, so existing SVG drafts are byte-identical when no rotation is
 /// applied).
+/// Build a Typst preamble that re-declares every `@preview`/package import
+/// captured from the source `.tyx`, so the detached per-object compile snippets
+/// (which would otherwise lose the binding) can reference package symbols used
+/// inside mobject bodies.
+fn imports_preamble(scene: &Scene) -> String {
+    if scene.imports.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::new();
+        for imp in &scene.imports {
+            s.push_str(imp);
+            s.push('\n');
+        }
+        s
+    }
+}
+
 fn place_source(
     page_w: f64,
     page_h: f64,
@@ -498,19 +523,25 @@ fn place_source(
     scale_pct: f64,
     rotation: f64,
     body: &str,
+    preamble: &str,
 ) -> String {
     // The body is a raw Typst expression (e.g. "rect(width: 2cm, fill: red)")
     // captured from the .tyx source. Inside a content block `[...]`, function
     // calls MUST be prefixed with `#` — otherwise Typst treats them as plain
     // text. We add the `#` here so the body renders as an object, not text.
+    let pre = if preamble.is_empty() {
+        String::new()
+    } else {
+        format!("{preamble}\n")
+    };
     if rotation.abs() < 1e-9 {
         format!(
-            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
+            "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
              #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #{body} ] ]\n"
         )
     } else {
         format!(
-            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
+            "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
              #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[ #scale(origin: top + left, {scale_pct}%)[ #rotate(origin: top + left, {rotation}deg)[ #{body} ] ] ]\n"
         )
     }

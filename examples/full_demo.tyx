@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 #scene(width: 16cm, height: 9cm)[
 

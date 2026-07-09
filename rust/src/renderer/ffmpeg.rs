@@ -131,10 +131,25 @@ pub fn encode_via_ffmpeg(
     );
     let tmp_path = std::env::temp_dir().join(tmp_name);
 
-    // Build the ffmpeg command:
-    //   ffmpeg -f rawvideo -pix_fmt rgba -s WxH -r FPS -i - \
-    //          -c:v <encoder> -f <format> -movflags +faststart <tmpfile>
+    // Build the ffmpeg command. Order matters for hardware encoders: a render
+    // node / device must be declared *before* the input is read, and hardware
+    // encoders need the raw RGBA frames uploaded to a hardware surface (not
+    // passed straight through). Software lib encoders (x264/x265) instead want
+    // `-preset`/`-crf` — options that VAAPI / VideoToolbox / QSV reject.
+    //
+    //   ffmpeg [-vaapi_device /dev/dri/renderD128] \
+    //          -f rawvideo -pix_fmt rgba -s WxH -r FPS -i - \
+    //          -c:v <encoder> [-vf ...] [-qp|-b:v|-preset|-crf ...] \
+    //          -f <format> -movflags +faststart <tmpfile>
+    let bitrate = ((w as u64 * h as u64 * fps as u64) / 20)
+        .clamp(120_000, 20_000_000);
+    let bitrate_str = bitrate.to_string();
+
     let mut cmd = Command::new(&ffmpeg);
+    // VAAPI needs its render node declared up front (a global option, before -i).
+    if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi) {
+        cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
+    }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -145,22 +160,39 @@ pub fn encode_via_ffmpeg(
         .args(["-r", &fps.to_string()])
         .args(["-i", "-"])
         // Output codec.
-        .args(["-c:v", encoder])
-        // Quality preset for software encoders.
-        .args(["-preset", "medium"])
-        .args(["-crf", "23"]);
+        .args(["-c:v", encoder]);
 
-    // Software lib encoders (x264/x265) receive raw RGBA frames, but HEVC/x265
-    // rejects the alpha channel ("does not support alpha layer encoding") and
-    // yuv420p is the universally-supported, standard video pixel format — so
-    // strip alpha and convert before encoding. Hardware encoders declare their
-    // own surface formats, so we leave those untouched.
+    // Per-codec options.
     match codec {
+        // Software lib encoders: quality preset + CRF + strip alpha (x265 rejects
+        // the alpha channel; yuv420p is the universally-supported format).
         Codec::X264 | Codec::X265 | Codec::H265 => {
+            cmd.args(["-preset", "medium"]);
+            cmd.args(["-crf", "23"]);
             cmd.args(["-vf", "format=yuv420p"]);
         }
+        // VAAPI hardware encoders: upload the RGBA frames to a VAAPI hardware
+        // surface (nv12) before encoding. `-qp` is VAAPI's constant-quality
+        // control — it does NOT accept `-crf`/`-preset`.
+        Codec::H264Vaapi | Codec::H265Vaapi => {
+            cmd.args(["-vf", "format=nv12,hwupload"]);
+            cmd.args(["-qp", "24"]);
+        }
+        // VideoToolbox (macOS): constant-bitrate control.
+        Codec::H264VideoToolbox | Codec::H265VideoToolbox => {
+            cmd.args(["-b:v", &bitrate_str]);
+        }
+        // Intel QSV: init the QSV device, upload to hardware, constant-bitrate.
+        Codec::H264Qsv | Codec::H265Qsv => {
+            cmd.args(["-init_hw_device", "qsv=qsv:/dev/dri/renderD128"]);
+            cmd.args(["-vf", "format=nv12,hwupload=extra_hw_frames=64"]);
+            cmd.args(["-b:v", &bitrate_str]);
+        }
+        // Self-contained codecs (Av1/H264) never reach here — `encode_via_ffmpeg`
+        // is only called for ffmpeg-backed codecs — but the match must be total.
         _ => {}
     }
+
     // Output container (written to the temp file).
     cmd.args(["-f", format])
         .args(["-y", tmp_path.to_str().unwrap_or("/dev/null")]);
@@ -169,14 +201,6 @@ pub fn encode_via_ffmpeg(
     // seekable file, not a pipe).
     if matches!(container, Container::Mp4) {
         cmd.args(["-movflags", "+faststart"]);
-    }
-
-    // Hardware encoder hints.
-    match codec {
-        Codec::H264Vaapi | Codec::H265Vaapi => {
-            cmd.args(["-vaapi_device", "/dev/dri/renderD128"]);
-        }
-        _ => {}
     }
 
     let mut child = cmd.spawn().map_err(|e| {

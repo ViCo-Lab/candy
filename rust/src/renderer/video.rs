@@ -2,8 +2,8 @@
 //!
 //! ## Self-contained codecs (default, no system deps)
 //!
-//! * **AV1** (`rav1e`, pure Rust) — preferred.
-//! * **H.264** (`openh264`, linked `libopenh264`) — optional.
+//! * **H.264** (`openh264`, linked `libopenh264`) — default.
+//! * **AV1** (`rav1e`, pure Rust) — opt-in via `--codec av1`.
 //!
 //! ## Optional system-FFmpeg codecs (runtime-detected, no cargo deps)
 //!
@@ -39,9 +39,9 @@ use crate::renderer::container;
 /// Video codec selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
-    /// AV1 via rav1e (pure Rust, self-contained). Default.
+    /// AV1 via rav1e (pure Rust, self-contained).
     Av1,
-    /// H.264 via openh264 (self-contained).
+    /// H.264 via openh264 (self-contained). Default.
     H264,
     /// H.265/HEVC. Self-contained build returns E007; with system ffmpeg +
     /// x265, shells out to ffmpeg.
@@ -164,9 +164,22 @@ pub fn encode_frames(
     let composed: Vec<RenderedFrame> = frames.iter().map(|f| compose(f, tw, th)).collect();
 
     match codec {
-        // AV1 is the priority codec. `rav1e` can panic on some frame geometries;
-        // if it does (or returns an error), transparently fall back to H.264 so a
-        // valid, self-contained video is still produced.
+        // H.264 is the default self-contained codec. If openh264 fails for any
+        // reason, transparently fall back to AV1 (rav1e) so a valid,
+        // self-contained video is still produced.
+        Codec::H264 => match crate::renderer::h264::encode(&composed, fps) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                eprintln!(
+                    "warn: [{}] H.264 encode failed, falling back to AV1: {e}",
+                    e.code()
+                );
+                crate::renderer::rav1e::encode(&composed, fps)
+            }
+        },
+        // AV1 (opt-in via `--codec av1`). `rav1e` 0.8.1 can panic on some frame
+        // geometries; `encode` already retries in all-intra mode, and only if
+        // that also fails do we fall back to H.264.
         Codec::Av1 => match crate::renderer::rav1e::encode(&composed, fps) {
             Ok(v) => Ok(v),
             Err(e) => {
@@ -177,7 +190,6 @@ pub fn encode_frames(
                 crate::renderer::h264::encode(&composed, fps)
             }
         },
-        Codec::H264 => crate::renderer::h264::encode(&composed, fps),
         Codec::H265 => {
             // Try ffmpeg + x265 first; if ffmpeg is not available, return E007.
             if crate::renderer::ffmpeg::find_ffmpeg().is_some() {

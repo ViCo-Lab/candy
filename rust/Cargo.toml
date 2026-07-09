@@ -46,7 +46,10 @@ keyframe = "1.1"
 # Lightweight AV1 encoding backend (no FFmpeg, pure Rust).
 # `default-features = false` disables the nasm assembly backend so it builds
 # with the portable Rust/C implementation on any host.
-rav1e = { version = "0.8", default-features = false }
+# 0.8.1 is the latest published release (no 0.8.2 / 0.9 exists yet); the
+# rav1e encoder is made robust against its 0.8.1 tiling-panic via an
+# inter→all-intra retry in `src/renderer/rav1e.rs`.
+rav1e = { version = "0.8.1", default-features = false }
 
 # In-process H.264 encoder. `openh264` links the system `libopenh264` library
 # at build time but performs all encoding in-process — candy never spawns a

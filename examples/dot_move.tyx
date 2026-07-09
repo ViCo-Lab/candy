@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 // Candy example: a blue dot slides to (4cm, 0pt) over 1000ms, then holds.
 #mobject("dot", circle(radius: 1cm, fill: blue))

@@ -244,6 +244,14 @@ pub struct Scene {
     /// Audio tracks attached via `candy.audio`.
     #[serde(default)]
     pub audio: Vec<AudioTrack>,
+    /// Top-level `@preview`/package import lines captured from the source `.tyx`
+    /// (e.g. `#import "@preview/cetz:0.3.0": *`). They are re-injected into
+    /// candy's per-object compile snippets — which are detached Typst modules —
+    /// so mobject bodies can reference symbols from external Typst packages.
+    /// Local relative imports are intentionally excluded (they would not
+    /// resolve in a detached module).
+    #[serde(default)]
+    pub imports: Vec<String>,
     /// Page size in Typst points, if the `.tyx` source sets a page size via
     /// `#set page(width:.., height:..)` or `#scene(width:.., height:..)`.
     /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide).
@@ -354,6 +362,7 @@ mod tests {
             },
             initial: HashMap::new(),
             audio: Vec::new(),
+            imports: Vec::new(),
             page_size: None,
             private_metadata: PrivateMeta::default(),
         }

@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 // Candy example: a green square rotates 90° while fading to 30% opacity,
 // then rotates back with there-and-back easing.

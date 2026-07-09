@@ -6,20 +6,14 @@ target/
 # Candy build outputs (never commit rendered artifacts)
 .candy/
 dist/
-*.mp4
-*.mkv
-*.webm
-*.ivf
-*.rgba
-*.ogg
-*.opus
-*.aac
 
 # Editor / OS
 .vscode/
 .idea/
-.DS_Store
-*.swp
-*~
+**/.DS_Store
+**/desktop.ini
+**/*.swp
+**/*~
 
-# Lock files: keep Cargo.lock for the binary crate (rust/Cargo.lock is committed).
+# Version codename list
+.codenames

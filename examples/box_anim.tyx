@@ -1,4 +1,4 @@
-#import "../typst/src/lib.typ": *
+#import "@preview/candy:0.1.0": *
 
 // Candy example: a red box moves to (3cm, 2cm) while scaling up to 1.5x.
 // Durations are in milliseconds. Valid standard Typst.
