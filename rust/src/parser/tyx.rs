@@ -17,12 +17,15 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
-use typst_syntax::ast::{self, AstNode, Expr};
 use typst_syntax::LinkedNode;
-use typst_syntax::parse;
 use typst_syntax::SyntaxNode;
+use typst_syntax::ast::{self, AstNode, Expr};
+use typst_syntax::parse;
 
-use crate::core::ast::{Action, AudioTrack, FrameData, Label, Scene, Slide};
+use crate::core::ast::{
+    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, Scene, Slide,
+    SubPos, Subtitle,
+};
 use crate::core::easing::Easing;
 use crate::core::error::CandyError;
 use crate::core::meta::PrivateMeta;
@@ -54,6 +57,18 @@ const CANDY: &[&str] = &[
     // `ReplacementTransform`): morph a target mobject into NEW inline content
     // (e.g. an equation), keeping the original label reusable afterwards.
     "transform",
+    // Subtitle module (字幕模块).
+    "subtitle",
+    // Easing-counter module (缓动计数器模块): `ecounter` defines a named integer
+    // counter, `ecval` reads its current integer value (substituted per-frame by
+    // the renderer), and `counter_pause` / `counter_resume` / `counter_destroy`
+    // drive its lifecycle. `ecval` is a no-op at parse time (the parser never
+    // acts on reads — only definitions and lifecycle events matter).
+    "ecounter",
+    "ecval",
+    "counter_pause",
+    "counter_resume",
+    "counter_destroy",
 ];
 
 /// Parse `.tyx` file into a `Scene` AST.
@@ -67,7 +82,18 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     let node = LinkedNode::new(&root);
 
     let mut ctx = ParseCtx::default();
+    // The whole document is the implicit root scope (id 0).
+    ctx.scope_stack.push(0);
+    ctx.scope_starts.insert(0, 0);
+    ctx.next_scope_id = 1;
     walk(&node, &raw, &mut ctx);
+    // Finalize the root scope's interval [0, cursor].
+    ctx.scopes.push(crate::core::ast::ScopeInfo {
+        id: 0,
+        parent: None,
+        start_ms: 0,
+        end_ms: ctx.cursor,
+    });
 
     let private = PrivateMeta::default();
     let scene = Scene {
@@ -77,7 +103,13 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         initial: ctx.initial,
         audio: ctx.audio,
         imports: ctx.imports.clone(),
-        page_size: ctx.page_size_cm.map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        page_size: ctx
+            .page_size_cm
+            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        subtitles: ctx.subtitles,
+        counters: ctx.counters,
+        counter_events: ctx.counter_events,
+        scopes: ctx.scopes,
         private_metadata: private,
     };
     scene.validate().map_err(CandyError::Parse)?; // E002
@@ -93,12 +125,10 @@ const PT_PER_CM: f64 = 28.346_456_692_913_385;
 fn extract_page_size(node: &LinkedNode, ctx: &mut ParseCtx) {
     let mut width: Option<f64> = None;
     let mut height: Option<f64> = None;
-    collect_named_lengths(node, &mut |name, cm| {
-        match name {
-            "width" => width = Some(cm),
-            "height" => height = Some(cm),
-            _ => {}
-        }
+    collect_named_lengths(node, &mut |name, cm| match name {
+        "width" => width = Some(cm),
+        "height" => height = Some(cm),
+        _ => {}
     });
     if let (Some(w), Some(h)) = (width, height) {
         ctx.page_size_cm = Some((w, h));
@@ -165,6 +195,23 @@ struct ParseCtx {
     /// Monotonic counter for synthetic `__xf_<label>_<n>` mobjects created by
     /// `transform`, so repeated transforms on the same label don't clash.
     xf_counter: usize,
+    /// Lexical Typst scope tracking. `scope_stack` is the current nesting
+    /// (top = innermost scope). `next_scope_id` assigns fresh ids. `scope_starts`
+    /// records each scope's start `cursor` so the interval `[start, cursor-at-exit]`
+    /// can be recorded on scope exit. Scopes drive subtitle auto-destroy and
+    /// counter/subtitle shadowing.
+    scope_stack: Vec<usize>,
+    next_scope_id: usize,
+    scope_starts: HashMap<usize, u32>,
+    /// Subtitle overlays (字幕模块).
+    subtitles: Vec<crate::core::ast::Subtitle>,
+    /// Easing counters (缓动计数器模块).
+    counters: Vec<crate::core::ast::CounterDef>,
+    counter_events: Vec<crate::core::ast::CounterEvent>,
+    /// Lexical scope intervals (finalized on scope exit / at end of parse).
+    scopes: Vec<crate::core::ast::ScopeInfo>,
+    /// Monotonic id for synthetic subtitles.
+    subtitle_id: usize,
 }
 
 /// Recursively walk the syntax tree.
@@ -195,8 +242,37 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     } else if let Some(call) = node.get().cast::<ast::FuncCall>() {
         process_call(call, node, raw, ctx);
     }
+
+    // Lexical scope: a Typst code block `{ ... }` opens a child scope. We push
+    // a fresh scope id (recording its start `cursor`), recurse into the block's
+    // children, then pop and record the scope's `[start, cursor-at-exit]`
+    // interval. This drives subtitle auto-destroy and counter/subtitle
+    // shadowing. The top-level document node is not a code block — it is the
+    // implicit root scope finalized in `parse_tyx`.
+    let opened_scope: Option<usize> = node.get().cast::<ast::CodeBlock>().map(|_| {
+        let id = ctx.next_scope_id;
+        ctx.next_scope_id += 1;
+        ctx.scope_starts.insert(id, ctx.cursor);
+        ctx.scope_stack.push(id);
+        eprintln!("DBG CODEBLOCK scope id={id} cursor={}", ctx.cursor);
+        id
+    });
     for child in node.children() {
         walk(&child, raw, ctx);
+    }
+    if let Some(id) = opened_scope {
+        let start = ctx.scope_starts.get(&id).copied().unwrap_or(0);
+        let parent = ctx
+            .scope_stack
+            .get(ctx.scope_stack.len().saturating_sub(2))
+            .copied();
+        ctx.scope_stack.pop();
+        ctx.scopes.push(crate::core::ast::ScopeInfo {
+            id,
+            parent,
+            start_ms: start,
+            end_ms: ctx.cursor,
+        });
     }
 }
 
@@ -289,8 +365,32 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
         "morph" => process_morph(&pos, &named, ctx),
         "transform" => process_transform(&pos, &named, node, raw, ctx),
+        // Subtitle + easing-counter modules.
+        "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
+        "ecounter" => process_ecounter(&pos, &named, ctx),
+        "ecval" => { /* read; value substituted per-frame by the renderer */ }
+        "counter_pause" => {
+            process_counter_event(&pos, &named, ctx, crate::core::ast::CounterEventKind::Pause)
+        }
+        "counter_resume" => process_counter_event(
+            &pos,
+            &named,
+            ctx,
+            crate::core::ast::CounterEventKind::Resume,
+        ),
+        "counter_destroy" => process_counter_event(
+            &pos,
+            &named,
+            ctx,
+            crate::core::ast::CounterEventKind::Destroy,
+        ),
         _ => {}
     }
+}
+
+/// The current (innermost) lexical scope id, as a string.
+fn current_scope(ctx: &ParseCtx) -> String {
+    ctx.scope_stack.last().copied().unwrap_or(0).to_string()
 }
 
 /// `mobject(label, body)`: register `items[label] = body` (raw source) with a
@@ -344,7 +444,9 @@ fn process_animate(
     ctx: &mut ParseCtx,
 ) {
     let target_expr = pos.first().or_else(|| named.get("target"));
-    let Some(target_expr) = target_expr else { return };
+    let Some(target_expr) = target_expr else {
+        return;
+    };
     let label = match target_expr {
         Expr::Str(s) => Label(s.get().to_string()),
         _ => return,
@@ -380,7 +482,7 @@ fn process_animate(
             actions.push(Action::MoveTo {
                 target: label.clone(),
                 to: (x, y),
-                easing,
+                easing: easing.clone(),
             });
         }
     }
@@ -391,7 +493,7 @@ fn process_animate(
         actions.push(Action::MoveBy {
             target: label.clone(),
             delta: (dx.unwrap_or(0.0), dy.unwrap_or(0.0)),
-            easing,
+            easing: easing.clone(),
         });
     }
     // Absolute scale: `scale: 1.5`.
@@ -399,7 +501,7 @@ fn process_animate(
         actions.push(Action::Scale {
             target: label.clone(),
             to: s,
-            easing,
+            easing: easing.clone(),
         });
     }
     // Relative scale: `scale-by: 1.5` (multiply current scale).
@@ -407,7 +509,7 @@ fn process_animate(
         actions.push(Action::ScaleBy {
             target: label.clone(),
             factor: f,
-            easing,
+            easing: easing.clone(),
         });
     }
     // Absolute rotate: `rotate: 90`.
@@ -415,7 +517,7 @@ fn process_animate(
         actions.push(Action::Rotate {
             target: label.clone(),
             degrees: deg,
-            easing,
+            easing: easing.clone(),
         });
     }
     // Relative rotate: `rotate-by: 15` (add to current rotation).
@@ -423,14 +525,14 @@ fn process_animate(
         actions.push(Action::RotateBy {
             target: label.clone(),
             delta_degrees: d,
-            easing,
+            easing: easing.clone(),
         });
     }
     if let Some(o) = named.get("opacity").and_then(expr_to_f64) {
         actions.push(Action::FadeTo {
             target: label.clone(),
             opacity: o.clamp(0.0, 1.0),
-            easing,
+            easing: easing.clone(),
         });
     }
     ctx.slides.push(Slide {
@@ -562,7 +664,9 @@ fn target_arg(pos: &[Expr], named: &HashMap<String, Expr>) -> Option<Label> {
 /// Inert under standard Typst. Produces no slide (0-duration); the action is
 /// attached to a 1-frame slide at the current cursor so the scheduler sees it.
 fn process_save_state(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
     let slot = named
         .get("slot")
         .and_then(|e| match e {
@@ -574,7 +678,10 @@ fn process_save_state(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Par
     // processes the action at the current cursor position.
     ctx.slides.push(Slide {
         duration_ms: 1,
-        actions: vec![Action::SaveState { target: label, slot }],
+        actions: vec![Action::SaveState {
+            target: label,
+            slot,
+        }],
     });
     ctx.cursor += 1;
 }
@@ -582,7 +689,9 @@ fn process_save_state(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Par
 /// `restore(target, slot: "name", duration: 30, easing: "linear")` —
 /// interpolate back to a previously saved state.
 fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
     let slot = named
         .get("slot")
         .and_then(|e| match e {
@@ -598,7 +707,11 @@ fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseC
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
-        actions: vec![Action::Restore { target: label, slot, easing }],
+        actions: vec![Action::Restore {
+            target: label,
+            slot,
+            easing: easing.clone(),
+        }],
     });
     ctx.cursor += duration;
 }
@@ -606,15 +719,27 @@ fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseC
 /// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 24, easing: "smooth")`
 /// — briefly scale + shift, then return to original.
 fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(800.0).max(1.0) as u32;
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(800.0)
+        .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
-        actions: vec![Action::Indicate { target: label, factor, dx, dy, easing }],
+        actions: vec![Action::Indicate {
+            target: label,
+            factor,
+            dx,
+            dy,
+            easing: easing.clone(),
+        }],
     });
     ctx.cursor += duration;
 }
@@ -622,13 +747,23 @@ fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
 /// `flash(target, factor: 2.0, duration: 18, easing: "smooth")` —
 /// briefly enlarge + fade, then return to original.
 fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(600.0).max(1.0) as u32;
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(600.0)
+        .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
-        actions: vec![Action::Flash { target: label, factor, easing }],
+        actions: vec![Action::Flash {
+            target: label,
+            factor,
+            easing: easing.clone(),
+        }],
     });
     ctx.cursor += duration;
 }
@@ -636,13 +771,23 @@ fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
 /// `wiggle(target, degrees: 15, duration: 20, easing: "wiggle")` —
 /// oscillate rotation, then return to original.
 fn process_wiggle(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(667.0).max(1.0) as u32;
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(667.0)
+        .max(1.0) as u32;
     let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(500.0);
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
-        actions: vec![Action::Wiggle { target: label, degrees, easing }],
+        actions: vec![Action::Wiggle {
+            target: label,
+            degrees,
+            easing: easing.clone(),
+        }],
     });
     ctx.cursor += duration;
 }
@@ -650,7 +795,9 @@ fn process_wiggle(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCt
 /// `appear(target)` / `disappear(target)` — instantaneous visibility toggle.
 /// Emits a 1-frame slide. (`show`/`hide` would conflict with Typst keywords.)
 fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, &HashMap::new()) else { return };
+    let Some(label) = target_arg(pos, &HashMap::new()) else {
+        return;
+    };
     let action = if appear {
         Action::Show { target: label }
     } else {
@@ -666,7 +813,9 @@ fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
 /// `set_color(target, color: "red", duration: 1, easing: "linear")` —
 /// record a color change (tracked, renderer no-op for now).
 fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
     let color = named
         .get("color")
         .and_then(|e| match e {
@@ -674,11 +823,19 @@ fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
             _ => None,
         })
         .unwrap_or_else(|| "black".to_string());
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(33.0).max(1.0) as u32;
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(33.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
-        actions: vec![Action::SetColor { target: label, color, easing }],
+        actions: vec![Action::SetColor {
+            target: label,
+            color,
+            easing: easing.clone(),
+        }],
     });
     ctx.cursor += duration;
 }
@@ -688,9 +845,19 @@ fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
 /// `blink(target, blinks: 3, duration: 30, easing: "linear")` — alternate
 /// opacity 1↔0 N times. Mirrors Manim's `Blink`.
 fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
-    let blinks = named.get("blinks").and_then(expr_to_f64).unwrap_or(3.0).max(1.0) as u32;
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(1000.0).max(1.0) as u32;
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let blinks = named
+        .get("blinks")
+        .and_then(expr_to_f64)
+        .unwrap_or(3.0)
+        .max(1.0) as u32;
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(1000.0)
+        .max(1.0) as u32;
     let per_blink = (duration / (blinks * 2)).max(1);
     let easing = resolve_easing(named, &label);
     // Each blink = FadeTo(0) + FadeTo(1).
@@ -700,7 +867,7 @@ fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
             actions: vec![Action::FadeTo {
                 target: label.clone(),
                 opacity: 0.0,
-                easing,
+                easing: easing.clone(),
             }],
         });
         ctx.slides.push(Slide {
@@ -708,7 +875,7 @@ fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
             actions: vec![Action::FadeTo {
                 target: label.clone(),
                 opacity: 1.0,
-                easing,
+                easing: easing.clone(),
             }],
         });
     }
@@ -719,27 +886,54 @@ fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
 /// — fly in from a scaled-up, rotated state to the natural position, fading in.
 /// Mirrors Manim's `SpiralIn`.
 fn process_spiral_in(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
     let scale = named.get("scale").and_then(expr_to_f64).unwrap_or(3.0);
     let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(360.0);
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(800.0).max(1.0) as u32;
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(800.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     // Set initial state: scaled up, rotated, invisible.
     ctx.slides.push(Slide {
         duration_ms: 1,
         actions: vec![
-            Action::ScaleBy { target: label.clone(), factor: scale, easing },
-            Action::RotateBy { target: label.clone(), delta_degrees: rotate, easing },
-            Action::Hide { target: label.clone() },
+            Action::ScaleBy {
+                target: label.clone(),
+                factor: scale,
+                easing: easing.clone(),
+            },
+            Action::RotateBy {
+                target: label.clone(),
+                delta_degrees: rotate,
+                easing: easing.clone(),
+            },
+            Action::Hide {
+                target: label.clone(),
+            },
         ],
     });
     // Animate to natural state: scale 1, rotate 0, visible.
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
-            Action::Scale { target: label.clone(), to: 1.0, easing },
-            Action::Rotate { target: label.clone(), degrees: 0.0, easing },
-            Action::FadeIn { target: label, easing },
+            Action::Scale {
+                target: label.clone(),
+                to: 1.0,
+                easing: easing.clone(),
+            },
+            Action::Rotate {
+                target: label.clone(),
+                degrees: 0.0,
+                easing: easing.clone(),
+            },
+            Action::FadeIn {
+                target: label,
+                easing: easing.clone(),
+            },
         ],
     });
     ctx.cursor += 1 + duration;
@@ -749,15 +943,29 @@ fn process_spiral_in(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
 /// shrink a "spotlight" onto the target. Implemented as a scale-down + fade
 /// on the target. Mirrors Manim's `FocusOn`.
 fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let Some(label) = target_arg(pos, named) else { return };
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(0.5);
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(667.0).max(1.0) as u32;
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(667.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
-            Action::ScaleBy { target: label.clone(), factor, easing },
-            Action::FadeTo { target: label, opacity: 0.3, easing },
+            Action::ScaleBy {
+                target: label.clone(),
+                factor,
+                easing: easing.clone(),
+            },
+            Action::FadeTo {
+                target: label,
+                opacity: 0.3,
+                easing: easing.clone(),
+            },
         ],
     });
     ctx.cursor += duration;
@@ -768,26 +976,31 @@ fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
 /// must be registered via `mobject`. Mirrors Manim's `FadeTransform` (simple
 /// crossfade variant).
 fn process_fade_transform(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
-    let from = named
-        .get("from")
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(Label(s.get().to_string())),
-            _ => None,
-        });
-    let to = named
-        .get("to")
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(Label(s.get().to_string())),
-            _ => None,
-        });
-    let (Some(from), Some(to)) = (from, to) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(667.0).max(1.0) as u32;
+    let from = named.get("from").and_then(|e| match e {
+        Expr::Str(s) => Some(Label(s.get().to_string())),
+        _ => None,
+    });
+    let to = named.get("to").and_then(|e| match e {
+        Expr::Str(s) => Some(Label(s.get().to_string())),
+        _ => None,
+    });
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(667.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &from);
     // Fade out `from` and fade in `to` in the same slide (parallel).
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
-            Action::FadeOut { target: from, easing },
+            Action::FadeOut {
+                target: from,
+                easing: easing.clone(),
+            },
             Action::FadeIn { target: to, easing },
         ],
     });
@@ -804,20 +1017,25 @@ fn process_move_along_path(
     raw: &str,
     ctx: &mut ParseCtx,
 ) {
-    let Some(label) = target_arg(pos, named) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(1000.0).max(1.0) as u32;
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(1000.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
 
     // Parse the `path` named arg as an array of (x, y) tuples.
     let points: Vec<(f64, f64)> = match named.get("path") {
-        Some(Expr::Array(arr)) => {
-            arr.items()
-                .filter_map(|item| match item {
-                    ast::ArrayItem::Pos(e) => tuple_cm(&e, raw, node),
-                    ast::ArrayItem::Spread(_) => None,
-                })
-                .collect()
-        }
+        Some(Expr::Array(arr)) => arr
+            .items()
+            .filter_map(|item| match item {
+                ast::ArrayItem::Pos(e) => tuple_cm(&e, raw, node),
+                ast::ArrayItem::Spread(_) => None,
+            })
+            .collect(),
         _ => Vec::new(),
     };
     if points.is_empty() {
@@ -828,7 +1046,7 @@ fn process_move_along_path(
         actions: vec![Action::MoveAlongPath {
             target: label,
             points,
-            easing,
+            easing: easing.clone(),
         }],
     });
     ctx.cursor += duration;
@@ -847,8 +1065,14 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
         Expr::Str(s) => Some(Label(s.get().to_string())),
         _ => None,
     });
-    let (Some(from), Some(to)) = (from, to) else { return };
-    let duration = named.get("duration").and_then(expr_to_f64).unwrap_or(800.0).max(1.0) as u32;
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(800.0)
+        .max(1.0) as u32;
     let easing = resolve_easing(named, &from);
 
     // Hide the `to` object initially (it will fade in).
@@ -861,9 +1085,20 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
-            Action::ScaleBy { target: from.clone(), factor: 0.01, easing },
-            Action::FadeOut { target: from, easing },
-            Action::ScaleBy { target: to.clone(), factor: 100.0, easing },
+            Action::ScaleBy {
+                target: from.clone(),
+                factor: 0.01,
+                easing: easing.clone(),
+            },
+            Action::FadeOut {
+                target: from,
+                easing: easing.clone(),
+            },
+            Action::ScaleBy {
+                target: to.clone(),
+                factor: 100.0,
+                easing: easing.clone(),
+            },
             Action::FadeIn { target: to, easing },
         ],
     });
@@ -929,7 +1164,10 @@ fn process_transform(
         ctx.items.insert(label.clone(), new_body);
         ctx.slides.push(Slide {
             duration_ms: duration,
-            actions: vec![Action::FadeIn { target: label, easing }],
+            actions: vec![Action::FadeIn {
+                target: label,
+                easing: easing.clone(),
+            }],
         });
         ctx.cursor += duration;
         return;
@@ -975,10 +1213,158 @@ fn process_transform(
         actions: vec![Action::Transform {
             target: label.clone(),
             old: tmp,
-            easing,
+            easing: easing.clone(),
         }],
     });
     ctx.cursor += duration;
+}
+
+// ============================================================================
+// Subtitle module
+// ============================================================================
+
+/// `subtitle(body, duration:, position:, easing:)` — register a caption overlay.
+///
+/// - `body`: any valid Typst block content (e.g. `[Hello]`, `text(20pt)[Hi]`).
+/// - `duration`: optional lifetime in ms. Default = persist until replaced by
+///   another subtitle in the **same scope**, or until the scope exits.
+/// - `position`: anchor — `"bottom"` (default), `"top"`, `"center"`,
+///   `"bottom-left"/"bottom-right"/"top-left"/"top-right"`, or an absolute
+///   `(x, y)` in cm.
+/// - `easing`: fade curve for the caption's own in/out (default `"linear"`).
+///
+/// Scoping: only one subtitle per Typst scope is visible at once (a later one
+/// replaces an earlier); a parent scope's subtitle is hidden while a child
+/// scope shows its own; leaving the scope auto-destroys it. Inert under
+/// standard Typst (`#subtitle(...) = none`).
+fn process_subtitle(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+    node: &LinkedNode,
+    raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    let body_expr = pos.first().or_else(|| named.get("body"));
+    let Some(body_expr) = body_expr else { return };
+    let body = expr_src(raw, node, body_expr).to_string();
+    if body.is_empty() {
+        return;
+    }
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .map(|d| d.max(1.0) as u32);
+    let position = parse_sub_pos(named);
+    let easing = resolve_easing(named, &Label("subtitle".into()));
+
+    let id = format!("__sub_{}", ctx.subtitle_id);
+    ctx.subtitle_id += 1;
+    let start_ms = ctx.cursor;
+    let end_ms = duration.map(|d| start_ms + d);
+
+    ctx.subtitles.push(Subtitle {
+        id,
+        scope: current_scope(ctx),
+        body,
+        start_ms,
+        end_ms,
+        position,
+        easing: easing.clone(),
+    });
+}
+
+/// Parse the `position:` named arg of `subtitle` into a [`SubPos`].
+fn parse_sub_pos(named: &HashMap<String, Expr>) -> SubPos {
+    let Some(e) = named.get("position") else {
+        return SubPos::Bottom;
+    };
+    match e {
+        Expr::Str(s) => match s.get().to_ascii_lowercase().as_str() {
+            "bottom" => SubPos::Bottom,
+            "top" => SubPos::Top,
+            "center" | "centre" => SubPos::Center,
+            "bottom-left" => SubPos::BottomLeft,
+            "bottom-right" => SubPos::BottomRight,
+            "top-left" => SubPos::TopLeft,
+            "top-right" => SubPos::TopRight,
+            _ => SubPos::Bottom,
+        },
+        // Absolute `(x, y)` in cm.
+        _ => match tuple_cm(e, "", &LinkedNode::new(&typst_syntax::parse(""))) {
+            Some((x, y)) => SubPos::Absolute(x, y),
+            None => SubPos::Bottom,
+        },
+    }
+}
+
+// ============================================================================
+// Easing-counter module
+// ============================================================================
+
+/// `ecounter(name, seed:, step:, duration:, easing:)` — define a named integer
+/// counter. The value is read via `ecval(name)` (substituted per-frame by the
+/// renderer). Standard-Typst returns `seed`; animation mode steps the value
+/// (eased over `duration`, or once per ms when long-lived). Inert under
+/// standard Typst (`#ecounter(...) = none`).
+fn process_ecounter(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let name = pos
+        .first()
+        .or_else(|| named.get("name"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        });
+    let Some(name) = name else { return };
+    let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
+    let step = named.get("step").and_then(expr_to_i64).unwrap_or(1);
+    let duration_ms = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .map(|d| d.max(1.0) as u32);
+    let easing = resolve_easing(named, &Label(format!("counter:{name}")));
+
+    ctx.counters.push(CounterDef {
+        name,
+        scope: current_scope(ctx),
+        seed,
+        step,
+        duration_ms,
+        easing,
+        start_ms: ctx.cursor,
+    });
+}
+
+/// `counter_pause(name)` / `counter_resume(name)` / `counter_destroy(name)` —
+/// record a lifecycle event on a named counter at the current timeline.
+fn process_counter_event(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+    ctx: &mut ParseCtx,
+    kind: CounterEventKind,
+) {
+    let name = pos
+        .first()
+        .or_else(|| named.get("name"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        });
+    let Some(name) = name else { return };
+    ctx.counter_events.push(CounterEvent {
+        name,
+        kind,
+        at_ms: ctx.cursor,
+    });
+}
+
+/// Evaluate a unit-less numeric expression to `i64` (for counter seed/step).
+fn expr_to_i64(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(i) => Some(i.get() as i64),
+        Expr::Float(f) => Some(f.get().round() as i64),
+        Expr::Numeric(n) => Some(n.get().0.round() as i64),
+        _ => None,
+    }
 }
 
 /// Recover the source byte range of `target` by identity (pointer) within the
@@ -1050,7 +1436,6 @@ fn tuple_cm(e: &Expr, _raw: &str, _node: &LinkedNode) -> Option<(f64, f64)> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,7 +1460,10 @@ mod tests {
         assert!(scene.items.contains_key(&Label("dot".into())));
         assert!(scene.items.contains_key(&Label("dot2".into())));
         // body captured as raw source, not a string
-        assert_eq!(scene.items[&Label("dot".into())], "circle(radius: 1cm, fill: blue)");
+        assert_eq!(
+            scene.items[&Label("dot".into())],
+            "circle(radius: 1cm, fill: blue)"
+        );
         assert_eq!(scene.slides[0].duration_ms, 30);
         assert_eq!(scene.slides[2].duration_ms, 15);
         assert_eq!(scene.audio.len(), 1);
@@ -1148,8 +1536,7 @@ mod tests {
     #[test]
     fn std_typst_api_compiles() {
         let lib = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../typst/src/lib.typ"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/src/lib.typ"),
         )
         .expect("lib.typ should exist");
         let src = format!(
@@ -1181,7 +1568,9 @@ mod tests {
         let actions = &scene.slides[0].actions;
         // rotate + opacity → 2 actions
         assert_eq!(actions.len(), 2);
-        let has_rotate = actions.iter().any(|a| matches!(a, Action::Rotate { degrees: 90.0, .. }));
+        let has_rotate = actions
+            .iter()
+            .any(|a| matches!(a, Action::Rotate { degrees: 90.0, .. }));
         let has_fadeto = actions
             .iter()
             .any(|a| matches!(a, Action::FadeTo { opacity: 0.3, .. }));
@@ -1219,15 +1608,30 @@ mod tests {
         assert_eq!(scene.slides.len(), 9, "slides: {:?}", scene.slides);
 
         // Verify each action variant.
-        assert!(matches!(scene.slides[0].actions[0], Action::SaveState { ref slot, .. } if slot == "home"));
+        assert!(
+            matches!(scene.slides[0].actions[0], Action::SaveState { ref slot, .. } if slot == "home")
+        );
         assert!(matches!(scene.slides[1].actions[0], Action::MoveTo { .. }));
-        assert!(matches!(scene.slides[2].actions[0], Action::Restore { ref slot, .. } if slot == "home"));
-        assert!(matches!(scene.slides[3].actions[0], Action::Indicate { factor: 1.2, .. }));
-        assert!(matches!(scene.slides[4].actions[0], Action::Flash { factor: 1.8, .. }));
-        assert!(matches!(scene.slides[5].actions[0], Action::Wiggle { degrees: 12.0, .. }));
+        assert!(
+            matches!(scene.slides[2].actions[0], Action::Restore { ref slot, .. } if slot == "home")
+        );
+        assert!(matches!(
+            scene.slides[3].actions[0],
+            Action::Indicate { factor: 1.2, .. }
+        ));
+        assert!(matches!(
+            scene.slides[4].actions[0],
+            Action::Flash { factor: 1.8, .. }
+        ));
+        assert!(matches!(
+            scene.slides[5].actions[0],
+            Action::Wiggle { degrees: 12.0, .. }
+        ));
         assert!(matches!(scene.slides[6].actions[0], Action::Hide { .. }));
         assert!(matches!(scene.slides[7].actions[0], Action::Show { .. }));
-        assert!(matches!(scene.slides[8].actions[0], Action::SetColor { ref color, .. } if color == "red"));
+        assert!(
+            matches!(scene.slides[8].actions[0], Action::SetColor { ref color, .. } if color == "red")
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -1255,12 +1659,18 @@ mod tests {
         // `items[eq]` / `items[box]` keep their ORIGINAL bodies — the new
         // content is recorded on the timeline instead.
         assert_eq!(scene.items[&Label("eq".into())], "[$a + b = c$]");
-        assert_eq!(scene.items[&Label("box".into())], "rect(width: 2cm, height: 2cm)");
+        assert_eq!(
+            scene.items[&Label("box".into())],
+            "rect(width: 2cm, height: 2cm)"
+        );
 
         // The old content is parked on a unique synthetic mobject. The counter
         // is global per parse, so eq→`__xf_eq_0` and box→`__xf_box_1`.
         assert_eq!(scene.items[&Label("__xf_eq_0".into())], "[$a + b = c$]");
-        assert_eq!(scene.items[&Label("__xf_box_1".into())], "rect(width: 2cm, height: 2cm)");
+        assert_eq!(
+            scene.items[&Label("__xf_box_1".into())],
+            "rect(width: 2cm, height: 2cm)"
+        );
 
         // The content switch is recorded on the timeline at `cursor + 1`.
         assert_eq!(
@@ -1337,8 +1747,7 @@ mod tests {
     #[test]
     fn std_typst_manim_api_compiles() {
         let lib = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../typst/src/lib.typ"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/src/lib.typ"),
         )
         .expect("lib.typ should exist");
         let src = format!(
@@ -1354,6 +1763,9 @@ mod tests {
              #set_color(\"dot\", color: \"red\", duration: 1)\n"
         );
         let out = crate::renderer::compile_svg_for_test(&src);
-        assert!(out.is_ok(), "std Typst failed to compile manim API: {out:?}");
+        assert!(
+            out.is_ok(),
+            "std Typst failed to compile manim API: {out:?}"
+        );
     }
 }

@@ -186,7 +186,7 @@ fn catmull_rom(p0: &FrameData, p1: &FrameData, p2: &FrameData, p3: &FrameData, t
         scale: catmull1(p0.scale, p1.scale, p2.scale, p3.scale, t),
         opacity: catmull1(p0.opacity, p1.opacity, p2.opacity, p3.opacity, t),
         rotation: catmull1(p0.rotation, p1.rotation, p2.rotation, p3.rotation, t),
-        easing: p1.easing,
+        easing: p1.easing.clone(),
     }
 }
 

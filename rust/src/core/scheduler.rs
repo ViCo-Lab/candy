@@ -81,7 +81,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     scale: f.scale,
                     opacity: f.opacity,
                     rotation: f.rotation,
-                    easing: f.easing,
+                    easing: f.easing.clone(),
                 })
                 .unwrap_or_else(|| FrameData::new(0, l.clone()));
             (l.clone(), vec![seed])
@@ -150,7 +150,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     // Mid keyframe (halfway) = scaled + shifted.
                     let mid = ptr + slide.duration_ms / 2;
@@ -171,7 +171,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: end,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     // State unchanged — Indicate returns to origin.
                     continue;
@@ -182,7 +182,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     let mid = ptr + slide.duration_ms / 2;
                     let peak = State {
@@ -201,7 +201,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: end,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     continue;
                 }
@@ -239,13 +239,13 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
                         x: saved_state.x, y: saved_state.y, scale: saved_state.scale, opacity: saved_state.opacity, rotation: saved_state.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     state.insert(t.clone(), saved_state);
                     continue;
@@ -263,7 +263,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         time_ms: start,
                         target: t.clone(),
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     // One keyframe per path point, evenly distributed.
                     for (i, &(px, py)) in points.iter().enumerate() {
@@ -273,7 +273,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                             time_ms: kf_frame,
                             target: t.clone(),
                             x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
-                            easing,
+                            easing: easing.clone(),
                         });
                     }
                     // Update state to the last point.
@@ -305,7 +305,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: s.scale,
                         opacity: s.opacity,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     per_item.entry(old.clone()).or_default().push(FrameData {
                         time_ms: end_t,
@@ -315,7 +315,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: small,
                         opacity: 0.0,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     // New content (`target`): tiny + transparent → full, at the
                     // same position. `scale` returns to `s.scale` (so repeated
@@ -328,7 +328,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: small,
                         opacity: 0.0,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     per_item.entry(target.clone()).or_default().push(FrameData {
                         time_ms: end_t,
@@ -338,7 +338,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: s.scale,
                         opacity: 1.0,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                     // Update state: target keeps its transform, now showing the
                     // new content; `old` ends invisible.
@@ -374,7 +374,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: s.scale,
                         opacity: s.opacity,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
 
                     apply(&mut state, &t, action);
@@ -391,7 +391,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: s.scale,
                         opacity: s.opacity,
                         rotation: s.rotation,
-                        easing,
+                        easing: easing.clone(),
                     });
                 }
             }
@@ -538,6 +538,10 @@ mod tests {
             audio: Vec::new(),
             imports: Vec::new(),
             page_size: None,
+            subtitles: Vec::new(),
+            counters: Vec::new(),
+            counter_events: Vec::new(),
+            scopes: Vec::new(),
             private_metadata: PrivateMeta::default(),
         }
     }

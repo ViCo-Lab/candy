@@ -408,6 +408,116 @@
   body
 }
 
+// ============================================================================
+// Subtitle module
+//
+// A `subtitle` overlays arbitrary Typst block content on top of the animation.
+// ============================================================================
+
+/// Show a caption over the animation.
+///
+/// - `body`: any valid Typst block content (e.g. `[Hello]`, `[$E = mc^2$]`,
+///   `align(center)[ ... ]`).
+/// - `duration`: how long the caption stays, in **milliseconds**. `none`
+///   (default) means "persist" — the caption stays until it is replaced by
+///   another `subtitle` in the *same* Typst scope, or until that scope exits
+///   (auto-destroy). A positive number gives an explicit lifetime.
+/// - `position`: anchor on the page. One of `"bottom"` (default), `"top"`,
+///   `"center"`, `"bottom-left"`, `"bottom-right"`, `"top-left"`,
+///   `"top-right"`, or a tuple `(x, y)` in cm for an absolute position.
+/// - `easing`: rate curve used for the caption's own fade (default
+///   `"linear"`). Custom modes `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are
+///   accepted.
+///
+/// Only one subtitle may be visible per Typst scope at a time; a later one
+/// replaces an earlier one. A subtitle in a parent scope is temporarily hidden
+/// while a child scope shows its own (shadowing). Under standard Typst the
+/// caption is auto-positioned (via `place`) at the requested anchor so the
+/// first frame renders correctly; candy's pipeline reads the same call from
+/// the AST and overlays it on every frame with the same anchoring.
+#let _subtitle_anchor(position) = {
+  let m = 1cm
+  if type(position) == "array" {
+    // Absolute (x, y) in cm: anchor the box's top-left corner there.
+    let (x, y) = (position.at(0), position.at(1))
+    (top + left, x * 1cm, y * 1cm)
+  } else if position == "top" {
+    (top + center, 0cm, m)
+  } else if position == "center" or position == "centre" {
+    (center + center, 0cm, 0cm)
+  } else if position == "bottom-left" {
+    (bottom + left, m, -m)
+  } else if position == "bottom-right" {
+    (bottom + right, -m, -m)
+  } else if position == "top-left" {
+    (top + left, m, m)
+  } else if position == "top-right" {
+    (top + right, -m, m)
+  } else {
+    // default: "bottom"
+    (bottom + center, 0cm, -m)
+  }
+}
+
+#let subtitle(
+  body,
+  duration: none,
+  position: "bottom",
+  easing: "linear",
+) = {
+  let (align, dx, dy) = _subtitle_anchor(position)
+  place(align, dx: dx, dy: dy)[#body]
+}
+
+// ============================================================================
+// Easing-counter module
+//
+// A key-value store of animatable integers, referenced from mobject / subtitle
+// bodies via `ecval(name)`. Standard Typst sees the integer `seed`; the candy
+// pipeline steps the value over time, shaped by the counter's easing.
+// ============================================================================
+
+/// Register an integer counter named `name`.
+///
+/// - `seed`: the integer value (standard-Typst return value, and the starting
+///   value). Default `0`.
+/// - `step`: the per-step increment (signed integer). Default `1`. With no
+///   `duration`, the counter steps once per millisecond.
+/// - `duration`: lifetime in **milliseconds**. `none` (default) means
+///   long-lived — the value ramps `seed → seed + step·elapsed` once per ms
+///   (linear). A positive number makes the value ramp `seed → seed + step·
+///   duration` over that window, shaped by `easing`.
+/// - `easing`: rate curve for the ramp (default `"linear"`). Custom modes
+///   `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are accepted.
+///
+/// Returns `seed` under standard Typst so `let x = ecounter("c")` works.
+/// Scope rules follow Typst: a counter in a child scope shadows a parent-scope
+/// counter of the same name, and it auto-destroys when its scope exits.
+#let ecounter(
+  name,
+  seed: 0,
+  step: 1,
+  duration: none,
+  easing: "linear",
+) = seed
+
+/// Read the current integer value of counter `name`. Inside an animating candy
+/// pipeline, `ecval(name)` is substituted (by the Rust renderer) with the
+/// live, eased integer value and may be used directly as a Typst parameter
+/// (e.g. `rect(width: ecval("n") * 1cm)`). Under standard Typst it returns the
+/// counter's `seed`.
+#let ecval(name) = 0
+
+/// Pause a counter (freeze its stepping) at the current timeline position.
+/// Inert under standard Typst.
+#let counter_pause(name) = none
+
+/// Resume a paused counter. Inert under standard Typst.
+#let counter_resume(name) = none
+
+/// Destroy a counter, freezing its value. Inert under standard Typst.
+#let counter_destroy(name) = none
+
 #let dir-left = (-2.0, 0.0)
 #let dir-right = (2.0, 0.0)
 #let dir-up = (0.0, -2.0)

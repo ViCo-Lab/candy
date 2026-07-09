@@ -32,11 +32,12 @@ pub mod renderer;
 pub use crate::core::error::CandyError;
 pub use crate::renderer::Codec;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::core::ast::Scene;
+use crate::core::ast::{CounterEventKind, Label, Scene};
 use crate::core::interpolator;
 use crate::core::scheduler;
 use crate::parser::extract_dsl_from_svg;
@@ -163,7 +164,36 @@ pub fn build_input_with_gpu(
 ) -> Result<(), CandyError> {
     let scene: Scene = input.parse()?; // Steps 1–2
     let project_root = input.project_root();
-    let keyframes = scheduler::schedule(&scene)?; // Step 3
+    let mut keyframes = scheduler::schedule(&scene)?; // Step 3
+
+    // Extend the timeline so persistent subtitles / long-lived counters that
+    // end *after* the last mobject keyframe are still covered. We append a
+    // final keyframe (equal to each target's last state) at the extended end,
+    // so mobjects hold steady while subtitles/counters keep animating.
+    let mut render_end = scene.total_ms();
+    for s in &scene.subtitles {
+        if let Some(e) = s.end_ms {
+            render_end = render_end.max(e);
+        }
+    }
+    for ev in &scene.counter_events {
+        if let CounterEventKind::Destroy = ev.kind {
+            render_end = render_end.max(ev.at_ms);
+        }
+    }
+    let max_kf = keyframes.iter().map(|f| f.time_ms).max().unwrap_or(0);
+    if render_end > max_kf {
+        let mut last: HashMap<Label, crate::core::ast::FrameData> = HashMap::new();
+        for f in &keyframes {
+            last.insert(f.target.clone(), f.clone());
+        }
+        for (_tgt, f) in last {
+            let mut ext = f.clone();
+            ext.time_ms = render_end;
+            keyframes.push(ext);
+        }
+    }
+
     let frames = interpolator::interpolate_with(keyframes, interpolator::InterpMethod::Linear, fps); // Step 4
     let mut renderer = Renderer::with_root(scene.clone(), project_root)?;
 

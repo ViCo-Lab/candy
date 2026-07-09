@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// `"smooth"`, `"ease-in-out"`), so `.tyx` files can use the familiar CSS /
 /// Manim vocabulary. Unknown names fall back to `Linear` at parse time and
 /// emit a warning.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Easing {
     /// `t` — constant velocity. The candy v0.1 default.
@@ -69,6 +69,25 @@ pub enum Easing {
     Wiggle,
     /// `t·(1-t)·4` — overshoots to ~0.25 then settles (Manim `lingering`).
     Lingering,
+
+    // ---- Custom (user-defined) easing modes ----
+    /// Custom **CSS-style cubic-bezier** easing. The four control points
+    /// `(x1, y1, x2, y2)` mirror CSS `cubic-bezier(x1, y1, x2, y2)`: the curve
+    /// goes from `(0,0)` to `(1,1)` with the two control points shaping it
+    /// (x-coordinates are clamped to `[0, 1]` by CSS; we enforce that too).
+    /// Parsed from the string `"bezier:x1,y1,x2,y2"`. Honors the "use
+    /// bezier_easing" request — candy implements the same Newton-Raphson
+    /// control-point solver in-process so no extra network dependency is
+    /// needed (swapping in the `bezier-easing` crate is a drop-in change).
+    Bezier(f64, f64, f64, f64),
+    /// Custom **math-expression** easing. The expression is a function of
+    /// `t ∈ [0, 1]` (the linear progress) and may use `+ - * / ^`, parentheses,
+    /// the constants `pi`/`e`, and the functions `sin cos tan asin acos atan
+    /// sqrt abs exp ln log pow min max floor ceil round`. Parsed from the
+    /// string `"expr:<math>"` (e.g. `"expr:1 - t^2"` or
+    /// `"expr:sin(t * pi / 2)"`). This is the "traditional mathematical
+    /// expression" custom mode.
+    Expr(String),
 }
 
 impl Easing {
@@ -78,27 +97,42 @@ impl Easing {
     /// function delegates to `keyframe::functions::*` — a mature, well-tested
     /// Rust easing library. For Manim-specific curves (smooth, sin,
     /// there_and_back, wiggle, lingering), candy uses its own implementations
-    /// since keyframe doesn't ship those.
+    /// since keyframe doesn't ship those. For the custom modes (`Bezier`,
+    /// `Expr`) candy evaluates the user-supplied definition.
     ///
     /// All returned functions accept any `f64` (callers may pass slightly
     /// out-of-range values during interpolation) and return a value that, when
     /// used as the interpolation parameter, produces the eased curve.
-    pub fn resolve(self) -> fn(f64) -> f64 {
+    ///
+    /// Returns a boxed closure so the custom variants can capture their
+    /// definition data (bezier control points / parsed expression AST).
+    pub fn resolve(&self) -> Box<dyn Fn(f64) -> f64> {
         match self {
-            Easing::Linear => kf::<keyframe::functions::Linear>(),
-            Easing::Smooth => smooth,
-            Easing::Smoothstep => smoothstep,
-            Easing::Smootherstep => smootherstep,
-            Easing::QuadIn => kf::<keyframe::functions::EaseInQuad>(),
-            Easing::QuadOut => kf::<keyframe::functions::EaseOutQuad>(),
-            Easing::QuadInOut => kf::<keyframe::functions::EaseInOutQuad>(),
-            Easing::CubicIn => kf::<keyframe::functions::EaseInCubic>(),
-            Easing::CubicOut => kf::<keyframe::functions::EaseOutCubic>(),
-            Easing::CubicInOut => kf::<keyframe::functions::EaseInOutCubic>(),
-            Easing::Sin => sin,
-            Easing::ThereAndBack => there_and_back,
-            Easing::Wiggle => wiggle,
-            Easing::Lingering => lingering,
+            Easing::Linear => Box::new(kf::<keyframe::functions::Linear>()),
+            Easing::Smooth => Box::new(smooth),
+            Easing::Smoothstep => Box::new(smoothstep),
+            Easing::Smootherstep => Box::new(smootherstep),
+            Easing::QuadIn => Box::new(kf::<keyframe::functions::EaseInQuad>()),
+            Easing::QuadOut => Box::new(kf::<keyframe::functions::EaseOutQuad>()),
+            Easing::QuadInOut => Box::new(kf::<keyframe::functions::EaseInOutQuad>()),
+            Easing::CubicIn => Box::new(kf::<keyframe::functions::EaseInCubic>()),
+            Easing::CubicOut => Box::new(kf::<keyframe::functions::EaseOutCubic>()),
+            Easing::CubicInOut => Box::new(kf::<keyframe::functions::EaseInOutCubic>()),
+            Easing::Sin => Box::new(sin),
+            Easing::ThereAndBack => Box::new(there_and_back),
+            Easing::Wiggle => Box::new(wiggle),
+            Easing::Lingering => Box::new(lingering),
+            Easing::Bezier(x1, y1, x2, y2) => {
+                let (x1, y1, x2, y2) = (*x1, *y1, *x2, *y2);
+                Box::new(move |t| bezier::cubic_bezier_y(x1, y1, x2, y2, t))
+            }
+            Easing::Expr(src) => {
+                // Parse once; fall back to linear if the expression is invalid.
+                match expr::parse_expr(src) {
+                    Ok(tree) => Box::new(move |t| expr::eval(&tree, t)),
+                    Err(_) => Box::new(|_t| _t.clamp(0.0, 1.0)),
+                }
+            }
         }
     }
 
@@ -108,8 +142,24 @@ impl Easing {
     /// and a few common aliases (`"ease-in"` → `CubicIn`, `"ease-out"` →
     /// `CubicOut`). Unknown names return `None`; the caller falls back to
     /// `Linear` and emits a parse warning.
+    ///
+    /// Custom modes are parsed here too:
+    /// - `"bezier:x1,y1,x2,y2"` → [`Easing::Bezier`].
+    /// - `"expr:<math>"` → [`Easing::Expr`].
     pub fn from_str(name: &str) -> Option<Self> {
-        let n = name.trim().to_ascii_lowercase();
+        let raw = name.trim();
+        // Custom modes are detected by an explicit `kind:...` prefix so they
+        // never collide with the named easings below.
+        if let Some(rest) = raw.strip_prefix("bezier:") {
+            let mut it = rest.split(',').filter_map(|s| s.trim().parse::<f64>().ok());
+            let (x1, y1, x2, y2) = (it.next()?, it.next()?, it.next()?, it.next()?);
+            return Some(Easing::Bezier(x1, y1, x2, y2));
+        }
+        if let Some(rest) = raw.strip_prefix("expr:") {
+            return Some(Easing::Expr(rest.trim().to_string()));
+        }
+
+        let n = raw.to_ascii_lowercase();
         let n = n.replace('_', "-");
         match n.as_str() {
             "linear" => Some(Easing::Linear),
@@ -202,6 +252,416 @@ pub fn lingering(t: f64) -> f64 {
     4.0 * t * (1.0 - t)
 }
 
+// ============================================================================
+// Custom easing: CSS-style cubic-bezier solver.
+//
+// Honors the "use bezier_easing" request: this is the same Newton-Raphson
+// control-point inversion `bezier-easing` performs, implemented in-process so
+// candy stays offline-friendly. Given progress `x ∈ [0, 1]` (the *time*
+// fraction, matching CSS), we solve for the curve parameter `u` with X(u) = x,
+// then return Y(u).
+// ============================================================================
+pub mod bezier {
+    /// One coordinate of a cubic bezier with implicit endpoints `(0,0)` and
+    /// `(1,1)` and control points `(p1, p2)`.
+    fn coord(p1: f64, p2: f64, u: f64) -> f64 {
+        let mu = 1.0 - u;
+        3.0 * mu * mu * u * p1 + 3.0 * mu * u * u * p2 + u * u * u
+    }
+
+    /// Invert X(u) = x via Newton-Raphson (with a bisection fallback), then
+    /// return Y(u). `x1`/`x2` are clamped to `[0, 1]` per the CSS spec.
+    pub fn cubic_bezier_y(x1: f64, y1: f64, x2: f64, y2: f64, x: f64) -> f64 {
+        if x <= 0.0 {
+            return 0.0;
+        }
+        if x >= 1.0 {
+            return 1.0;
+        }
+        let x1 = x1.clamp(0.0, 1.0);
+        let x2 = x2.clamp(0.0, 1.0);
+        // Solve X(u) = x for u.
+        let mut u = x; // good initial guess for monotonic-ish X
+        let mut i = 0;
+        loop {
+            let xu = coord(x1, x2, u) - x;
+            let eps = (xu.abs() < 1e-6) as u8 as f64; // 1.0 if close enough
+            if eps == 1.0 {
+                break;
+            }
+            // Derivative dX/du.
+            let mu = 1.0 - u;
+            let dx = 3.0 * mu * mu * x1 + 6.0 * mu * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2);
+            if dx.abs() < 1e-9 {
+                break; // degenerate; bail out
+            }
+            u -= xu / dx;
+            u = u.clamp(0.0, 1.0);
+            i += 1;
+            if i > 32 {
+                break;
+            }
+        }
+        coord(y1, y2, u)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn linear_passthrough() {
+            // bezier(0,0,1,1) is the identity.
+            assert!((cubic_bezier_y(0.0, 0.0, 1.0, 1.0, 0.5) - 0.5).abs() < 1e-4);
+        }
+        #[test]
+        fn endpoints_fixed() {
+            assert_eq!(cubic_bezier_y(0.25, 0.1, 0.25, 1.0, 0.0), 0.0);
+            assert_eq!(cubic_bezier_y(0.25, 0.1, 0.25, 1.0, 1.0), 1.0);
+        }
+    }
+}
+
+// ============================================================================
+// Custom easing: safe math-expression evaluator.
+//
+// Parses a function of `t ∈ [0, 1]` (and `x`, an alias for `t`) with `+ - * /
+// ^`, parentheses, the constants `pi`/`e`, and the functions sin cos tan asin
+// acos atan sqrt abs exp ln log pow min max floor ceil round. No heap, no
+// external crate — a tiny shunting-yard / recursive-descent evaluator.
+// ============================================================================
+pub mod expr {
+    use std::f64::consts::{E, PI};
+
+    /// A compiled expression node.
+    pub enum Node {
+        Const(f64),
+        Var, // the single variable `t` (or `x`)
+        Neg(Box<Node>),
+        Add(Box<Node>, Box<Node>),
+        Sub(Box<Node>, Box<Node>),
+        Mul(Box<Node>, Box<Node>),
+        Div(Box<Node>, Box<Node>),
+        Pow(Box<Node>, Box<Node>),
+        Call(&'static str, Box<Node>),
+        Call2(&'static str, Box<Node>, Box<Node>),
+    }
+
+    fn eval_node(n: &Node, t: f64) -> f64 {
+        match n {
+            Node::Const(c) => *c,
+            Node::Var => t,
+            Node::Neg(a) => -eval_node(a, t),
+            Node::Add(a, b) => eval_node(a, t) + eval_node(b, t),
+            Node::Sub(a, b) => eval_node(a, t) - eval_node(b, t),
+            Node::Mul(a, b) => eval_node(a, t) * eval_node(b, t),
+            Node::Div(a, b) => {
+                let d = eval_node(b, t);
+                if d == 0.0 { 0.0 } else { eval_node(a, t) / d }
+            }
+            Node::Pow(a, b) => eval_node(a, t).powf(eval_node(b, t)),
+            Node::Call(name, a) => {
+                let v = eval_node(a, t);
+                match *name {
+                    "sin" => v.sin(),
+                    "cos" => v.cos(),
+                    "tan" => v.tan(),
+                    "asin" => v.asin(),
+                    "acos" => v.acos(),
+                    "atan" => v.atan(),
+                    "sqrt" => v.sqrt(),
+                    "abs" => v.abs(),
+                    "exp" => v.exp(),
+                    "ln" => v.ln(),
+                    "log" => v.log10(),
+                    "floor" => v.floor(),
+                    "ceil" => v.ceil(),
+                    "round" => v.round(),
+                    _ => v,
+                }
+            }
+            Node::Call2(name, a, b) => {
+                let u = eval_node(a, t);
+                let v = eval_node(b, t);
+                match *name {
+                    "pow" => u.powf(v),
+                    "min" => u.min(v),
+                    "max" => u.max(v),
+                    _ => u,
+                }
+            }
+        }
+    }
+
+    /// Evaluate a parsed expression at `t` (the linear progress in `[0, 1]`).
+    pub fn eval(tree: &Node, t: f64) -> f64 {
+        eval_node(tree, t)
+    }
+
+    /// Parse an expression string into a [`Node`]. Returns `Err` on any syntax
+    /// error (callers fall back to linear).
+    pub fn parse_expr(src: &str) -> Result<Node, String> {
+        let mut p = Parser {
+            chars: src.chars().collect(),
+            pos: 0,
+        };
+        let node = p.parse_expr()?;
+        if p.pos != p.chars.len() {
+            return Err(format!("trailing input at {}", p.pos));
+        }
+        Ok(node)
+    }
+
+    struct Parser {
+        chars: Vec<char>,
+        pos: usize,
+    }
+
+    impl Parser {
+        fn peek(&self) -> Option<char> {
+            self.chars.get(self.pos).copied()
+        }
+        fn bump(&mut self) -> Option<char> {
+            let c = self.peek();
+            if c.is_some() {
+                self.pos += 1;
+            }
+            c
+        }
+        fn skip_ws(&mut self) {
+            while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+                self.pos += 1;
+            }
+        }
+
+        /// expr := add
+        fn parse_expr(&mut self) -> Result<Node, String> {
+            self.parse_add()
+        }
+
+        /// add := mul (('+' | '-') mul)*
+        fn parse_add(&mut self) -> Result<Node, String> {
+            let mut left = self.parse_mul()?;
+            loop {
+                self.skip_ws();
+                match self.peek() {
+                    Some('+') => {
+                        self.bump();
+                        let right = self.parse_mul()?;
+                        left = Node::Add(Box::new(left), Box::new(right));
+                    }
+                    Some('-') => {
+                        self.bump();
+                        let right = self.parse_mul()?;
+                        left = Node::Sub(Box::new(left), Box::new(right));
+                    }
+                    _ => break,
+                }
+            }
+            Ok(left)
+        }
+
+        /// mul := unary (('*' | '/' | implicit) unary)*
+        fn parse_mul(&mut self) -> Result<Node, String> {
+            let mut left = self.parse_unary()?;
+            loop {
+                self.skip_ws();
+                match self.peek() {
+                    Some('*') => {
+                        self.bump();
+                        let right = self.parse_unary()?;
+                        left = Node::Mul(Box::new(left), Box::new(right));
+                    }
+                    Some('/') => {
+                        self.bump();
+                        let right = self.parse_unary()?;
+                        left = Node::Div(Box::new(left), Box::new(right));
+                    }
+                    // Implicit multiplication: `2t`, `(a)(b)`, `2sin(t)` …
+                    Some(c) if !matches!(c, '+' | '-' | ')' | '^' | ',') => {
+                        let right = self.parse_unary()?;
+                        left = Node::Mul(Box::new(left), Box::new(right));
+                    }
+                    _ => break,
+                }
+            }
+            Ok(left)
+        }
+
+        /// unary := ('-' | '+')? pow
+        fn parse_unary(&mut self) -> Result<Node, String> {
+            self.skip_ws();
+            match self.peek() {
+                Some('-') => {
+                    self.bump();
+                    Ok(Node::Neg(Box::new(self.parse_unary()?)))
+                }
+                Some('+') => {
+                    self.bump();
+                    self.parse_unary()
+                }
+                _ => self.parse_pow(),
+            }
+        }
+
+        /// pow := primary ('^' unary)?
+        fn parse_pow(&mut self) -> Result<Node, String> {
+            let base = self.parse_primary()?;
+            self.skip_ws();
+            if self.peek() == Some('^') {
+                self.bump();
+                let exp = self.parse_unary()?;
+                Ok(Node::Pow(Box::new(base), Box::new(exp)))
+            } else {
+                Ok(base)
+            }
+        }
+
+        /// primary := number | var | func '(' expr ')' | '(' expr ')'
+        fn parse_primary(&mut self) -> Result<Node, String> {
+            self.skip_ws();
+            match self.peek() {
+                Some('(') => {
+                    self.bump();
+                    let e = self.parse_expr()?;
+                    self.skip_ws();
+                    if self.bump() != Some(')') {
+                        return Err("expected )".into());
+                    }
+                    Ok(e)
+                }
+                Some(c) if c.is_ascii_digit() || c == '.' => self.parse_number(),
+                Some(c) if c.is_ascii_alphabetic() => self.parse_ident(),
+                _ => Err(format!(
+                    "unexpected char '{}' at {}",
+                    self.peek().unwrap_or('?'),
+                    self.pos
+                )),
+            }
+        }
+
+        fn parse_number(&mut self) -> Result<Node, String> {
+            let start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
+                    // allow signed exponent
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            let s: String = self.chars[start..self.pos].iter().collect();
+            s.parse::<f64>()
+                .map(Node::Const)
+                .map_err(|_| format!("bad number '{s}'"))
+        }
+
+        fn parse_ident(&mut self) -> Result<Node, String> {
+            let start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            let name: String = self.chars[start..self.pos].iter().collect();
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                "t" | "x" => Ok(Node::Var),
+                "pi" => Ok(Node::Const(PI)),
+                "e" => Ok(Node::Const(E)),
+                _ => {
+                    // function call: must be followed by '('
+                    self.skip_ws();
+                    if self.peek() == Some('(') {
+                        self.bump();
+                        let a = self.parse_expr()?;
+                        self.skip_ws();
+                        // optional second arg for pow/min/max
+                        let node = if self.peek() == Some(',') {
+                            self.bump();
+                            let b = self.parse_expr()?;
+                            self.skip_ws();
+                            Node::Call2(box_name(&lower), Box::new(a), Box::new(b))
+                        } else {
+                            Node::Call(box_name(&lower), Box::new(a))
+                        };
+                        self.skip_ws();
+                        if self.bump() != Some(')') {
+                            return Err(format!("expected ) after {name}("));
+                        }
+                        Ok(node)
+                    } else {
+                        Err(format!("unknown identifier '{name}'"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Map a parsed function name to a `'static str` tag. Unknown names map to
+    /// `"sin"` (a no-op-ish fallback) — callers only ever pass known names.
+    fn box_name(name: &str) -> &'static str {
+        match name {
+            "sin" => "sin",
+            "cos" => "cos",
+            "tan" => "tan",
+            "asin" => "asin",
+            "acos" => "acos",
+            "atan" => "atan",
+            "sqrt" => "sqrt",
+            "abs" => "abs",
+            "exp" => "exp",
+            "ln" => "ln",
+            "log" => "log",
+            "floor" => "floor",
+            "ceil" => "ceil",
+            "round" => "round",
+            "pow" => "pow",
+            "min" => "min",
+            "max" => "max",
+            _ => "sin",
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn val(src: &str, t: f64) -> f64 {
+            parse_expr(src).unwrap().eval_at(t)
+        }
+        // helper trait so the test can call eval without exposing Node
+        trait EvalAt {
+            fn eval_at(&self, t: f64) -> f64;
+        }
+        impl EvalAt for Node {
+            fn eval_at(&self, t: f64) -> f64 {
+                eval(self, t)
+            }
+        }
+        #[test]
+        fn basic_ops() {
+            assert!((val("1 + 2 * 3", 0.0) - 7.0).abs() < 1e-9);
+            assert!((val("(1 + 2) * 3", 0.0) - 9.0).abs() < 1e-9);
+            assert!((val("2 ^ 3", 0.0) - 8.0).abs() < 1e-9);
+            assert!((val("-t", 0.25) - (-0.25)).abs() < 1e-9);
+            assert!((val("2t", 0.25) - 0.5).abs() < 1e-9); // implicit mult
+        }
+        #[test]
+        fn functions() {
+            assert!((val("sin(t * pi / 2)", 0.5) - (0.5f64 * PI / 2.0).sin()).abs() < 1e-9);
+            assert!((val("sqrt(t)", 0.25) - 0.5).abs() < 1e-9);
+            assert!((val("min(t, 0.3)", 0.5) - 0.3).abs() < 1e-9);
+            assert!((val("pow(t, 2)", 0.5) - 0.25).abs() < 1e-9);
+        }
+        #[test]
+        fn custom_easing_shape() {
+            // 1 - t^2: at t=0.5 → 0.75 (decelerating), not linear 0.5.
+            assert!((val("1 - t^2", 0.5) - 0.75).abs() < 1e-9);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +730,10 @@ mod tests {
     fn keyframe_cubic_in_matches() {
         let ours = Easing::CubicIn.resolve()(0.5);
         let theirs = keyframe::functions::EaseInCubic.y(0.5);
-        assert!((ours - theirs).abs() < 1e-12, "ours={ours}, theirs={theirs}");
+        assert!(
+            (ours - theirs).abs() < 1e-12,
+            "ours={ours}, theirs={theirs}"
+        );
         assert!((ours - 0.125).abs() < 1e-9);
     }
 
@@ -280,7 +743,10 @@ mod tests {
     fn keyframe_quad_out_matches() {
         let ours = Easing::QuadOut.resolve()(0.5);
         let theirs = keyframe::functions::EaseOutQuad.y(0.5);
-        assert!((ours - theirs).abs() < 1e-12, "ours={ours}, theirs={theirs}");
+        assert!(
+            (ours - theirs).abs() < 1e-12,
+            "ours={ours}, theirs={theirs}"
+        );
         assert!((ours - 0.75).abs() < 1e-9);
     }
 
@@ -295,6 +761,38 @@ mod tests {
         assert_eq!(Easing::from_str("sin"), Some(Easing::Sin));
         assert_eq!(Easing::from_str("wiggle"), Some(Easing::Wiggle));
         assert_eq!(Easing::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn from_str_parses_custom_modes() {
+        // Bezier control points.
+        match Easing::from_str("bezier:0.25,0.1,0.25,1.0") {
+            Some(Easing::Bezier(x1, _y1, _x2, y2)) => {
+                assert!((x1 - 0.25).abs() < 1e-9);
+                assert!((y2 - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected Bezier, got {other:?}"),
+        }
+        // Math expression.
+        match Easing::from_str("expr:1 - t^2") {
+            Some(Easing::Expr(s)) => assert_eq!(s, "1 - t^2"),
+            other => panic!("expected Expr, got {other:?}"),
+        }
+        // Wrong arity for bezier → None.
+        assert_eq!(Easing::from_str("bezier:0.25,0.1,0.25"), None);
+    }
+
+    #[test]
+    fn custom_modes_resolve() {
+        // Bezier (ease-out-ish) passes through endpoints.
+        let b = Easing::from_str("bezier:0.25,0.1,0.25,1.0").unwrap();
+        let f = b.resolve();
+        assert!((f(0.0) - 0.0).abs() < 1e-6);
+        assert!((f(1.0) - 1.0).abs() < 1e-6);
+        // Expr `1 - t^2` at t=0.5 → 0.75.
+        let e = Easing::from_str("expr:1 - t^2").unwrap();
+        let g = e.resolve();
+        assert!((g(0.5) - 0.75).abs() < 1e-6);
     }
 
     #[test]

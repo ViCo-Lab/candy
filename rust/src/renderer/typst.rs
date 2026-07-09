@@ -29,12 +29,12 @@ use typst_layout::PagedDocument;
 use typst_library::diag::FileError;
 use typst_library::foundations::{Bytes, Datetime, Duration};
 use typst_library::text::Font;
-use typst_render::{render, RenderOptions};
+use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
 use typst_syntax::{FileId, Source as TypstSource};
 use typst_utils::{LazyHash, Scalar};
 
-use crate::core::ast::{FrameData, Label, Scene};
+use crate::core::ast::{FrameData, Label, Scene, SubPos, Subtitle};
 use crate::core::error::CandyError;
 
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
@@ -89,14 +89,19 @@ impl WorldState {
         // Package resolver: @preview packages from the local cache, with
         // on-demand download when the `system-downloader` feature is enabled.
         #[cfg(feature = "system-downloader")]
-        let packages = SystemPackages::new(typst_kit::downloader::SystemDownloader::new("candy/0.1"));
+        let packages =
+            SystemPackages::new(typst_kit::downloader::SystemDownloader::new("candy/0.1"));
         #[cfg(not(feature = "system-downloader"))]
         let packages = SystemPackages::new(NoDownload);
 
         let root = FsRoot::new(project_root);
         let files = FileStore::new(SystemFiles::new(root, packages));
 
-        Self { library, fonts, files }
+        Self {
+            library,
+            fonts,
+            files,
+        }
     }
 }
 
@@ -184,7 +189,10 @@ impl Renderer {
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
         let source = TypstSource::detached(src.to_string());
-        let world = CandyWorld { state: &self.state, main: source };
+        let world = CandyWorld {
+            state: &self.state,
+            main: source,
+        };
         let warned = typst::compile::<PagedDocument>(&world);
         warned
             .output
@@ -249,7 +257,7 @@ impl Renderer {
                 scale: f.scale,
                 opacity: f.opacity,
                 rotation: f.rotation,
-                easing: f.easing,
+                easing: f.easing.clone(),
             },
             None => FrameData::new(time_ms, label),
         }
@@ -271,7 +279,16 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = content_for(&self.scene, label, time_ms);
         let preamble = imports_preamble(&self.scene);
-        let placed = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble);
+        let placed = place_source(
+            self.page_w,
+            self.page_h,
+            abs_x_cm,
+            abs_y_cm,
+            scale_pct,
+            st.rotation,
+            &body,
+            &preamble,
+        );
 
         let doc = self.compile(&placed)?;
         let page = doc
@@ -315,8 +332,15 @@ impl Renderer {
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         let mut states: HashMap<Label, FrameData> = HashMap::new();
         for f in all_frames {
-            if f.time_ms == time_ms {
-                states.insert(f.target.clone(), f.clone());
+            if f.time_ms <= time_ms {
+                states
+                    .entry(f.target.clone())
+                    .and_modify(|e| {
+                        if f.time_ms >= e.time_ms {
+                            *e = f.clone();
+                        }
+                    })
+                    .or_insert_with(|| f.clone());
             }
         }
         for label in self.scene.items.keys() {
@@ -333,6 +357,18 @@ impl Renderer {
             let st = states.get(*label).unwrap();
             let frame = self.render_object_pixels(*label, st, time_ms, pixel_per_pt)?;
             objs.push((st.opacity, frame));
+        }
+
+        // Subtitle overlays on top of the objects.
+        for sub in &self.scene.subtitles {
+            if self
+                .scene
+                .visible_subtitle_ids_at(time_ms)
+                .contains(&sub.id)
+            {
+                let frame = self.render_subtitle_pixels(sub, time_ms, pixel_per_pt)?;
+                objs.push((1.0, frame));
+            }
         }
 
         let (w, h) = match objs.first() {
@@ -397,12 +433,23 @@ impl Renderer {
     /// `<svg opacity="...">` elements. This closes the gap with the video path
     /// (which always applied opacity via `composite_over`) — the SVG draft and
     /// the encoded video now agree visually.
-    pub fn render_frame_at(&mut self, time_ms: u32, all_frames: &[FrameData]) -> Result<Vec<u8>, CandyError> {
+    pub fn render_frame_at(
+        &mut self,
+        time_ms: u32,
+        all_frames: &[FrameData],
+    ) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
         let mut states: HashMap<Label, FrameData> = HashMap::new();
         for f in all_frames {
-            if f.time_ms == time_ms {
-                states.insert(f.target.clone(), f.clone());
+            if f.time_ms <= time_ms {
+                states
+                    .entry(f.target.clone())
+                    .and_modify(|e| {
+                        if f.time_ms >= e.time_ms {
+                            *e = f.clone();
+                        }
+                    })
+                    .or_insert_with(|| f.clone());
             }
         }
         for label in self.scene.items.keys() {
@@ -435,13 +482,28 @@ impl Renderer {
             out.push_str(&format!("<g opacity=\"{op}\">\n{obj_svg}\n</g>\n"));
         }
 
+        // Subtitle overlays: one per visible scope, subject to
+        // parental shadowing + auto-destroy. Drawn on top of the objects.
+        for sub in &self.scene.subtitles {
+            if self.scene.visible_subtitle_ids_at(time_ms).contains(&sub.id) {
+                let svg = self.render_subtitle_svg(sub, time_ms)?;
+                out.push_str(&svg);
+                out.push('\n');
+            }
+        }
+
         out.push_str("</svg>\n");
         Ok(out.into_bytes())
     }
 
     /// Render a single mobject at its placed position as an SVG string.
     /// Uses the same placement math as `render_object_pixels`.
-    fn render_object_svg(&self, label: &Label, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {
+    fn render_object_svg(
+        &self,
+        label: &Label,
+        st: &FrameData,
+        time_ms: u32,
+    ) -> Result<String, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
@@ -450,11 +512,17 @@ impl Renderer {
         let body = content_for(&self.scene, label, time_ms);
         let preamble = imports_preamble(&self.scene);
 
-        let src = place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble);
+        let src = place_source(
+            self.page_w,
+            self.page_h,
+            abs_x_cm,
+            abs_y_cm,
+            scale_pct,
+            st.rotation,
+            &body,
+            &preamble,
+        );
 
-        if !self.scene.imports.is_empty() {
-            eprintln!("DEBUG ensure_natural src:\n{src}");
-        }
         let doc = self.compile(&src)?;
         let page = doc
             .pages()
@@ -489,7 +557,45 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = content_for(&self.scene, &st.target, time_ms);
         let preamble = imports_preamble(&self.scene);
-        place_source(self.page_w, self.page_h, abs_x_cm, abs_y_cm, scale_pct, st.rotation, &body, &preamble)
+        place_source(
+            self.page_w,
+            self.page_h,
+            abs_x_cm,
+            abs_y_cm,
+            scale_pct,
+            st.rotation,
+            &body,
+            &preamble,
+        )
+    }
+
+    /// Render a subtitle to an SVG string using the scene's page size.
+    fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
+        render_subtitle_svg_impl(&self.scene, sub, self.page_w, self.page_h, time_ms)
+    }
+
+    /// Render a subtitle to an RGBA frame (page-sized) for the pixel path.
+    fn render_subtitle_pixels(
+        &self,
+        sub: &Subtitle,
+        time_ms: u32,
+        pixel_per_pt: f32,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+        let doc = subtitle_doc(&self.scene, sub, self.page_w, self.page_h, time_ms)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let opts = RenderOptions {
+            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
+            render_bleed: false,
+        };
+        let pix = render(page, &opts);
+        Ok(crate::renderer::RenderedFrame {
+            width: pix.width() as usize,
+            height: pix.height() as usize,
+            rgba: pix.data().to_vec(),
+        })
     }
 }
 
@@ -526,7 +632,7 @@ fn imports_preamble(scene: &Scene) -> String {
 /// body) before any transform. This lets a single label render different
 /// content before/after a `transform` without corrupting earlier slides.
 fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> String {
-    if let Some(timeline) = scene.content_timeline.get(label) {
+    let body = if let Some(timeline) = scene.content_timeline.get(label) {
         let mut chosen: Option<&String> = None;
         for (t, body) in timeline {
             if *t <= time_ms {
@@ -534,10 +640,117 @@ fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> String {
             }
         }
         if let Some(b) = chosen {
-            return b.clone();
+            b.clone()
+        } else {
+            scene.items.get(label).cloned().unwrap_or_default()
+        }
+    } else {
+        scene.items.get(label).cloned().unwrap_or_default()
+    };
+    // Substitute `ecval(name)` counter references with their integer value at
+    // this frame (honoring shadowing + lifecycle).
+    substitute_counters(scene, &body, time_ms)
+}
+
+/// Replace every `ecval(<name>)` (or `ecval("name")`) reference in `body` with
+/// the integer value of counter `name` at `time_ms`, per the scene's scope
+/// shadowing / lifecycle rules. The integer is valid Typst, so the substituted
+/// body still compiles.
+fn substitute_counters(scene: &Scene, body: &str, time_ms: u32) -> String {
+    let mut out = body.to_string();
+    for c in &scene.counters {
+        let val = scene.counter_value_at(&c.name, time_ms).to_string();
+        for pat in [
+            format!("ecval(\"{}\")", c.name),
+            format!("ecval({})", c.name),
+        ] {
+            if out.contains(&pat) {
+                out = out.replace(&pat, &val);
+            }
         }
     }
-    scene.items.get(label).cloned().unwrap_or_default()
+    out
+}
+
+/// Inset (in cm) from the page edge for the named subtitle anchors.
+const SUBTITLE_MARGIN_CM: f64 = 1.0;
+
+/// Build the Typst `place(...)` expression that anchors a subtitle's body,
+/// keeping the caption fully inside the viewport. Named anchors use
+/// alignment (e.g. `bottom + center`) so the caption's box hugs the requested
+/// edge instead of overflowing it — the old code placed the box's *top-left*
+/// corner at the anchor, which pushed bottom/top captions off-screen.
+fn subtitle_place_expr(sub: &Subtitle, margin: f64) -> String {
+    match sub.position {
+        SubPos::Absolute(x, y) => {
+            // Anchor the box's top-left corner at the absolute (x, y) in cm.
+            format!("place(top + left, dx: {x}cm, dy: {y}cm)")
+        }
+        SubPos::Bottom => format!("place(bottom + center, dy: -{margin}cm)"),
+        SubPos::Top => format!("place(top + center, dy: {margin}cm)"),
+        SubPos::Center => "place(center + center)".to_string(),
+        SubPos::BottomLeft => {
+            format!("place(bottom + left, dx: {margin}cm, dy: -{margin}cm)")
+        }
+        SubPos::BottomRight => {
+            format!("place(bottom + right, dx: -{margin}cm, dy: -{margin}cm)")
+        }
+        SubPos::TopLeft => format!("place(top + left, dx: {margin}cm, dy: {margin}cm)"),
+        SubPos::TopRight => {
+            format!("place(top + right, dx: -{margin}cm, dy: {margin}cm)")
+        }
+    }
+}
+
+/// Compile a subtitle's body to a single-page Typst document, placed at the
+/// subtitle's resolved anchor and with `ecval(...)` counters substituted.
+fn subtitle_doc(
+    scene: &Scene,
+    sub: &Subtitle,
+    page_w: f64,
+    page_h: f64,
+    time_ms: u32,
+) -> Result<PagedDocument, CandyError> {
+    let body = substitute_counters(scene, &sub.body, time_ms);
+    let preamble = imports_preamble(scene);
+    let pre = if preamble.is_empty() {
+        String::new()
+    } else {
+        format!("{preamble}\n")
+    };
+    let place = subtitle_place_expr(sub, SUBTITLE_MARGIN_CM);
+    let src = format!(
+        "{pre}#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
+         #{place}[ #{body} ]\n",
+        pw = page_w,
+        ph = page_h,
+    );
+    let state = WorldState::new(std::path::PathBuf::new());
+    let source = TypstSource::detached(src);
+    let world = CandyWorld {
+        state: &state,
+        main: source,
+    };
+    let warned = typst::compile::<PagedDocument>(&world);
+    warned
+        .output
+        .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
+}
+
+/// Render a subtitle to an SVG string (used by the SVG frame path).
+fn render_subtitle_svg_impl(
+    scene: &Scene,
+    sub: &Subtitle,
+    page_w: f64,
+    page_h: f64,
+    time_ms: u32,
+) -> Result<String, CandyError> {
+    let doc = subtitle_doc(scene, sub, page_w, page_h, time_ms)?;
+    let page = doc
+        .pages()
+        .first()
+        .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+    Ok(typst_svg::svg(page, &SvgOptions::default()))
 }
 
 fn place_source(
@@ -609,7 +822,9 @@ fn parse_svg_positions(svg: &str) -> Result<HashMap<Label, (f64, f64)>, CandyErr
 
     let mut idx = 0;
     while idx < svg.len() {
-        let Some(lt) = svg[idx..].find('<') else { break };
+        let Some(lt) = svg[idx..].find('<') else {
+            break;
+        };
         let lt = idx + lt;
         if svg[lt..].starts_with("</g>") {
             if let Some(m) = stack.pop() {
@@ -664,7 +879,14 @@ struct Matrix {
 
 impl Matrix {
     fn identity() -> Self {
-        Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 }
+        Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
     }
 }
 
@@ -697,11 +919,46 @@ fn parse_transform(s: &str) -> Matrix {
         let args = &rest[open + 1..close];
         let nums = parse_floats(args);
         let tm = match name {
-            "translate" if nums.len() >= 2 => Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: nums[0], f: nums[1] },
-            "translate" if nums.len() == 1 => Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: nums[0], f: 0.0 },
-            "scale" if nums.len() >= 2 => Matrix { a: nums[0], b: 0.0, c: 0.0, d: nums[1], e: 0.0, f: 0.0 },
-            "scale" if nums.len() == 1 => Matrix { a: nums[0], b: 0.0, c: 0.0, d: nums[0], e: 0.0, f: 0.0 },
-            "matrix" if nums.len() >= 6 => Matrix { a: nums[0], b: nums[1], c: nums[2], d: nums[3], e: nums[4], f: nums[5] },
+            "translate" if nums.len() >= 2 => Matrix {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: nums[0],
+                f: nums[1],
+            },
+            "translate" if nums.len() == 1 => Matrix {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: nums[0],
+                f: 0.0,
+            },
+            "scale" if nums.len() >= 2 => Matrix {
+                a: nums[0],
+                b: 0.0,
+                c: 0.0,
+                d: nums[1],
+                e: 0.0,
+                f: 0.0,
+            },
+            "scale" if nums.len() == 1 => Matrix {
+                a: nums[0],
+                b: 0.0,
+                c: 0.0,
+                d: nums[0],
+                e: 0.0,
+                f: 0.0,
+            },
+            "matrix" if nums.len() >= 6 => Matrix {
+                a: nums[0],
+                b: nums[1],
+                c: nums[2],
+                d: nums[3],
+                e: nums[4],
+                f: nums[5],
+            },
             _ => Matrix::identity(),
         };
         m = compose(m, tm);
@@ -712,10 +969,12 @@ fn parse_transform(s: &str) -> Matrix {
 
 /// Parse whitespace/comma-separated floats.
 fn parse_floats(s: &str) -> Vec<f64> {
-    s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
-        .filter(|t| !t.is_empty())
-        .filter_map(|t| t.parse::<f64>().ok())
-        .collect()
+    s.split(|c: char| {
+        !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+    })
+    .filter(|t| !t.is_empty())
+    .filter_map(|t| t.parse::<f64>().ok())
+    .collect()
 }
 
 /// Test helper: compile a Typst source string to SVG (used to confirm the
@@ -727,11 +986,17 @@ pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
     // identical to `typst compile`.
     let state = WorldState::new(PathBuf::new());
     let source = TypstSource::detached(src.to_string());
-    let world = CandyWorld { state: &state, main: source };
+    let world = CandyWorld {
+        state: &state,
+        main: source,
+    };
     let warned = typst::compile::<PagedDocument>(&world);
     match warned.output {
         Ok(doc) => {
-            let page = doc.pages().first().ok_or_else(|| CandyError::Typst("no pages".into()))?;
+            let page = doc
+                .pages()
+                .first()
+                .ok_or_else(|| CandyError::Typst("no pages".into()))?;
             Ok(typst_svg::svg(page, &SvgOptions::default()))
         }
         Err(e) => Err(CandyError::Typst(format!("{:?}", e))),
@@ -743,7 +1008,7 @@ pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
 /// the switch and the NEW content after, without corrupting earlier frames).
 #[test]
 fn content_timeline_swaps_rendered_body() {
-    use crate::core::ast::{FrameData, Label, Scene, Slide};
+    use crate::core::ast::{Label, Scene, Slide};
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
 
@@ -765,6 +1030,10 @@ fn content_timeline_swaps_rendered_body() {
         audio: Vec::new(),
         imports: Vec::new(),
         page_size: None,
+        subtitles: Vec::new(),
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
         private_metadata: PrivateMeta::default(),
     };
 
@@ -773,5 +1042,73 @@ fn content_timeline_swaps_rendered_body() {
     let before = r.render_frame_at(0, &[]).unwrap();
     // After the switch (t=100): should render the new `circle`.
     let after = r.render_frame_at(100, &[]).unwrap();
-    assert_ne!(before, after, "content timeline did not change rendered body");
+    assert_ne!(
+        before, after,
+        "content timeline did not change rendered body"
+    );
+}
+
+#[test]
+fn subtitle_stays_in_viewport() {
+    use crate::core::ast::{Scene, Slide, SubPos, Subtitle};
+    use crate::core::easing::Easing;
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    let page_w = 16.0 * PT_PER_CM;
+    let page_h = 9.0 * PT_PER_CM;
+    let mut subtitles = Vec::new();
+    subtitles.push(Subtitle {
+        id: "__sub_bottom".into(),
+        scope: "0".into(),
+        body: "[Bottom caption]".into(),
+        start_ms: 0,
+        end_ms: None,
+        position: SubPos::Bottom,
+        easing: Easing::Linear,
+    });
+    subtitles.push(Subtitle {
+        id: "__sub_top".into(),
+        scope: "0".into(),
+        body: "[Top caption]".into(),
+        start_ms: 0,
+        end_ms: None,
+        position: SubPos::Top,
+        easing: Easing::Linear,
+    });
+    let scene = Scene {
+        slides: vec![Slide { duration_ms: 100, actions: vec![] }],
+        items: HashMap::new(),
+        content_timeline: HashMap::new(),
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: Some((page_w, page_h)),
+        subtitles,
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
+        private_metadata: PrivateMeta::default(),
+    };
+
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    let svg = r.render_frame_at(50, &[]).unwrap();
+    let s = String::from_utf8(svg).unwrap();
+    // Find the maximum y in any translate() transform; it must stay within the
+    // page height (captions anchored by edge, not their top-left).
+    let mut max_y = 0.0f64;
+    for m in s.split("translate(").skip(1) {
+        let nums: Vec<f64> = m
+            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
+        if nums.len() >= 2 {
+            max_y = max_y.max(nums[1]);
+        }
+    }
+    assert!(
+        max_y <= page_h + 1.0,
+        "subtitle overflows viewport: max translate y = {max_y} > page_h {page_h}"
+    );
 }

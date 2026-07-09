@@ -199,7 +199,7 @@ impl Action {
             | Action::Flash { easing, .. }
             | Action::Wiggle { easing, .. }
             | Action::SetColor { easing, .. }
-            | Action::Transform { easing, .. } => *easing,
+            | Action::Transform { easing, .. } => easing.clone(),
             Action::SaveState { .. } | Action::Show { .. } | Action::Hide { .. } => Easing::Linear,
         }
     }
@@ -277,6 +277,23 @@ pub struct Scene {
     /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide).
     #[serde(default)]
     pub page_size: Option<(f64, f64)>,
+    /// Subtitle overlays (the "字幕模块"). Each caption is shown over the
+    /// animation at a fixed anchor, persists (by default) until replaced by
+    /// another subtitle in the same Typst scope or until its scope exits, and
+    /// is subject to parental shadowing.
+    #[serde(default)]
+    pub subtitles: Vec<Subtitle>,
+    /// Named integer counters (the "缓动计数器模块"). Key-value store of
+    /// animatable integer values referenced from mobject/subtitle bodies.
+    #[serde(default)]
+    pub counters: Vec<CounterDef>,
+    /// Runtime lifecycle events for counters (`pause` / `resume` / `destroy`).
+    #[serde(default)]
+    pub counter_events: Vec<CounterEvent>,
+    /// Lexical Typst scope intervals on the timeline. Drives auto-destroy on
+    /// scope exit and parental shadowing for both subtitles and counters.
+    #[serde(default)]
+    pub scopes: Vec<ScopeInfo>,
     pub private_metadata: PrivateMeta,
 }
 
@@ -341,7 +358,7 @@ impl FrameData {
             scale: lerp(a.scale, b.scale, t),
             opacity: lerp(a.opacity, b.opacity, t),
             rotation: lerp(a.rotation, b.rotation, t),
-            easing: b.easing,
+            easing: b.easing.clone(),
         }
     }
 }
@@ -349,6 +366,324 @@ impl FrameData {
 /// Linear interpolation helper.
 pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+// ============================================================================
+// Subtitle module (字幕模块)
+// ============================================================================
+
+/// Anchor position for a subtitle overlay, measured from the page's top-left
+/// corner. `Absolute(x, y)` is in centimeters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubPos {
+    /// Default anchor when `position:` is omitted.
+    Bottom,
+    Top,
+    Center,
+    BottomLeft,
+    BottomRight,
+    TopLeft,
+    TopRight,
+    /// Absolute position in cm from the top-left of the page.
+    Absolute(f64, f64),
+}
+
+impl Default for SubPos {
+    fn default() -> Self {
+        SubPos::Bottom
+    }
+}
+
+/// A subtitle (caption) overlay rendered over the animation.
+///
+/// Lifetime rules (Typst-scope aware):
+/// - Default: persists until *replaced* by another subtitle in the **same**
+///   scope, or until its **scope exits** (auto-destroy).
+/// - Within a single Typst scope only **one** subtitle may be visible at a
+///   time; a later one replaces an earlier one at its `start_ms`.
+/// - A subtitle in a **parent** scope is **temporarily hidden** while a child
+///   scope shows its own subtitle (shadowing).
+/// - `body` may be any valid Typst block content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subtitle {
+    /// Unique id assigned by the parser.
+    pub id: String,
+    /// Lexical Typst scope id (for shadowing / auto-destroy).
+    pub scope: String,
+    /// Raw Typst body source (any valid Typst block).
+    pub body: String,
+    /// Start time on the timeline (ms).
+    pub start_ms: u32,
+    /// Explicit end time (ms). `None` ⇒ persist until replaced or scope exit.
+    #[serde(default)]
+    pub end_ms: Option<u32>,
+    /// Anchor position on the page.
+    #[serde(default)]
+    pub position: SubPos,
+    /// Easing used for the caption's own fade-in / fade-out.
+    #[serde(default)]
+    pub easing: Easing,
+}
+
+impl Subtitle {
+    /// Resolve the absolute anchor position in **cm** from the page top-left,
+    /// given the page size in cm. `subtitle_margin_cm` is the inset from the
+    /// edge for the named anchors.
+    pub fn abs_cm(&self, page_w_cm: f64, page_h_cm: f64, margin: f64) -> (f64, f64) {
+        match self.position {
+            SubPos::Absolute(x, y) => (x, y),
+            SubPos::Bottom => (page_w_cm / 2.0, page_h_cm - margin),
+            SubPos::Top => (page_w_cm / 2.0, margin),
+            SubPos::Center => (page_w_cm / 2.0, page_h_cm / 2.0),
+            SubPos::BottomLeft => (margin, page_h_cm - margin),
+            SubPos::BottomRight => (page_w_cm - margin, page_h_cm - margin),
+            SubPos::TopLeft => (margin, margin),
+            SubPos::TopRight => (page_w_cm - margin, margin),
+        }
+    }
+}
+
+// ============================================================================
+// Easing-counter module (缓动计数器模块)
+// ============================================================================
+
+/// A named integer counter ("easing counter").
+///
+/// Key-value store of animatable integers referenced from mobject / subtitle
+/// bodies via `ecval(name)`. The value is:
+/// - under **standard Typst**, the integer `seed`;
+/// - in **animation** mode, `seed` stepping over time, the ramp shaped by the
+///   counter's easing (when a `duration` is given) or stepping once per ms
+///   (long-lived, linear) otherwise.
+///
+/// Scope rules follow Typst: a counter in a child scope **shadows** a parent
+/// scope counter of the same name. It can be `pause`d / `resume`d / `destroy`ed,
+/// and auto-destroys when its scope exits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CounterDef {
+    /// Counter name (the key).
+    pub name: String,
+    /// Lexical Typst scope id (for shadowing).
+    pub scope: String,
+    /// Integer seed (standard-Typst return value, and the value at start).
+    pub seed: i64,
+    /// Per-step increment (signed integer).
+    pub step: i64,
+    /// Optional duration (ms). `None` ⇒ long-lived (steps every ms forever).
+    #[serde(default)]
+    pub duration_ms: Option<u32>,
+    /// Easing applied to the ramp (ignored when `duration_ms` is `None`).
+    #[serde(default)]
+    pub easing: Easing,
+    /// Start time on the timeline (ms).
+    pub start_ms: u32,
+}
+
+/// A runtime lifecycle event mutating a counter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CounterEventKind {
+    Pause,
+    Resume,
+    Destroy,
+}
+
+/// A `pause` / `resume` / `destroy` event on a named counter, anchored on the
+/// timeline at `at_ms`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CounterEvent {
+    pub name: String,
+    pub kind: CounterEventKind,
+    pub at_ms: u32,
+}
+
+// ============================================================================
+// Lexical scope tracking (used by both subtitles and counters)
+// ============================================================================
+
+/// A lexical Typst scope interval on the timeline.
+///
+/// Scopes nest: a block `{ ... }` opens a child scope whose `start_ms` is the
+/// cursor when the block is entered and `end_ms` the cursor when it is left.
+/// This interval drives auto-destroy on scope exit and parental shadowing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeInfo {
+    pub id: usize,
+    /// Parent scope id (`None` for the root scope).
+    #[serde(default)]
+    pub parent: Option<usize>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+}
+
+impl Scene {
+    /// Depth of a scope in the scope tree (root = 0). Returns `0` for an
+    /// unknown scope (treated as a top-level alias).
+    fn scope_depth(&self, id: usize) -> usize {
+        let mut depth = 0;
+        let mut cur = self.scopes.iter().find(|s| s.id == id).and_then(|s| s.parent);
+        while let Some(p) = cur {
+            depth += 1;
+            cur = self.scopes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+        }
+        depth
+    }
+
+    /// Is `maybe_child` a descendant scope of `ancestor`?
+    fn is_descendant_scope(&self, maybe_child: usize, ancestor: usize) -> bool {
+        let mut cur = self.scopes.iter().find(|s| s.id == maybe_child).and_then(|s| s.parent);
+        while let Some(p) = cur {
+            if p == ancestor {
+                return true;
+            }
+            cur = self.scopes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+        }
+        false
+    }
+
+    /// Resolve the integer value of counter `name` at timeline time `time_ms`,
+    /// honoring Typst-scope shadowing (innermost active counter wins) and the
+    /// `pause` / `resume` / `destroy` lifecycle.
+    ///
+    /// - Before a counter's `start_ms` (or if undefined) → its `seed`.
+    /// - With a `duration`: value ramps `seed → seed + step·duration`, shaped by
+    ///   the easing function of the *effective* elapsed time (paused intervals
+    ///   are subtracted; `destroy` freezes the value at the destroy time).
+    /// - Without a `duration` (long-lived): value = `seed + step · elapsed`
+    ///   (one integer step per ms; linear — easing needs a bounded ramp).
+    pub fn counter_value_at(&self, name: &str, time_ms: u32) -> i64 {
+        // Collect candidate counters named `name` that have started.
+        let mut candidates: Vec<&CounterDef> = self
+            .counters
+            .iter()
+            .filter(|c| c.name == name && c.start_ms <= time_ms)
+            .collect();
+        if candidates.is_empty() {
+            // Not started yet (or never): return seed if defined, else 0.
+            return self
+                .counters
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.seed)
+                .unwrap_or(0);
+        }
+        // Shadowing: innermost (deepest) active scope wins.
+        candidates.sort_by_key(|c| std::cmp::Reverse(self.scope_depth(c.scope.parse::<usize>().unwrap_or(0))));
+        let c = candidates[0];
+
+        // Determine freeze time (destroy) and paused total.
+        let mut freeze_at: Option<u32> = None;
+        for ev in &self.counter_events {
+            if ev.name == name {
+                if let CounterEventKind::Destroy = ev.kind {
+                    if ev.at_ms <= time_ms {
+                        freeze_at = Some(freeze_at.map_or(ev.at_ms, |f| f.max(ev.at_ms)));
+                    }
+                }
+            }
+        }
+        let eval_time = freeze_at.unwrap_or(time_ms);
+        let elapsed_raw = eval_time.saturating_sub(c.start_ms);
+
+        // Subtract paused intervals (pause..resume) up to eval_time.
+        let mut paused: u32 = 0;
+        let mut open_pause: Option<u32> = None;
+        for ev in &self.counter_events {
+            if ev.name != name {
+                continue;
+            }
+            match ev.kind {
+                CounterEventKind::Pause => {
+                    if ev.at_ms <= eval_time && open_pause.is_none() {
+                        open_pause = Some(ev.at_ms);
+                    }
+                }
+                CounterEventKind::Resume => {
+                    if let Some(p) = open_pause.take() {
+                        if ev.at_ms <= eval_time {
+                            paused += ev.at_ms.saturating_sub(p);
+                        } else {
+                            paused += eval_time.saturating_sub(p);
+                        }
+                    }
+                }
+                CounterEventKind::Destroy => {}
+            }
+        }
+        if let Some(p) = open_pause {
+            paused += eval_time.saturating_sub(p);
+        }
+
+        let elapsed = elapsed_raw.saturating_sub(paused);
+        let elapsed_f = elapsed as f64;
+
+        let value = match c.duration_ms {
+            Some(d) if d > 0 => {
+                let progress = (elapsed_f / d as f64).clamp(0.0, 1.0);
+                let eased = c.easing.resolve()(progress);
+                (c.seed as f64 + c.step as f64 * d as f64 * eased).round() as i64
+            }
+            _ => c.seed + (c.step as f64 * elapsed_f).round() as i64,
+        };
+        value
+    }
+
+    /// The set of **visible** subtitles at `time_ms` (after applying one-per-
+    /// scope replacement and parental shadowing). Returns the subtitle ids.
+    pub fn visible_subtitle_ids_at(&self, time_ms: u32) -> Vec<String> {
+        // 1. Per scope, find the active subtitle (last one whose start <= time
+        //    and whose end > time). `end` = end_ms, else scope end, else the
+        //    next same-scope subtitle's start.
+        let mut active: Vec<&Subtitle> = Vec::new();
+        let mut by_scope: std::collections::HashMap<String, Vec<&Subtitle>> = std::collections::HashMap::new();
+        for s in &self.subtitles {
+            if s.start_ms > time_ms {
+                continue;
+            }
+            by_scope.entry(s.scope.clone()).or_default().push(s);
+        }
+        for (scope, mut subs) in by_scope {
+            subs.sort_by_key(|s| s.start_ms);
+            // Find the latest one active at `time_ms`.
+            let mut chosen: Option<&Subtitle> = None;
+            for s in &subs {
+                let scope_end = self
+                    .scopes
+                    .iter()
+                    .find(|sc| sc.id.to_string() == scope)
+                    .map(|sc| sc.end_ms)
+                    .unwrap_or(u32::MAX);
+                let end = s.end_ms.unwrap_or(scope_end);
+                let next_start = subs
+                    .iter()
+                    .skip_while(|x| x.start_ms <= s.start_ms)
+                    .find(|x| x.start_ms > s.start_ms)
+                    .map(|x| x.start_ms);
+                let effective_end = next_start.map_or(end, |n| end.min(n));
+                if time_ms < effective_end {
+                    chosen = Some(s);
+                }
+            }
+            if let Some(c) = chosen {
+                active.push(c);
+            }
+        }
+        // 2. Shadowing: drop a subtitle if a *descendant* scope has an active
+        //    subtitle (parent hidden while child shows its own).
+        let visible: Vec<String> = active
+            .iter()
+            .filter(|s| {
+                let sid = s.scope.parse::<usize>().unwrap_or(0);
+                !active.iter().any(|o| {
+                    let oid = o.scope.parse::<usize>().unwrap_or(0);
+                    oid != sid && self.is_descendant_scope(oid, sid)
+                })
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        visible
+    }
 }
 
 #[cfg(test)]
@@ -385,6 +720,10 @@ mod tests {
             audio: Vec::new(),
             imports: Vec::new(),
             page_size: None,
+            subtitles: Vec::new(),
+            counters: Vec::new(),
+            counter_events: Vec::new(),
+            scopes: Vec::new(),
             private_metadata: PrivateMeta::default(),
         }
     }

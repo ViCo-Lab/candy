@@ -72,6 +72,10 @@ mod tests {
             audio: Vec::new(),
             imports: Vec::new(),
             page_size: None,
+            subtitles: Vec::new(),
+            counters: Vec::new(),
+            counter_events: Vec::new(),
+            scopes: Vec::new(),
             private_metadata: PrivateMeta::default(),
         };
         let json = serde_json::to_string(&scene).unwrap();

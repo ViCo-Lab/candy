@@ -14,8 +14,8 @@
 
 use std::path::Path;
 
+use candy::{CandyError, Codec, Input, OutputFormat, build_input_with_gpu};
 use clap::{Parser, Subcommand, ValueEnum};
-use candy::{build_input_with_gpu, Codec, CandyError, Input, OutputFormat};
 
 #[derive(Parser)]
 #[command(
@@ -31,6 +31,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Build a `.tyx` X-sheet into an animation.
+    #[command(alias = "render")]
     Build {
         /// Path to the `.tyx` Typst X-sheet file (or an SVG with a
         /// `candy-json` block when `--from-svg` is given).

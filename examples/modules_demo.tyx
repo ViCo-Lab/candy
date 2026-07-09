@@ -1,0 +1,35 @@
+#import "@preview/candy:0.1.0": *
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+
+  // A growing circle whose radius is driven by an easing counter.
+  // `ecval("r")` is substituted per-frame; under standard Typst it is the seed.
+  #let r = ecounter("r", seed: 40, step: 1)
+  #mobject("dot", circle(radius: ecval("r") * 1pt + 1cm, fill: blue))
+
+  // A square that slides using a custom mathematical easing (`expr:`).
+  #mobject("sq", square(size: 1.5cm, fill: red))
+
+  // Custom easing: traditional math expression + custom bezier curve.
+  #animate("sq", to: (10cm, 0cm), duration: 2000, easing: "expr: 1 - (1 - t)^3")
+  #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
+
+  // Root-scope subtitle (persists until replaced / scope exit).
+  #subtitle([Long-lived counter: r = #str(ecval("r"))], position: "bottom")
+
+  // Pause the counter mid-animation, then resume it.
+  #pause(duration: 600)
+  #counter_pause("r")
+  #pause(duration: 600)
+  #counter_resume("r")
+
+  // A child scope: shows its own subtitle, temporarily hiding the root one.
+  {
+  #subtitle([Child scope caption], position: "top", duration: 800)
+  #pause(duration: 800)
+  }
+
+  // Destroy the counter before the end.
+  #counter_destroy("r")
+  #pause(duration: 400)
+]
