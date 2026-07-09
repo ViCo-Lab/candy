@@ -77,6 +77,11 @@ pollster = { version = "0.4", optional = true }
 # Parallel frame rasterization (data-parallel over animation frames).
 rayon = "1"
 
+# Shape morphing: earcut triangulation (port of Flubber's triangulate.js)
+# and glyph outline extraction for text morphing.
+earcutr = "0.5"
+ab_glyph = "0.2"
+
 [features]
 # AV1/H.264 video encoding. The build is fully self-contained: encoders run
 # in-process and containers (MP4 / Matroska) are written by candy itself, so no
