@@ -4,8 +4,8 @@
 #mobject("circle1", circle(radius: 1cm, fill: red))
 #mobject("circle2", circle(radius: 1cm, fill: green))
 
-#animate("title", dx: 2cm, duration: 20, easing: "smooth")
-#blink("circle1", blinks: 3, duration: 24)
-#spiral-in("circle2", scale: 3.0, rotate: 360.0, duration: 24, easing: "cubic-out")
-#fade-transform(from: "circle1", to: "circle2", duration: 18, easing: "smooth")
-#focus-on("title", factor: 0.8, duration: 16, easing: "smooth")
+#animate("title", dx: 2cm, duration: 500, easing: "smooth")
+#blink("circle1", blinks: 3, duration: 1000)
+#spiral-in("circle2", scale: 3.0, rotate: 360.0, duration: 1000, easing: "cubic-out")
+#fade-transform("circle1", "circle2", duration: 500, easing: "smooth")
+#focus-on("title", factor: 0.8, duration: 500, easing: "smooth")

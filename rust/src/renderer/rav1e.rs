@@ -71,6 +71,14 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, Cand
     enc_cfg.chroma_sampling = ChromaSampling::Cs444;
     enc_cfg.time_base = Rational::new(1, fps as u64);
     enc_cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
+    // Workaround for a rav1e 0.8.1 tiling panic (`rect.y >= -(cfg.yorigin)` in
+    // tiling/plane_region.rs) that fires during INTER-prediction (motion
+    // estimation) for these frame geometries. It runs on a rayon worker thread
+    // and aborts the process if not intercepted (see the `catch_unwind` above).
+    // Forcing a keyframe on every frame disables inter prediction, so the AV1
+    // output is valid (all-intra). Revisit when rav1e is bumped past 0.8.1.
+    enc_cfg.min_key_frame_interval = 0;
+    enc_cfg.max_key_frame_interval = 1;
 
     let cfg = Config::default().with_encoder_config(enc_cfg);
     let mut ctx: Context<u8> = cfg

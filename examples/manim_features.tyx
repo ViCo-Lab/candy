@@ -7,14 +7,14 @@
 
 // Move right, save state, move down, then restore to the saved position.
 #save_state("dot", slot: "home")
-#animate("dot", to: (3cm, 0pt), duration: 20, easing: "smooth")
-#animate("dot", to: (3cm, 2cm), duration: 15, easing: "smooth")
-#restore("dot", slot: "home", duration: 20, easing: "cubic-in-out")
+#animate("dot", to: (3cm, 0pt), duration: 800, easing: "smooth")
+#animate("dot", to: (3cm, 2cm), duration: 500, easing: "smooth")
+#restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 
 // Attention animations.
-#wiggle("dot", degrees: 20, duration: 18)
-#flash("dot", factor: 2.5, duration: 12)
-#indicate("dot", factor: 1.3, dx: 0.5cm, dy: -0.5cm, duration: 16)
+#wiggle("dot", degrees: 20, duration: 600)
+#flash("dot", factor: 2.5, duration: 400)
+#indicate("dot", factor: 1.3, dx: 0.5cm, dy: -0.5cm, duration: 500)
 
 // Visibility toggles.
 #disappear("dot")

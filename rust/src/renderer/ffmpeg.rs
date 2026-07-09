@@ -32,10 +32,15 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::CandyError;
 use crate::renderer::RenderedFrame;
 use crate::renderer::video::{Codec, Container};
+
+/// Monotonic counter for unique ffmpeg temp-file names (avoids collisions
+/// when multiple candy processes run concurrently).
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Check whether `ffmpeg` is on `$PATH`. Returns the path if found.
 pub fn find_ffmpeg() -> Option<PathBuf> {
@@ -113,12 +118,25 @@ pub fn encode_via_ffmpeg(
     let w = frames[0].width;
     let h = frames[0].height;
 
+    // ffmpeg's MP4/MKV/WebM muxers require *seekable* output, and MP4's
+    // `faststart` moov rewrite is impossible on a pipe — so piping ffmpeg's
+    // output to stdout always fails ("muxer does not support non seekable
+    // output"). Instead we write to a unique temp file (seekable) and read the
+    // bytes back, which works for every container and keeps faststart.
+    let tmp_ext = container_format(container);
+    let tmp_name = format!(
+        "candy_ff_{}_{}.{tmp_ext}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed),
+    );
+    let tmp_path = std::env::temp_dir().join(tmp_name);
+
     // Build the ffmpeg command:
     //   ffmpeg -f rawvideo -pix_fmt rgba -s WxH -r FPS -i - \
-    //          -c:v <encoder> -f <format> -movflags +faststart -
+    //          -c:v <encoder> -f <format> -movflags +faststart <tmpfile>
     let mut cmd = Command::new(&ffmpeg);
     cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         // Input: raw RGBA from stdin.
         .args(["-f", "rawvideo"])
@@ -130,11 +148,25 @@ pub fn encode_via_ffmpeg(
         .args(["-c:v", encoder])
         // Quality preset for software encoders.
         .args(["-preset", "medium"])
-        .args(["-crf", "23"])
-        // Output format to stdout.
-        .args(["-f", format]);
+        .args(["-crf", "23"]);
 
-    // MP4 with faststart for web streaming.
+    // Software lib encoders (x264/x265) receive raw RGBA frames, but HEVC/x265
+    // rejects the alpha channel ("does not support alpha layer encoding") and
+    // yuv420p is the universally-supported, standard video pixel format — so
+    // strip alpha and convert before encoding. Hardware encoders declare their
+    // own surface formats, so we leave those untouched.
+    match codec {
+        Codec::X264 | Codec::X265 | Codec::H265 => {
+            cmd.args(["-vf", "format=yuv420p"]);
+        }
+        _ => {}
+    }
+    // Output container (written to the temp file).
+    cmd.args(["-f", format])
+        .args(["-y", tmp_path.to_str().unwrap_or("/dev/null")]);
+
+    // MP4 with faststart for web streaming (valid because the output is a
+    // seekable file, not a pipe).
     if matches!(container, Container::Mp4) {
         cmd.args(["-movflags", "+faststart"]);
     }
@@ -146,8 +178,6 @@ pub fn encode_via_ffmpeg(
         }
         _ => {}
     }
-
-    cmd.arg("-");
 
     let mut child = cmd.spawn().map_err(|e| {
         CandyError::Encode(format!("failed to spawn ffmpeg: {e}"))
@@ -170,6 +200,7 @@ pub fn encode_via_ffmpeg(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(CandyError::Encode(format!(
             "ffmpeg exited with {}: {}",
             output.status,
@@ -177,7 +208,12 @@ pub fn encode_via_ffmpeg(
         )));
     }
 
-    if output.stdout.is_empty() {
+    let bytes = std::fs::read(&tmp_path).map_err(|e| {
+        CandyError::Encode(format!("ffmpeg temp read: {e}"))
+    })?;
+    let _ = std::fs::remove_file(&tmp_path);
+
+    if bytes.is_empty() {
         return Err(CandyError::Encode(
             "ffmpeg produced no output (E007)".into(),
         ));
@@ -186,7 +222,7 @@ pub fn encode_via_ffmpeg(
     eprintln!(
         "info: encoded {} frames via ffmpeg -c:v {encoder} -f {format} ({} bytes)",
         frames.len(),
-        output.stdout.len()
+        bytes.len()
     );
-    Ok(output.stdout)
+    Ok(bytes)
 }
