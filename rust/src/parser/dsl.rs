@@ -86,7 +86,7 @@ mod tests {
         std::fs::write(&tmp, svg).unwrap();
         let back = extract_dsl_from_svg(&tmp).unwrap();
         assert_eq!(back.slides[0].duration_ms, 12);
-        assert_eq!(back.private_metadata.version_codename, "Orange Candy");
+        assert_eq!(back.private_metadata.version_codename, "Ribose");
         // Easing survives the JSON round-trip.
         if let Action::MoveTo { easing, .. } = &back.slides[0].actions[0] {
             assert_eq!(*easing, Easing::Smooth);
@@ -111,7 +111,7 @@ mod tests {
             "items": {"x": "circle()"},
             "initial": {},
             "audio": [],
-            "private_metadata": {"tyx": "", "version_codename": "Orange Candy", "d_reason": ""}
+            "private_metadata": {"tyx": "", "candy": "", "version_codename": "Ribose", "in_memory_of": ""}
         }"#;
         let scene: Scene = serde_json::from_str(json).expect("old-format JSON must parse");
         scene.validate().unwrap();

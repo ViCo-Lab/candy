@@ -38,6 +38,132 @@ pub type Point = [f64; 2];
 /// are clockwise (positive signed area in screen coordinates).
 pub type Ring = Vec<Point>;
 
+// ─── SVG path extraction & generation ──────────────────────────────────────
+//
+// These functions bridge the Typst renderer and the morph core: they extract
+// polygon rings from typst-svg's SVG output (so mobjects can be morphed
+// without the user providing explicit point arrays), and convert morphed
+// rings back to SVG path strings that Typst can render.
+
+/// Extract polygon rings from an SVG string. Walks the SVG byte stream
+/// looking for `<rect>`, `<circle>`, `<ellipse>`, `<polygon>`,
+/// `<polyline>`, and `<path d="...">` elements, converting each to a
+/// ring of 2D points. Multiple elements produce multiple rings.
+pub fn extract_rings_from_svg(svg: &str) -> Vec<Ring> {
+    let mut rings = Vec::new();
+    let mut pos = 0;
+    while pos < svg.len() {
+        let lt = match svg[pos..].find('<') {
+            Some(i) => pos + i,
+            None => break,
+        };
+        let tag_start = lt + 1;
+        let tag_end = match svg[tag_start..].find(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+            Some(i) => tag_start + i,
+            None => break,
+        };
+        let tag = &svg[tag_start..tag_end];
+        let gt = match svg[lt..].find('>') {
+            Some(i) => lt + i,
+            None => break,
+        };
+        let tag_content = &svg[lt..=gt];
+        match tag {
+            "rect" => { if let Some(r) = svg_rect(tag_content) { rings.push(r); } }
+            "circle" => { if let Some(r) = svg_circle(tag_content) { rings.push(r); } }
+            "ellipse" => { if let Some(r) = svg_ellipse(tag_content) { rings.push(r); } }
+            "polygon" | "polyline" => { if let Some(r) = svg_polyline(tag_content) { rings.push(r); } }
+            "path" => {
+                if let Some(d) = svg_attr(tag_content, "d") {
+                    if let Some(r) = parse_path_d(&d) { rings.push(r); }
+                }
+            }
+            _ => {}
+        }
+        pos = gt + 1;
+    }
+    rings
+}
+
+/// Convert a ring to an SVG path string (`M x,y L x,y ... Z`).
+pub fn ring_to_path_string(ring: &[Point]) -> String {
+    if ring.is_empty() { return String::new(); }
+    let mut s = format!("M{:.2},{:.2}", ring[0][0], ring[0][1]);
+    for p in &ring[1..] { s.push_str(&format!(" L{:.2},{:.2}", p[0], p[1])); }
+    s.push('Z');
+    s
+}
+
+fn svg_attr(tag: &str, name: &str) -> Option<String> {
+    let pat = format!("{}=", name);
+    let i = tag.find(&pat)? + pat.len();
+    let b = tag.as_bytes().get(i)?;
+    if *b != b'"' && *b != b'\'' { return None; }
+    let q = *b as char;
+    let start = i + 1;
+    let end = start + tag[start..].find(q)?;
+    Some(tag[start..end].to_string())
+}
+
+fn svg_num(tag: &str, name: &str) -> f64 {
+    svg_attr(tag, name).and_then(|s| s.parse().ok()).unwrap_or(0.0)
+}
+
+fn svg_rect(tag: &str) -> Option<Ring> {
+    let (x, y) = (svg_num(tag, "x"), svg_num(tag, "y"));
+    let (w, h) = (svg_num(tag, "width"), svg_num(tag, "height"));
+    if w < 1.0 || h < 1.0 { return None; }
+    Some(vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+}
+
+fn svg_circle(tag: &str) -> Option<Ring> {
+    let (cx, cy, r) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "r"));
+    if r < 0.5 { return None; }
+    Some(circle_points(cx, cy, r, 32))
+}
+
+fn svg_ellipse(tag: &str) -> Option<Ring> {
+    let (cx, cy, rx, ry) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "rx"), svg_num(tag, "ry"));
+    if rx < 0.5 || ry < 0.5 { return None; }
+    let n = 32;
+    let mut pts = Ring::with_capacity(n);
+    for i in 0..n {
+        let a = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+        pts.push([cx + rx * a.cos(), cy + ry * a.sin()]);
+    }
+    pts.reverse();
+    Some(pts)
+}
+
+fn svg_polyline(tag: &str) -> Option<Ring> {
+    let s = svg_attr(tag, "points")?;
+    let nums: Vec<f64> = s.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty()).filter_map(|t| t.trim().parse().ok()).collect();
+    let ring: Ring = nums.chunks(2).filter_map(|c| if c.len()==2 {Some([c[0],c[1]])} else {None}).collect();
+    if ring.len() >= 3 { Some(ring) } else { None }
+}
+
+/// Parse SVG path `d` attribute (M/L/H/V/Z commands; curves approximated).
+fn parse_path_d(d: &str) -> Option<Ring> {
+    let mut ring = Ring::new();
+    let mut cur = [0.0_f64, 0.0_f64];
+    let mut first = [0.0_f64, 0.0_f64];
+    let mut started = false;
+    let tokens: Vec<&str> = d.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i] {
+            "M" | "L" => { if i+2 < tokens.len() { cur = [tokens[i+1].parse().ok()?, tokens[i+2].parse().ok()?]; if !started { first=cur; started=true; } ring.push(cur); i+=3; } else { break; } }
+            "H" => { if i+1 < tokens.len() { cur[0]=tokens[i+1].parse().ok()?; ring.push(cur); i+=2; } else { break; } }
+            "V" => { if i+1 < tokens.len() { cur[1]=tokens[i+1].parse().ok()?; ring.push(cur); i+=2; } else { break; } }
+            "Z"|"z" => { if started { ring.push(first); } i+=1; }
+            "C"|"c" => i+=7, "Q"|"q" => i+=5, "S"|"s"|"T"|"t" => i+=3, "A"|"a" => i+=8,
+            _ => { if let Ok(x)=tokens[i].parse::<f64>() { if i+1<tokens.len() { if let Ok(y)=tokens[i+1].parse::<f64>() { cur=[x,y]; ring.push(cur); i+=2; continue; } } } i+=1; }
+        }
+    }
+    if ring.len() >= 3 { Some(ring) } else { None }
+}
+
 // ─── Geometry primitives (math.js) ─────────────────────────────────────────
 
 /// Euclidean distance between two points.
@@ -334,7 +460,7 @@ pub fn regular_polygon_points(cx: f64, cy: f64, r: f64, n_sides: usize) -> Ring 
 /// The outline is returned in font units scaled to `font_size` in points.
 /// The origin is at the glyph's baseline-left.
 pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
-    use ab_glyph::{Font, FontArc, PxScale};
+    use ab_glyph::{Font, FontArc, OutlineCurve};
 
     let font_data: Vec<u8> = load_system_font().or_else(|| load_embedded_font())?;
     let font = FontArc::try_from_vec(font_data).ok()?;
@@ -344,31 +470,61 @@ pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
         return None;
     }
 
-    let scale = PxScale { x: font_size as f32, y: font_size as f32 };
-    let glyph = font.glyph_id(ch).with_scale_and_position(scale, ab_glyph::point(0.0, 0.0));
-    let outlined = font.outline_glyph(glyph)?;
+    // font.outline() returns the unscaled outline; we scale manually.
+    let outline = font.outline(glyph_id)?;
+    let scale_factor = font_size as f64 / font.units_per_em().unwrap_or(1000.0) as f64;
 
-    // Extract polygon points from the outline curves. For morphing purposes
-    // we sample each curve at its endpoints (and for Béziers, also the
-    // control points) — this gives a reasonable polygon approximation.
+    // Flatten the Bézier curves into a polygon.
     let mut ring = Ring::new();
-    let outline = outlined.glyph(); // get the Glyph to access its outline
-    let _ = outline; // suppress unused
-    // Use the outlined glyph's bounds to build a simple bounding-box polygon
-    // as a fallback. For true outline extraction, we'd flatten the Bézier
-    // curves — but for a first version, the bounding box is a usable
-    // approximation that morphs correctly (it grows/shrinks smoothly).
-    let bounds = outlined.bounds();
-    ring.push([bounds.min.x as f64, bounds.min.y as f64]);
-    ring.push([bounds.max.x as f64, bounds.min.y as f64]);
-    ring.push([bounds.max.x as f64, bounds.max.y as f64]);
-    ring.push([bounds.min.x as f64, bounds.max.y as f64]);
-
-    if ring.len() < 3 {
-        None
-    } else {
-        Some(ring)
+    for curve in &outline.curves {
+        let s = |p: &ab_glyph::Point| [p.x as f64 * scale_factor, p.y as f64 * scale_factor];
+        match curve {
+            OutlineCurve::Line(p1, p2) => {
+                ring.push(s(p1));
+                ring.push(s(p2));
+            }
+            OutlineCurve::Quad(p1, c, p2) => {
+                flatten_quad(s(p1), s(c), s(p2), &mut ring, 3);
+            }
+            OutlineCurve::Cubic(p1, c1, c2, p2) => {
+                flatten_cubic(s(p1), s(c1), s(c2), s(p2), &mut ring, 4);
+            }
+        }
     }
+
+    ring.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01);
+
+    if ring.len() < 3 { None } else { Some(ring) }
+}
+
+/// De Casteljau subdivision for a quadratic Bézier curve. Adds points to
+/// `ring` at the requested `depth` (each level doubles the number of segments).
+fn flatten_quad(p0: Point, p1: Point, p2: Point, ring: &mut Ring, depth: u32) {
+    if depth == 0 {
+        ring.push(p0);
+        return;
+    }
+    let m0 = lerp_point(&p0, &p1, 0.5);
+    let m1 = lerp_point(&p1, &p2, 0.5);
+    let m = lerp_point(&m0, &m1, 0.5);
+    flatten_quad(p0, m0, m, ring, depth - 1);
+    flatten_quad(m, m1, p2, ring, depth - 1);
+}
+
+/// De Casteljau subdivision for a cubic Bézier curve.
+fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, ring: &mut Ring, depth: u32) {
+    if depth == 0 {
+        ring.push(p0);
+        return;
+    }
+    let m0 = lerp_point(&p0, &p1, 0.5);
+    let m1 = lerp_point(&p1, &p2, 0.5);
+    let m2 = lerp_point(&p2, &p3, 0.5);
+    let m3 = lerp_point(&m0, &m1, 0.5);
+    let m4 = lerp_point(&m1, &m2, 0.5);
+    let m5 = lerp_point(&m3, &m4, 0.5);
+    flatten_cubic(p0, m0, m3, m5, ring, depth - 1);
+    flatten_cubic(m5, m4, m2, p3, ring, depth - 1);
 }
 
 /// Extract outlines for each character in `text`, returning one ring per
