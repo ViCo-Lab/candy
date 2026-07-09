@@ -62,7 +62,7 @@ rav1e = { version = "0.8.1", default-features = false }
 # In-process H.264 encoder. `openh264` links the system `libopenh264` library
 # at build time but performs all encoding in-process — candy never spawns a
 # system command (no `x264`/`x265`/FFmpeg CLI).
-openh264 = "0.7"
+openh264 = "0.9.7"
 
 # Optional GPU rasterization via vello (GPU compute 2D renderer) + wgpu.
 # Disabled by default — enable with `--features gpu`. When active, the

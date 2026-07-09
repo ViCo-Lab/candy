@@ -82,6 +82,13 @@ pub struct EncodedVideo {
     pub frames: Vec<Vec<u8>>,
     /// Codec-private config: `av1C` payload (AV1) or `avcC` (H.264).
     pub codec_private: Vec<u8>,
+    /// Per-sample keyframe flags, parallel to `frames`. A keyframe (IDR for
+    /// H.264 / AV1 key frame) decodes without referencing earlier samples, so
+    /// the container's sync-sample table / block keyframe flag must list
+    /// *exactly* these. Lying about this (e.g. marking every frame as a
+    /// keyframe) makes players trust a non-keyframe as seekable → scrubbing
+    /// and thumbnail generation fail on the resulting frame.
+    pub keyframes: Vec<bool>,
 }
 
 /// Output container.

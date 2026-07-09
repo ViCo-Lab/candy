@@ -404,8 +404,7 @@
 /// Call `scene` at the top of your `.tyx` to set the canvas size. Without it,
 /// candy defaults to 16cm × 9cm.
 #let scene(width: 16cm, height: 9cm, bg: white, body) = {
-  set page(width: width, height: height, margin: 0pt, fill: bg)
-  body
+  page(width: width, height: height, margin: 0pt, fill: bg, body)
 }
 
 // ============================================================================
@@ -437,7 +436,7 @@
 /// the AST and overlays it on every frame with the same anchoring.
 #let _subtitle_anchor(position) = {
   let m = 1cm
-  if type(position) == "array" {
+  if type(position) == array {
     // Absolute (x, y) in cm: anchor the box's top-left corner there.
     let (x, y) = (position.at(0), position.at(1))
     (top + left, x * 1cm, y * 1cm)
@@ -490,7 +489,9 @@
 /// - `easing`: rate curve for the ramp (default `"linear"`). Custom modes
 ///   `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are accepted.
 ///
-/// Returns `seed` under standard Typst so `let x = ecounter("c")` works.
+/// Returns `seed` under standard Typst, so binding it (`#let c = ecounter("c",
+/// seed: 40)`) captures the initial value; read it later with `ecval(c)` so the
+/// standard-Typst first frame shows the correct number.
 /// Scope rules follow Typst: a counter in a child scope shadows a parent-scope
 /// counter of the same name, and it auto-destroys when its scope exits.
 #let ecounter(
@@ -501,12 +502,26 @@
   easing: "linear",
 ) = seed
 
-/// Read the current integer value of counter `name`. Inside an animating candy
-/// pipeline, `ecval(name)` is substituted (by the Rust renderer) with the
-/// live, eased integer value and may be used directly as a Typst parameter
-/// (e.g. `rect(width: ecval("n") * 1cm)`). Under standard Typst it returns the
-/// counter's `seed`.
-#let ecval(name) = 0
+/// Read the current value of an easing counter. Inside an animating candy
+/// pipeline, `ecval(...)` is substituted (by the Rust renderer) with the live,
+/// eased integer value and may be used directly as a Typst parameter (e.g.
+/// `rect(width: ecval(n) * 1cm)`).
+///
+/// Under **standard Typst** there is no shared mutable registry, so pass the
+/// value returned by `ecounter` (which is the counter's `seed`) rather than the
+/// name string:
+///
+/// ```typ
+/// #let n = ecounter("n", seed: 40)
+/// #rect(width: ecval(n) * 1pt)   // standard Typst → 40; candy → live value
+/// ```
+///
+/// `ecval` returns its argument unchanged when it is already a number (the
+/// seed, via the `ecounter` binding above), so the first frame renders with the
+/// correct initial value. If a non-numeric argument is given (e.g. the bare
+/// name string `ecval("n")`, which standard Typst cannot resolve to a value),
+/// it falls back to `default`.
+#let ecval(value, default: 0) = default
 
 /// Pause a counter (freeze its stepping) at the current timeline position.
 /// Inert under standard Typst.

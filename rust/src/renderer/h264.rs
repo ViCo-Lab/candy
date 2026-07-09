@@ -13,7 +13,9 @@ use crate::renderer::RenderedFrame;
 /// Encode rasterized frames into H.264 and return an [`EncodedVideo`].
 pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {
-        return Err(CandyError::Encode("cannot encode an empty animation".into()));
+        return Err(CandyError::Encode(
+            "cannot encode an empty animation".into(),
+        ));
     }
     if fps < 1 {
         return Err(CandyError::Encode("fps must be >= 1".into()));
@@ -28,19 +30,24 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
     // The default `EncoderConfig` leaves `max_frame_rate` at 0 Hz, which makes
     // OpenH264's `initialize_ext` return `Native:5`. We must set a valid frame
     // rate (and a bitrate scaled to the resolution) before encoding.
-    let target_bps = ((w as u64 * h as u64 * fps as u64) / 20)
-        .clamp(120_000, 20_000_000) as u32;
+    let target_bps = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000) as u32;
+    // Insert an IDR at least once per second (≈ `fps` frames). A lone keyframe
+    // at frame 0 makes scrubbing/thumbnail extraction decode the whole stream
+    // from the start; a periodic IDR keeps seeking snappy. The *exact* set of
+    // keyframes is reported back via `keyframes` so the MP4/Matroska muxer can
+    // build an honest sync-sample table.
+    let gop = (fps as u32).max(1);
     let config = openh264::encoder::EncoderConfig::new()
         .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
-        .bitrate(openh264::encoder::BitRate::from_bps(target_bps));
+        .bitrate(openh264::encoder::BitRate::from_bps(target_bps))
+        .intra_frame_period(openh264::encoder::IntraFramePeriod::from_num_frames(gop));
 
-    let mut encoder = openh264::encoder::Encoder::with_api_config(
-        openh264::OpenH264API::from_source(),
-        config,
-    )
-    .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
+    let mut encoder =
+        openh264::encoder::Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
+            .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
 
     let mut samples: Vec<Vec<u8>> = Vec::with_capacity(frames.len());
+    let mut keyframes: Vec<bool> = Vec::with_capacity(frames.len());
     let mut sps: Option<Vec<u8>> = None;
     let mut pps: Option<Vec<u8>> = None;
 
@@ -56,14 +63,20 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
         // the NAL payload. We strip the start code, derive the real NAL header
         // byte, and repackage the payload as a length-prefixed sample (as
         // required by MP4 / Matroska). The first SPS/PPS seen are captured for
-        // the `avcC` box.
+        // the `avcC` box. A NAL of type 5 (Coded slice of an IDR picture) marks
+        // this sample as a keyframe — recorded so the muxer can build an honest
+        // sync-sample table.
         let mut sample: Vec<u8> = Vec::new();
+        let mut is_idr = false;
         for l in 0..encoded.num_layers() {
             let layer = encoded.layer(l).expect("layer index within range");
             for n in 0..layer.nal_count() {
                 let nal = layer.nal_unit(n).expect("nal index within range");
                 let payload = nal_payload(nal);
                 let nal_type = payload.first().copied().unwrap_or(0) & 0x1F;
+                if nal_type == 5 {
+                    is_idr = true;
+                }
                 if sps.is_none() && nal_type == 7 {
                     sps = Some(payload.to_vec());
                 } else if pps.is_none() && nal_type == 8 {
@@ -74,6 +87,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
             }
         }
         samples.push(sample);
+        keyframes.push(is_idr);
     }
 
     let (sps, pps) = match (sps, pps) {
@@ -81,9 +95,15 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
         _ => {
             return Err(CandyError::Encode(
                 "openh264 did not emit SPS/PPS (E007)".into(),
-            ))
+            ));
         }
     };
+
+    // The first sample must always be seekable (IDR). If the encoder somehow
+    // left it unmarked, force it so the stream has a valid decode entry point.
+    if keyframes.first() == Some(&false) {
+        keyframes[0] = true;
+    }
 
     Ok(EncodedVideo {
         width: w as u32,
@@ -92,6 +112,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
         is_av1: false,
         frames: samples,
         codec_private: build_avcc(&sps, &pps),
+        keyframes,
     })
 }
 
@@ -121,10 +142,12 @@ fn rgba_to_i420_packed(
             let sy = y * 2;
             let o = (sy * src_w + sx) * 4;
             let (r, g, b) = (rgba[o] as f32, rgba[o + 1] as f32, rgba[o + 2] as f32);
-            up[y * (w / 2) + x] = (-0.169 * r - 0.331 * g + 0.5 * b + 128.0).clamp(0.0, 255.0) as u8;
+            up[y * (w / 2) + x] =
+                (-0.169 * r - 0.331 * g + 0.5 * b + 128.0).clamp(0.0, 255.0) as u8;
             let o2 = (sy * src_w + (sx + 1).min(src_w - 1)) * 4;
             let (r2, g2, b2) = (rgba[o2] as f32, rgba[o2 + 1] as f32, rgba[o2 + 2] as f32);
-            vp[y * (w / 2) + x] = (0.5 * r2 - 0.419 * g2 - 0.081 * b2 + 128.0).clamp(0.0, 255.0) as u8;
+            vp[y * (w / 2) + x] =
+                (0.5 * r2 - 0.419 * g2 - 0.081 * b2 + 128.0).clamp(0.0, 255.0) as u8;
         }
     }
     (yp, up, vp)
@@ -158,4 +181,36 @@ fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     v.extend_from_slice(&(pps.len() as u16).to_be_bytes());
     v.extend_from_slice(pps);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the seek/thumbnail bug: the encoder must report the
+    /// *true* set of keyframes, not claim every frame is one. With a ~1 s GOP,
+    /// only frame 0 (and roughly every `fps`-th frame) is an IDR; lying and
+    /// marking all frames as keyframes made players trust P-frames as seekable
+    /// → scrubbing and thumbnail generation failed.
+    #[test]
+    fn h264_reports_real_keyframes_not_all() {
+        let n: u32 = 60;
+        let frames: Vec<RenderedFrame> = (0..n)
+            .map(|_| RenderedFrame {
+                width: 64,
+                height: 64,
+                rgba: vec![255u8; 64 * 64 * 4],
+            })
+            .collect();
+        let v = encode(&frames, 30).expect("h264 encode");
+        assert_eq!(v.keyframes.len(), n as usize, "one flag per frame");
+        assert!(v.keyframes[0], "first frame must be a keyframe");
+        let kf = v.keyframes.iter().filter(|&&k| k).count();
+        assert!(kf >= 1, "at least one keyframe required");
+        assert!(
+            kf < n as usize,
+            "not every frame should be a keyframe (got {kf}/{n}); the MP4/Matroska \
+             sync-sample table must not lie about this"
+        );
+    }
 }

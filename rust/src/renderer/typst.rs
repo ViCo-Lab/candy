@@ -226,7 +226,12 @@ impl Renderer {
         let mut labels: Vec<&Label> = self.scene.items.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
         for label in labels {
-            let body = &self.scene.items[label];
+            // Substitute `ecval(...)` counter references (at t=0, i.e. the seed)
+            // before compiling. This isolated layout pass has no `#let name =
+            // ecounter(...)` binding in scope, so a bareword counter reference
+            // like `ecval(r)` would otherwise fail with "unknown variable: r".
+            let raw = self.scene.items[label].clone();
+            let body = substitute_counters(&self.scene, &raw, 0);
             // Prefix with # so the body (a function-call expression like
             // "rect(width: 2cm, fill: red)") is evaluated, not treated as text.
             src.push_str(&format!("#{}\n", body));

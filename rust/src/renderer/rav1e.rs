@@ -83,6 +83,12 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
     let w = width.max(64).next_multiple_of(64);
     let h = height.max(64).next_multiple_of(64);
 
+    // Insert a keyframe at least once per second (`gop` frames ≈ 1 s) so
+    // seeking stays snappy. The exact keyframe positions are read back from each
+    // packet (`FrameType::KEY`) and reported via `EncodedVideo::keyframes` for an
+    // honest sync-sample table.
+    let gop = (fps as u32).max(1);
+
     let mut enc_cfg = EncoderConfig::with_speed_preset(8);
     enc_cfg.width = w;
     enc_cfg.height = h;
@@ -92,13 +98,13 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
     enc_cfg.chroma_sampling = ChromaSampling::Cs444;
     enc_cfg.time_base = Rational::new(1, fps as u64);
     enc_cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
-    // Default: allow inter-prediction (temporal compression). `max_key_frame_interval
-    // = 0` leaves rav1e's default GOP, so inter frames are produced. When
-    // `all_intra` is set (the panic-retry path) we force a keyframe on every
-    // frame, which disables ME and avoids the 0.8.1 tiling panic
-    // (`rect.y >= -(cfg.yorigin)` in tiling/plane_region.rs).
+    // Default: allow inter-prediction (temporal compression). When `all_intra`
+    // is set (the panic-retry path) we force a keyframe on every frame, which
+    // disables ME and avoids the 0.8.1 tiling panic (`rect.y >= -(cfg.yorigin)`
+    // in tiling/plane_region.rs). Otherwise we cap the GOP at `gop` so seeking
+    // stays snappy while still getting temporal compression.
     enc_cfg.min_key_frame_interval = 0;
-    enc_cfg.max_key_frame_interval = if all_intra { 1 } else { 0 };
+    enc_cfg.max_key_frame_interval = if all_intra { 1 } else { gop as u64 };
 
     let cfg = Config::default().with_encoder_config(enc_cfg);
     let mut ctx: Context<u8> = cfg
@@ -106,6 +112,7 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
         .map_err(|e| CandyError::Encode(format!("invalid rav1e config: {:?}", e)))?;
 
     let mut frames_out: Vec<Vec<u8>> = Vec::with_capacity(frames.len());
+    let mut keyframes: Vec<bool> = Vec::with_capacity(frames.len());
     let mut seq_header: Option<Vec<u8>> = None;
 
     for frame in frames {
@@ -122,6 +129,7 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
                 }
             }
             frames_out.push(packet.data.to_vec());
+            keyframes.push(packet.frame_type == FrameType::KEY);
         }
     }
 
@@ -133,6 +141,7 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
             }
         }
         frames_out.push(packet.data.to_vec());
+        keyframes.push(packet.frame_type == FrameType::KEY);
     }
 
     let codec_private = match seq_header {
@@ -146,6 +155,12 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
         None => vec![0x81u8, 0x01],
     };
 
+    // The first sample must always be seekable (a key frame). If the encoder
+    // left it unmarked, force it so the stream has a valid decode entry point.
+    if keyframes.first() == Some(&false) {
+        keyframes[0] = true;
+    }
+
     Ok(EncodedVideo {
         width: w as u32,
         height: h as u32,
@@ -153,6 +168,7 @@ fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<E
         is_av1: true,
         frames: frames_out,
         codec_private,
+        keyframes,
     })
 }
 

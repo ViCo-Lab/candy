@@ -251,14 +251,29 @@ fn build_video_trak(
         p
     });
 
-    // stss (sync sample table): marks keyframes. openh264 encodes every frame
-    // as an IDR (keyframe), so all frames are listed. Mobile players (iOS/
-    // Android hardware decoders) require this box to seek/play correctly.
+    // stss (sync sample table): lists the *actual* keyframe sample numbers
+    // (1-based) taken from `v.keyframes`. Marking every frame as a sync
+    // sample is a lie that makes players trust a P-frame as independently
+    // decodable, so scrubbing and thumbnail generation fail. At least one
+    // sync sample is required; if the encoder reported none we fall back to
+    // sample 1.
+    let sync: Vec<u32> = v
+        .keyframes
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| **k)
+        .map(|(i, _)| (i + 1) as u32)
+        .collect();
     let stss = full_box(b"stss", 0, 0, {
         let mut p = vec![];
-        p.extend_from_slice(&nframes.to_be_bytes()); // entry_count
-        for i in 1..=nframes {
-            p.extend_from_slice(&i.to_be_bytes()); // sample_number (1-based)
+        let n = sync.len().max(1) as u32;
+        p.extend_from_slice(&n.to_be_bytes()); // entry_count
+        if sync.is_empty() {
+            p.extend_from_slice(&1u32.to_be_bytes());
+        } else {
+            for s in &sync {
+                p.extend_from_slice(&s.to_be_bytes()); // sample_number (1-based)
+            }
         }
         p
     });
@@ -564,7 +579,9 @@ pub fn mux_matroska(
         for f in *f0..*f1 {
             let ms = (f as u64) * 1000 / v.fps as u64;
             let rel = (ms - c_ms) as i16;
-            let block = simple_block(1, rel, true, &v.frames[f]);
+            // Only mark real keyframes (IDR / AV1 key frame) as seekable in the
+            // block; lying here breaks seeking on players that trust the flag.
+            let block = simple_block(1, rel, v.keyframes[f], &v.frames[f]);
             c.extend_from_slice(&ebml_elem(&[0xA3], &block));
         }
         // Audio blocks whose timestamp falls in this cluster range.
@@ -688,24 +705,38 @@ fn simple_block(track: u64, rel_timecode: i16, keyframe: bool, data: &[u8]) -> V
 ///
 /// An `L`-byte vint marks its length by setting the top `L` bits of the first
 /// byte to `1` (e.g. `L=1` → `0x80`, `L=2` → `0xC0`, `L=3` → `0xE0`). The
-/// remaining bits hold the most-significant base-128 digit of the value.
+/// remaining `(8-L)` bits of the first byte hold the most-significant value
+/// digits, and each subsequent byte holds 7 value bits. The top value digit
+/// must fit in exactly `(8-L)` bits: if it spilled into a marker bit the byte
+/// would gain an extra leading `1` and be misread as a *longer* vint. For
+/// example, a 1-byte vint for `73` must be `0xC0 0x49` — never `0x80 | 73 =
+/// 0xC9`, because `0xC9` has two leading `1`s and a parser reads it as a
+/// 2-byte vint (value 2370). `L` is chosen minimally so the encoding is
+/// unambiguous.
 fn ebml_vint(v: u64) -> Vec<u8> {
-    let mut groups: Vec<u8> = Vec::new();
-    let mut val = v;
-    if val == 0 {
-        groups.push(0);
-    } else {
-        while val > 0 {
-            groups.push((val & 0x7F) as u8);
-            val >>= 7;
+    // Choose `len` (number of bytes) minimally so that the top value digit fits
+    // in the `(8 - len)` bits available in the first byte. A 1-byte vint (len 1)
+    // can therefore hold [0, 63], a 2-byte vint [64, 4095], a 3-byte [4096,
+    // 262143], and so on.
+    let mut len = 1usize;
+    while len < 8 {
+        let top = (v >> (7 * (len - 1))) as u64;
+        let top_cap = 1u64 << (7 - len); // max top digit for this length
+        if top < top_cap {
+            break;
         }
-        groups.reverse();
+        len += 1;
     }
-    let len = groups.len().max(1);
-    // Top `len` bits set to mark an `len`-byte vint.
-    let marker = (((1u16 << len) - 1) << (8 - len)) as u8;
-    groups[0] |= marker;
-    groups
+    let marker = 0xFFu8 << (8 - len); // top `len` bits set (0x80 / 0xC0 / 0xE0 / …)
+    let top_shift = 7 * (len - 1);
+    let top_mask = if len < 8 { (1u64 << (7 - len)) - 1 } else { 0 };
+    let top_bits = (v >> top_shift) & top_mask;
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for i in (1..len).rev() {
+        out.push(((v >> (7 * (i - 1))) & 0x7F) as u8);
+    }
+    out.insert(0, (top_bits as u8) | marker);
+    out
 }
 
 /// Build an EBML element: `[id][size][data]`.
@@ -718,7 +749,17 @@ fn ebml_elem(id: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 fn u64_to_bytes(v: u64) -> Vec<u8> {
-    v.to_be_bytes().to_vec()
+    // Minimal big-endian EBML unsigned integer (no leading-zero padding, at
+    // least 1 byte). Reference muxers (ffmpeg) emit integers this way, and
+    // strict EBML parsers reject the inflated 8-byte form for small values.
+    if v == 0 {
+        return vec![0];
+    }
+    let mut b = v.to_be_bytes().to_vec();
+    while b.len() > 1 && b[0] == 0 {
+        b.remove(0);
+    }
+    b
 }
 
 fn f64_to_bytes(v: f64) -> Vec<u8> {
