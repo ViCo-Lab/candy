@@ -199,7 +199,7 @@ self-contained codecs (av1/h264) or returns E007 (h265/x264/x265 without ffmpeg)
 
 ## Project status
 
-This is the first usable version (spec v0.1.0, "Orange Candy"). The `core`
+This is the first usable version (v0.1.0, "Ribose"). The `core`
 scheduling/interpolation and the `parser` DSL scanner are complete and tested;
 the `renderer` compiles per-frame Typst in-process.
 

@@ -5,6 +5,9 @@ edition = "2024"
 description = "Code-oriented Animation Engine Designed for Typst — Rust rendering & encoding backend"
 license = "MIT"
 
+[package.metadata.candy]
+codename = "Ribose"
+
 [lib]
 name = "candy"
 path = "src/lib.rs"
@@ -34,7 +37,12 @@ typst-utils = "0.15"
 # `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
 # `system-downloader` enables network fetch of @preview packages at render
 # time (so `#import "@preview/cetz"` works without a prior `typst compile`).
-typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files", "system-downloader"] }
+typst-kit = { version = "0.15", features = [
+    "embedded-fonts",
+    "scan-fonts",
+    "system-files",
+    "system-downloader",
+] }
 
 # Mature keyframe / easing library. candy's `Easing` enum delegates its math
 # to `keyframe::functions::*` so we get well-tested implementations of the

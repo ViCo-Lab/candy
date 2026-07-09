@@ -20,7 +20,7 @@ use candy::{build_input_with_gpu, Codec, CandyError, Input, OutputFormat};
 #[derive(Parser)]
 #[command(
     name = "candy",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CANDY_CODENAME"), ")"),
     about = "Candy (.tyx) — Code-oriented Animation Engine Designed for Typst"
 )]
 struct Cli {
@@ -72,6 +72,9 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         keep_intermediates: bool,
     },
+    /// Hidden easter-egg command. Invoked as `candy candy` or `candy tyx`.
+    #[command(alias = "tyx", hide = true)]
+    Candy,
 }
 
 /// Accept either a string or a path; we only need the string form from CLI.
@@ -127,6 +130,10 @@ enum CodecArg {
 fn main() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Candy => {
+            // Hidden easter egg: `candy candy` / `candy tyx`.
+            println!("Built for Candy(TYX). In memory of CChO2025.");
+        }
         Commands::Build {
             input,
             from_svg,
