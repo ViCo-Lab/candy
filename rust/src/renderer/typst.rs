@@ -205,6 +205,10 @@ pub struct Renderer {
     page_w: f64,
     page_h: f64,
     natural_computed: bool,
+    /// Effective canvas size (pt) per scene id, resolved via inheritance.
+    scene_pages: HashMap<usize, (f64, f64)>,
+    /// label -> owning scene id (for parent auto-hide).
+    label_scene: HashMap<Label, usize>,
 }
 
 impl Renderer {
@@ -227,6 +231,8 @@ impl Renderer {
             page_w: 1.0,
             page_h: 1.0,
             natural_computed: false,
+            scene_pages: HashMap::new(),
+            label_scene: HashMap::new(),
         })
     }
 
@@ -291,6 +297,36 @@ impl Renderer {
         let positions = parse_svg_positions(&svg)?;
 
         self.nat = positions;
+
+        // Build per-scene canvas sizes + label→scene ownership for auto-hide.
+        // When `scenes` is empty (legacy single-scene document) we fall back to
+        // the whole document as one scene (id 0) — behavior identical to v0.1.
+        self.label_scene = self.scene.label_scene_map();
+        let mut sp: HashMap<usize, (f64, f64)> = HashMap::new();
+        if self.scene.scenes.is_empty() {
+            sp.insert(0, (self.page_w, self.page_h));
+        } else {
+            for s in &self.scene.scenes {
+                sp.insert(s.id, self.scene.effective_page_pt(s.id));
+            }
+        }
+        self.scene_pages = sp;
+
+        // One-page-per-scene check: warn if any mobject's natural position
+        // overflows the canvas. Content spanning multiple pages should be split
+        // into multiple scenes (the documented split rule); candy renders a
+        // single page per scene.
+        for (label, (x, y)) in &self.nat {
+            if *x > self.page_w || *y > self.page_h {
+                eprintln!(
+                    "warn: mobject @{} natural position ({:.1}pt, {:.1}pt) overflows the \
+                     canvas ({}pt × {}pt); a scene should occupy only one page — split \
+                     the overflowing content into another scene",
+                    label.0, x, y, self.page_w, self.page_h
+                );
+            }
+        }
+
         self.natural_computed = true;
         Ok(())
     }
@@ -319,6 +355,8 @@ impl Renderer {
         label: &Label,
         st: &FrameData,
         time_ms: u32,
+        page_w: f64,
+        page_h: f64,
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
@@ -329,8 +367,8 @@ impl Renderer {
         let body = content_for(&self.scene, label, time_ms);
         let preamble = imports_preamble(&self.scene);
         let placed = place_source(
-            self.page_w,
-            self.page_h,
+            page_w,
+            page_h,
             abs_x_cm,
             abs_y_cm,
             scale_pct,
@@ -398,13 +436,34 @@ impl Renderer {
                 .or_insert_with(|| self.initial_for(label.clone(), time_ms));
         }
 
+        // Resolve the active scene (innermost scene at this frame time) and its
+        // canvas. Entering a child scene hides its parent — we render only the
+        // active scene's mobjects. With no scene tree, the whole document is one
+        // scene and everything renders (legacy behavior).
+        let active = if self.scene.scenes.is_empty() {
+            0
+        } else {
+            self.scene.active_scene_at(time_ms)
+        };
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            self.scene_pages.get(&active).copied().unwrap_or((self.page_w, self.page_h))
+        };
+
         let mut labels: Vec<&Label> = states.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
+            // Parent auto-hide: skip mobjects not owned by the active scene.
+            if !self.scene.scenes.is_empty()
+                && self.label_scene.get(*label).copied().unwrap_or(0) != active
+            {
+                continue;
+            }
             let st = states.get(*label).unwrap();
-            let frame = self.render_object_pixels(*label, st, time_ms, pixel_per_pt)?;
+            let frame = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
             objs.push((st.opacity, frame));
         }
 
@@ -420,10 +479,9 @@ impl Renderer {
             }
         }
 
-        let (w, h) = match objs.first() {
-            Some((_, f)) => (f.width, f.height),
-            None => (1, 1),
-        };
+        // Canvas size follows the active scene's page (not an arbitrary frame).
+        let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
+        let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
         let mut canvas = vec![255u8; w * h * 4];
         for (opacity, f) in &objs {
             composite_over(&mut canvas, f, *opacity, w, h);
@@ -467,9 +525,18 @@ impl Renderer {
         let svg_str = std::str::from_utf8(&svg_bytes)
             .map_err(|e| CandyError::Typst(format!("svg utf8: {e}")))?;
 
-        // 2. Compute target pixel dimensions from the page size + ppi.
-        let width = (self.page_w * pixel_per_pt as f64).round().max(1.0) as u32;
-        let height = (self.page_h * pixel_per_pt as f64).round().max(1.0) as u32;
+        // 2. Compute target pixel dimensions from the active scene's page size + ppi.
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            let active = self.scene.active_scene_at(time_ms);
+            self.scene_pages
+                .get(&active)
+                .copied()
+                .unwrap_or((self.page_w, self.page_h))
+        };
+        let width = (pw * pixel_per_pt as f64).round().max(1.0) as u32;
+        let height = (ph * pixel_per_pt as f64).round().max(1.0) as u32;
 
         // 3. Rasterize on the GPU.
         gpu.render_svg(svg_str, width, height)
@@ -511,20 +578,40 @@ impl Renderer {
         let mut labels: Vec<&Label> = states.keys().collect();
         labels.sort_by(|a, b| a.0.cmp(&b.0));
 
+        // Resolve the active scene + its canvas. Only the active scene's
+        // mobjects are rendered; a parent scene is auto-hidden while a child
+        // scene is active.
+        let active = if self.scene.scenes.is_empty() {
+            0
+        } else {
+            self.scene.active_scene_at(time_ms)
+        };
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            self.scene_pages.get(&active).copied().unwrap_or((self.page_w, self.page_h))
+        };
+
         // White background, page-sized canvas.
         let mut out = String::new();
         out.push_str(&format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n",
-            self.page_w, self.page_h, self.page_w, self.page_h
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{pw}\" height=\"{ph}\" viewBox=\"0 0 {pw} {ph}\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n",
+            pw = pw, ph = ph
         ));
         out.push_str(&format!(
-            "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"white\"/>\n",
-            self.page_w, self.page_h
+            "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"white\"/>\n",
+            pw = pw, ph = ph
         ));
 
         for label in labels {
+            // Parent auto-hide: skip mobjects not owned by the active scene.
+            if !self.scene.scenes.is_empty()
+                && self.label_scene.get(label).copied().unwrap_or(0) != active
+            {
+                continue;
+            }
             let st = &states[label];
-            let obj_svg = self.render_object_svg(label, st, time_ms)?;
+            let obj_svg = self.render_object_svg(label, st, time_ms, pw, ph)?;
             // Wrap each object's SVG in a group with the per-frame opacity.
             // SVG <g opacity> applies to all descendants (shapes + text).
             let op = st.opacity.clamp(0.0, 1.0);
@@ -552,6 +639,8 @@ impl Renderer {
         label: &Label,
         st: &FrameData,
         time_ms: u32,
+        page_w: f64,
+        page_h: f64,
     ) -> Result<String, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
@@ -562,8 +651,8 @@ impl Renderer {
         let preamble = imports_preamble(&self.scene);
 
         let src = place_source(
-            self.page_w,
-            self.page_h,
+            page_w,
+            page_h,
             abs_x_cm,
             abs_y_cm,
             scale_pct,
@@ -1083,6 +1172,8 @@ fn content_timeline_swaps_rendered_body() {
         counters: Vec::new(),
         counter_events: Vec::new(),
         scopes: Vec::new(),
+        scenes: Vec::new(),
+        root_scene: None,
         private_metadata: PrivateMeta::default(),
     };
 
@@ -1137,6 +1228,8 @@ fn subtitle_stays_in_viewport() {
         counters: Vec::new(),
         counter_events: Vec::new(),
         scopes: Vec::new(),
+        scenes: Vec::new(),
+        root_scene: None,
         private_metadata: PrivateMeta::default(),
     };
 

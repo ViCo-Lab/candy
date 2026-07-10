@@ -23,8 +23,8 @@ use typst_syntax::ast::{self, AstNode, Expr};
 use typst_syntax::parse;
 
 use crate::core::ast::{
-    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, Scene, Slide,
-    SubPos, Subtitle,
+    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, Scene,
+    SceneInfo, Slide, SubPos, Subtitle,
 };
 use crate::core::easing::Easing;
 use crate::core::error::CandyError;
@@ -59,6 +59,9 @@ const CANDY: &[&str] = &[
     "transform",
     // Subtitle module (字幕模块).
     "subtitle",
+    // Scene module: `scene` establishes a nestable, scope-bounded, one-page
+    // segment of the timeline (parent auto-hides when a child is active).
+    "scene",
     // Easing-counter module (缓动计数器模块): `ecounter` defines a named integer
     // counter, `ecval` reads its current integer value (substituted per-frame by
     // the renderer), and `counter_pause` / `counter_resume` / `counter_destroy`
@@ -86,6 +89,22 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     ctx.scope_stack.push(0);
     ctx.scope_starts.insert(0, 0);
     ctx.next_scope_id = 1;
+    // The whole document is also the implicit root *scene* (id 0). Every
+    // mobject / action not declared inside an explicit `#scene(...)` belongs
+    // to it. This is the "no root scene → whole document is one scene" rule.
+    ctx.scenes.push(crate::core::ast::SceneInfo {
+        id: 0,
+        parent: None,
+        scope: 0,
+        page_size: ctx
+            .page_size_cm
+            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        start_ms: 0,
+        end_ms: 0,
+        owns_labels: Vec::new(),
+    });
+    ctx.current_scene = 0;
+    ctx.next_scene_id = 1;
     walk(&node, &raw, &mut ctx);
     // Finalize the root scope's interval [0, cursor].
     ctx.scopes.push(crate::core::ast::ScopeInfo {
@@ -94,6 +113,16 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         start_ms: 0,
         end_ms: ctx.cursor,
     });
+    // Finalize the root scene's interval and attribute every mobject to the
+    // scene that owns it (defaulting to the root).
+    if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
+        root.end_ms = ctx.cursor;
+    }
+    for (label, sid) in &ctx.label_scene {
+        if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == *sid) {
+            s.owns_labels.push(label.clone());
+        }
+    }
 
     let private = PrivateMeta::default();
     let scene = Scene {
@@ -110,6 +139,8 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         counters: ctx.counters,
         counter_events: ctx.counter_events,
         scopes: ctx.scopes,
+        scenes: ctx.scenes,
+        root_scene: Some(0),
         private_metadata: private,
     };
     scene.validate().map_err(CandyError::Parse)?; // E002
@@ -210,12 +241,79 @@ struct ParseCtx {
     counter_events: Vec<crate::core::ast::CounterEvent>,
     /// Lexical scope intervals (finalized on scope exit / at end of parse).
     scopes: Vec<crate::core::ast::ScopeInfo>,
+    /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
+    /// owns mobjects declared right now; `scene_stack` tracks open scenes.
+    scenes: Vec<crate::core::ast::SceneInfo>,
+    /// Next fresh scene id (root is `0`, assigned in `parse_tyx`).
+    next_scene_id: usize,
+    /// Open scene ids (top = innermost active scene).
+    scene_stack: Vec<usize>,
+    /// The scene that currently owns newly-declared mobjects.
+    current_scene: usize,
+    /// label -> owning scene id (populated as mobjects are declared).
+    label_scene: HashMap<Label, usize>,
     /// Monotonic id for synthetic subtitles.
     subtitle_id: usize,
 }
 
 /// Recursively walk the syntax tree.
 fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
+    // Scene scoping: a `scene` call opens a *nested scene* around its body.
+    // Every mobject declared inside the body belongs to this scene, and the
+    // renderer shows only the innermost active scene at any frame (the parent
+    // auto-hides). We open the scene, recurse into the body's children, then
+    // close it — so the scene's `[start_ms, end_ms]` interval tracks exactly
+    // where its content sits on the timeline.
+    if let Some(call) = node.get().cast::<ast::FuncCall>() {
+        if call_symbol(&call, ctx).as_deref() == Some("scene") {
+            let id = ctx.next_scene_id;
+            ctx.next_scene_id += 1;
+            let parent = ctx.current_scene;
+            let scope = ctx.next_scope_id;
+            ctx.next_scope_id += 1;
+            // Read the scene's own width/height (non-recursive: only the call's
+            // direct named args, so a nested scene's size doesn't leak up).
+            let mut w_cm: Option<f64> = None;
+            let mut h_cm: Option<f64> = None;
+            for a in call.args().items() {
+                if let ast::Arg::Named(n) = a {
+                    if let Some(cm) = expr_length_cm(&n.expr()) {
+                        match n.name().as_str() {
+                            "width" => w_cm = Some(cm),
+                            "height" => h_cm = Some(cm),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            let page_size = match (w_cm, h_cm) {
+                (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
+                _ => None,
+            };
+            let start = ctx.cursor;
+            ctx.scenes.push(SceneInfo {
+                id,
+                parent: Some(parent),
+                scope,
+                page_size,
+                start_ms: start,
+                end_ms: start,
+                owns_labels: Vec::new(),
+            });
+            ctx.scene_stack.push(id);
+            ctx.current_scene = id;
+            for child in node.children() {
+                walk(&child, raw, ctx);
+            }
+            if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == id) {
+                s.end_ms = ctx.cursor;
+            }
+            ctx.scene_stack.pop();
+            ctx.current_scene = parent;
+            return;
+        }
+    }
+
     // Detect `#set page(width: X, height: Y)` to extract the page size.
     if let Some(set_rule) = node.get().cast::<ast::SetRule>() {
         let target = set_rule.target();
@@ -254,7 +352,6 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         ctx.next_scope_id += 1;
         ctx.scope_starts.insert(id, ctx.cursor);
         ctx.scope_stack.push(id);
-        eprintln!("DBG CODEBLOCK scope id={id} cursor={}", ctx.cursor);
         id
     });
     for child in node.children() {
@@ -307,27 +404,7 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
 
 /// Resolve and dispatch a single Candy function call.
 fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
-    let callee = call.callee();
-    let sym: Option<String> = match callee {
-        Expr::Ident(id) => {
-            let name = id.as_str();
-            ctx.symbol_map
-                .get(name)
-                .filter(|o| CANDY.contains(&o.as_str()))
-                .cloned()
-        }
-        // Handles `candy.mobject(...)` style calls regardless of module name.
-        Expr::FieldAccess(fa) => {
-            let field = fa.field().as_str();
-            if CANDY.contains(&field) {
-                Some(field.to_string())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-    let Some(sym) = sym else { return };
+    let Some(sym) = call_symbol(&call, ctx) else { return };
 
     let args = call.args();
     let mut pos: Vec<Expr> = Vec::new();
@@ -393,6 +470,31 @@ fn current_scope(ctx: &ParseCtx) -> String {
     ctx.scope_stack.last().copied().unwrap_or(0).to_string()
 }
 
+/// Resolve a function call to its Candy symbol (or `None` if it isn't one).
+/// Works for `mobject(...)` (imported via `#import "candy": *`),
+/// `candy.mobject(...)` (field access), and renamed imports.
+fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String> {
+    let callee = call.callee();
+    match callee {
+        Expr::Ident(id) => {
+            let name = id.as_str();
+            ctx.symbol_map
+                .get(name)
+                .filter(|o| CANDY.contains(&o.as_str()))
+                .cloned()
+        }
+        Expr::FieldAccess(fa) => {
+            let field = fa.field().as_str();
+            if CANDY.contains(&field) {
+                Some(field.to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// `mobject(label, body)`: register `items[label] = body` (raw source) with a
 /// default frame-0 state (opacity 1). Position is left to the renderer.
 fn process_mobject(
@@ -416,6 +518,7 @@ fn process_mobject(
 
     let label = Label(label_str);
     ctx.items.insert(label.clone(), body);
+    ctx.label_scene.insert(label.clone(), ctx.current_scene);
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -606,6 +709,7 @@ fn process_play(
     let label = Label(format!("__block_{}", ctx.block_counter));
     ctx.block_counter += 1;
     ctx.items.insert(label.clone(), body);
+    ctx.label_scene.insert(label.clone(), ctx.current_scene);
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -1180,6 +1284,10 @@ fn process_transform(
     let tmp = Label(format!("__xf_{}_{}", label.0, ctx.xf_counter));
     ctx.xf_counter += 1;
     ctx.items.insert(tmp.clone(), old_body.clone());
+    // The parked old-content mobject belongs to the *target's* scene so it is
+    // shown/hidden together with the target across the transform.
+    ctx.label_scene
+        .insert(tmp.clone(), ctx.label_scene.get(&label).copied().unwrap_or(ctx.current_scene));
     ctx.initial.insert(
         tmp.clone(),
         FrameData {
@@ -1767,5 +1875,50 @@ mod tests {
             out.is_ok(),
             "std Typst failed to compile manim API: {out:?}"
         );
+    }
+
+    /// Verify nested `#scene` calls build a scene tree: the inner scene owns
+    /// its mobject, the outer scene owns its own, and `active_scene_at`
+    /// returns the innermost scene spanning a given frame (parent auto-hide).
+    #[test]
+    fn parses_nested_scenes() {
+        let src = r#"
+#import "candy": *
+#scene(width: 16cm, height: 9cm)[
+  #mobject("a", circle(radius: 1cm))
+  #animate("a", to: (4cm, 0pt), duration: 30)
+  #scene(width: 10cm, height: 6cm)[
+    #mobject("b", rect(width: 1cm))
+    #animate("b", to: (2cm, 0pt), duration: 20)
+  ]
+]
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_nested_scene.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+
+        // Root (id 0) + outer (id 1) + inner (id 2).
+        assert_eq!(scene.scenes.len(), 3, "scenes: {:?}", scene.scenes);
+        assert_eq!(scene.root_scene, Some(0));
+
+        let owner = scene.label_scene_map();
+        assert_eq!(owner[&Label("a".into())], 1, "a → outer scene");
+        assert_eq!(owner[&Label("b".into())], 2, "b → inner scene");
+
+        // Inner scene spans [30, 50] (after the outer animate); outer [0, 50].
+        let inner = scene.scenes.iter().find(|s| s.id == 2).unwrap();
+        assert_eq!((inner.start_ms, inner.end_ms), (30, 50));
+        let outer = scene.scenes.iter().find(|s| s.id == 1).unwrap();
+        assert_eq!((outer.start_ms, outer.end_ms), (0, 50));
+        assert_eq!(
+            inner.page_size,
+            Some((10.0 * 28.346_456_692_913_385, 6.0 * 28.346_456_692_913_385))
+        );
+
+        // Parent auto-hide: at t=10 only the outer scene is active; at t=40 the
+        // innermost (inner) scene is active.
+        assert_eq!(scene.active_scene_at(10), 1);
+        assert_eq!(scene.active_scene_at(40), 2);
+        std::fs::remove_file(&tmp).ok();
     }
 }

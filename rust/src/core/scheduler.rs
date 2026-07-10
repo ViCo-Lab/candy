@@ -542,6 +542,8 @@ mod tests {
             counters: Vec::new(),
             counter_events: Vec::new(),
             scopes: Vec::new(),
+            scenes: Vec::new(),
+            root_scene: None,
             private_metadata: PrivateMeta::default(),
         }
     }

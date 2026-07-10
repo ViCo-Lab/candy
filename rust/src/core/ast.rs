@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::core::easing::Easing;
 use crate::core::meta::PrivateMeta;
 
+/// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
+pub const PT_PER_CM: f64 = 28.346_456_692_913_385;
+
+/// Default canvas size in Typst points: 16 cm × 9 cm (16:9 slide).
+pub const DEFAULT_PAGE_PT: (f64, f64) = (16.0 * PT_PER_CM, 9.0 * PT_PER_CM);
+
 /// Unique identifier for an animatable element.
 ///
 /// Matches an `@label` reference in Typst / the `.tyx` DSL. Serialized
@@ -72,28 +78,56 @@ impl Label {
 pub enum Action {
     // ---- Core transforms (candy v0.1) ----
     /// Move the target so its origin lands at `(x_cm, y_cm)` (absolute).
-    MoveTo { target: Label, to: (f64, f64), easing: Easing },
+    MoveTo {
+        target: Label,
+        to: (f64, f64),
+        easing: Easing,
+    },
     /// Move the target by a relative offset `(dx_cm, dy_cm)` from its current
     /// position. Mirrors Manim's `mobject.shift(vector)`. Cumulative: calling
     /// MoveBy twice moves the object by the sum of the offsets.
-    MoveBy { target: Label, delta: (f64, f64), easing: Easing },
+    MoveBy {
+        target: Label,
+        delta: (f64, f64),
+        easing: Easing,
+    },
     /// Scale the target uniformly by `to` (1.0 = original size, absolute).
-    Scale { target: Label, to: f64, easing: Easing },
+    Scale {
+        target: Label,
+        to: f64,
+        easing: Easing,
+    },
     /// Scale the target by a relative factor (e.g. 1.5 = grow 50%). The final
     /// scale is `current * factor`. Mirrors Manim's `mobject.scale(factor)`.
-    ScaleBy { target: Label, factor: f64, easing: Easing },
+    ScaleBy {
+        target: Label,
+        factor: f64,
+        easing: Easing,
+    },
     /// Rotate the target to `degrees` (absolute, clockwise).
-    Rotate { target: Label, degrees: f64, easing: Easing },
+    Rotate {
+        target: Label,
+        degrees: f64,
+        easing: Easing,
+    },
     /// Rotate the target by a relative `degrees` from its current rotation.
     /// Mirrors Manim's `mobject.rotate(angle)`.
-    RotateBy { target: Label, delta_degrees: f64, easing: Easing },
+    RotateBy {
+        target: Label,
+        delta_degrees: f64,
+        easing: Easing,
+    },
     /// Fade the target in to full opacity.
     FadeIn { target: Label, easing: Easing },
     /// Fade the target out to zero opacity.
     FadeOut { target: Label, easing: Easing },
     /// Fade the target to an explicit `opacity` in `[0, 1]`.
     /// (FadeIn/FadeOut are conveniences for `FadeTo { opacity: 1.0/0.0 }`.)
-    FadeTo { target: Label, opacity: f64, easing: Easing },
+    FadeTo {
+        target: Label,
+        opacity: f64,
+        easing: Easing,
+    },
     /// Move the target along a polyline through `points` (in cm, absolute).
     /// The scheduler generates a keyframe at each point, distributed evenly
     /// across the slide's duration. Mirrors Manim's `MoveAlongPath` (for
@@ -112,7 +146,11 @@ pub enum Action {
     /// Interpolate the target from its current state back to a previously
     /// saved state (see [`Action::SaveState`]). Mirrors Manim's
     /// `Restore(mobject)`.
-    Restore { target: Label, slot: String, easing: Easing },
+    Restore {
+        target: Label,
+        slot: String,
+        easing: Easing,
+    },
 
     // ---- Manim-style indication animations ----
     /// Briefly scale the target by `factor` (e.g. 1.1) and shift it by
@@ -120,14 +158,28 @@ pub enum Action {
     /// slide's duration. Mirrors Manim's `Indicate`. The "return" half uses
     /// the [`Easing::ThereAndBack`] curve internally regardless of the
     /// action's easing (which shapes the "out" half).
-    Indicate { target: Label, factor: f64, dx: f64, dy: f64, easing: Easing },
+    Indicate {
+        target: Label,
+        factor: f64,
+        dx: f64,
+        dy: f64,
+        easing: Easing,
+    },
     /// Briefly scale the target up by `factor` and fade it out, returning
     /// to the original state at the end of the slide. Mirrors Manim's `Flash`.
-    Flash { target: Label, factor: f64, easing: Easing },
+    Flash {
+        target: Label,
+        factor: f64,
+        easing: Easing,
+    },
     /// Oscillate the target's rotation by `±degrees` a few times within the
     /// slide's duration, returning to the original rotation. Mirrors Manim's
     /// `Wiggle`. Uses [`Easing::Wiggle`] internally.
-    Wiggle { target: Label, degrees: f64, easing: Easing },
+    Wiggle {
+        target: Label,
+        degrees: f64,
+        easing: Easing,
+    },
 
     // ---- Visibility (instantaneous, no interpolation) ----
     /// Make the target visible at the slide start (sets opacity to its
@@ -144,7 +196,11 @@ pub enum Action {
     /// this as a no-op (Typst bodies are opaque strings), but the action is
     /// tracked in the timeline so future versions with structured mobjects
     /// can apply it. Mirrors Manim's `set_color`.
-    SetColor { target: Label, color: String, easing: Easing },
+    SetColor {
+        target: Label,
+        color: String,
+        easing: Easing,
+    },
 
     // ---- Manim-style content transform ----
     /// Morph a single mobject's content into a new body. Handled natively by
@@ -153,7 +209,11 @@ pub enum Action {
     /// content (swapped in via `Scene.content_timeline` at the slide start)
     /// fades in, both inheriting `target`'s current transform so there is no
     /// positional jump and no scale accumulation. Mirrors Manim's `Transform`.
-    Transform { target: Label, old: Label, easing: Easing },
+    Transform {
+        target: Label,
+        old: Label,
+        easing: Easing,
+    },
 }
 
 impl Action {
@@ -294,7 +354,83 @@ pub struct Scene {
     /// scope exit and parental shadowing for both subtitles and counters.
     #[serde(default)]
     pub scopes: Vec<ScopeInfo>,
+    /// Nested scene tree (see the scene semantics in `docs` / `typst/README`).
+    /// The implicit root scene (id `0`) always exists and owns every mobject /
+    /// action not declared inside an explicit `#scene(...)`. Each explicit
+    /// `#scene(...)` becomes a child scene with its own page size + timeline
+    /// interval; entering a child scene hides its parent (auto-hide). When
+    /// `scenes` is empty (legacy input) the whole document is treated as a
+    /// single implicit scene and behaves exactly as before.
+    #[serde(default)]
+    pub scenes: Vec<SceneInfo>,
+    /// The implicit root scene id (always `Some(0)` once parsed). `None` means
+    /// "legacy single-scene document" — behavior is identical to v0.1.
+    #[serde(default)]
+    pub root_scene: Option<usize>,
     pub private_metadata: PrivateMeta,
+}
+
+impl Scene {
+    /// Depth of a scene in the scene tree (root = 0). Returns `0` for an
+    /// unknown scene (treated as a top-level alias).
+    pub fn scene_depth(&self, id: usize) -> usize {
+        let mut depth = 0;
+        let mut cur = self.scenes.iter().find(|s| s.id == id).and_then(|s| s.parent);
+        while let Some(p) = cur {
+            depth += 1;
+            cur = self.scenes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+        }
+        depth
+    }
+
+    /// The active scene at timeline time `time_ms` — the *deepest* scene whose
+    /// `[start_ms, end_ms]` interval contains `time_ms`. This is what makes
+    /// "entering a child scene hides the parent" work: at any moment exactly
+    /// one scene (the innermost enclosing one) is visible.
+    pub fn active_scene_at(&self, time_ms: u32) -> usize {
+        let mut best: Option<usize> = None;
+        let mut best_depth = 0usize;
+        for s in &self.scenes {
+            if time_ms >= s.start_ms && time_ms <= s.end_ms {
+                let depth = self.scene_depth(s.id);
+                if best.is_none() || depth > best_depth {
+                    best = Some(s.id);
+                    best_depth = depth;
+                }
+            }
+        }
+        best.or(self.root_scene).unwrap_or(0)
+    }
+
+    /// Resolve the effective canvas size (in Typst points) for `scene_id`,
+    /// inheriting from the nearest ancestor that declares a page size, then
+    /// the root scene, then the 16:9 default. A scene that declares no
+    /// `width`/`height` therefore fills its parent's canvas.
+    pub fn effective_page_pt(&self, scene_id: usize) -> (f64, f64) {
+        let mut cur = Some(scene_id);
+        while let Some(id) = cur {
+            if let Some(s) = self.scenes.iter().find(|s| s.id == id) {
+                if let Some(p) = s.page_size {
+                    return p;
+                }
+                cur = s.parent;
+            } else {
+                break;
+            }
+        }
+        DEFAULT_PAGE_PT
+    }
+
+    /// Map every mobject label to the id of the scene that owns it.
+    pub fn label_scene_map(&self) -> HashMap<Label, usize> {
+        let mut m = HashMap::new();
+        for s in &self.scenes {
+            for l in &s.owns_labels {
+                m.insert(l.clone(), s.id);
+            }
+        }
+        m
+    }
 }
 
 impl Scene {
@@ -320,9 +456,9 @@ pub struct FrameData {
     /// Time offset in **milliseconds** from the start of the animation.
     pub time_ms: u32,
     pub target: Label,
-    pub x: f64, // cm
-    pub y: f64, // cm
-    pub scale: f64, // Default 1.0
+    pub x: f64,       // cm
+    pub y: f64,       // cm
+    pub scale: f64,   // Default 1.0
     pub opacity: f64, // 0.0–1.0
     /// Clockwise rotation in degrees around the object's origin.
     #[serde(default)]
@@ -369,7 +505,7 @@ pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 // ============================================================================
-// Subtitle module (字幕模块)
+// Subtitle module
 // ============================================================================
 
 /// Anchor position for a subtitle overlay, measured from the page's top-left
@@ -445,7 +581,7 @@ impl Subtitle {
 }
 
 // ============================================================================
-// Easing-counter module (缓动计数器模块)
+// Easing-counter module
 // ============================================================================
 
 /// A named integer counter ("easing counter").
@@ -517,27 +653,85 @@ pub struct ScopeInfo {
     pub end_ms: u32,
 }
 
+/// A scene in the animation — a nestable, scope-bounded, one-page segment of
+/// the timeline.
+///
+/// Scenes form a tree rooted at the implicit root scene (id `0`). Each
+/// explicit `#scene(...)` in the `.tyx` source becomes a child `SceneInfo`
+/// with:
+/// - its own `page_size` (canvas in Typst points; `None` ⇒ inherit parent),
+/// - a `[start_ms, end_ms]` timeline interval (derived from the parse cursor
+///   when the scene's body opens / closes),
+/// - the set of mobjects (`owns_labels`) declared inside its body.
+///
+/// Semantics (see `typst/README.md` → *Scene / canvas*):
+/// - scenes may be **nested**;
+/// - entering a child scene **auto-hides** its parent (the renderer shows
+///   only the innermost active scene's content at any frame);
+/// - scenes **respect Typst's lexical scope** — a mobject belongs to the
+///   innermost scene that encloses it at parse time;
+/// - a scene occupies **one page**; content that would overflow is split into
+///   multiple scenes (auto-split, enforced by the author / warned by candy);
+/// - with **no explicit root scene**, the whole document is one implicit scene
+///   (id `0`), following the same split rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneInfo {
+    /// Unique scene id (root = `0`).
+    pub id: usize,
+    /// Parent scene id (`None` for the root scene).
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// The lexical Typst scope id this scene occupies (for attribution).
+    pub scope: usize,
+    /// Canvas size in Typst points `(w, h)`. `None` ⇒ inherit from parent,
+    /// then the root, then the 16:9 default.
+    #[serde(default)]
+    pub page_size: Option<(f64, f64)>,
+    /// Scene timeline interval (ms). The root spans `[0, total]`.
+    pub start_ms: u32,
+    pub end_ms: u32,
+    /// Mobject labels declared inside this scene's body.
+    #[serde(default)]
+    pub owns_labels: Vec<Label>,
+}
+
 impl Scene {
     /// Depth of a scope in the scope tree (root = 0). Returns `0` for an
     /// unknown scope (treated as a top-level alias).
     fn scope_depth(&self, id: usize) -> usize {
         let mut depth = 0;
-        let mut cur = self.scopes.iter().find(|s| s.id == id).and_then(|s| s.parent);
+        let mut cur = self
+            .scopes
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.parent);
         while let Some(p) = cur {
             depth += 1;
-            cur = self.scopes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+            cur = self
+                .scopes
+                .iter()
+                .find(|s| s.id == p)
+                .and_then(|s| s.parent);
         }
         depth
     }
 
     /// Is `maybe_child` a descendant scope of `ancestor`?
     fn is_descendant_scope(&self, maybe_child: usize, ancestor: usize) -> bool {
-        let mut cur = self.scopes.iter().find(|s| s.id == maybe_child).and_then(|s| s.parent);
+        let mut cur = self
+            .scopes
+            .iter()
+            .find(|s| s.id == maybe_child)
+            .and_then(|s| s.parent);
         while let Some(p) = cur {
             if p == ancestor {
                 return true;
             }
-            cur = self.scopes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+            cur = self
+                .scopes
+                .iter()
+                .find(|s| s.id == p)
+                .and_then(|s| s.parent);
         }
         false
     }
@@ -569,7 +763,9 @@ impl Scene {
                 .unwrap_or(0);
         }
         // Shadowing: innermost (deepest) active scope wins.
-        candidates.sort_by_key(|c| std::cmp::Reverse(self.scope_depth(c.scope.parse::<usize>().unwrap_or(0))));
+        candidates.sort_by_key(|c| {
+            std::cmp::Reverse(self.scope_depth(c.scope.parse::<usize>().unwrap_or(0)))
+        });
         let c = candidates[0];
 
         // Determine freeze time (destroy) and paused total.
@@ -636,7 +832,8 @@ impl Scene {
         //    and whose end > time). `end` = end_ms, else scope end, else the
         //    next same-scope subtitle's start.
         let mut active: Vec<&Subtitle> = Vec::new();
-        let mut by_scope: std::collections::HashMap<String, Vec<&Subtitle>> = std::collections::HashMap::new();
+        let mut by_scope: std::collections::HashMap<String, Vec<&Subtitle>> =
+            std::collections::HashMap::new();
         for s in &self.subtitles {
             if s.start_ms > time_ms {
                 continue;
@@ -724,6 +921,8 @@ mod tests {
             counters: Vec::new(),
             counter_events: Vec::new(),
             scopes: Vec::new(),
+            scenes: Vec::new(),
+            root_scene: None,
             private_metadata: PrivateMeta::default(),
         }
     }

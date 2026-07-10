@@ -401,6 +401,28 @@
 /// - `bg`: background fill (default `white`).
 /// - `body`: the scene's content.
 ///
+/// ## Scene semantics
+///
+/// - *Nesting.* Scenes may be nested: a `scene` call *inside* another scene's
+///   `body` creates a child scene. Nesting is detected through the Typst AST,
+///   so the usual `#import` rules apply.
+/// - *Parent auto-hide.* When the timeline enters a child scene, its parent
+///   (and any ancestor) is automatically hidden for the duration of the child.
+///   The renderer shows only the **deepest** scene that is active at each frame
+///   time, so a child scene visually replaces its parent.
+/// - *Typst scope.* Scene membership follows Typst's lexical scope: a mobject /
+///   `play` / `subtitle` belongs to the innermost `scene` whose `body` encloses
+///   it. This is exactly the scope in which the call is evaluated.
+/// - *One page per scene.* A scene occupies **one page** (one canvas); its
+///   `width`/`height` set the frame size. Content that would overflow the page
+///   is warned about and should be split into additional scenes.
+/// - *Auto-split.* Content spanning multiple pages is automatically split into
+///   multiple scenes (one per page) when no explicit root `scene` wraps it.
+/// - *Implicit root.* If you never call `scene`, the whole document is treated
+///   as a single implicit root scene following the same one-page / split rules
+///   (default canvas 16cm × 9cm). A scene's page size is inherited from the
+///   nearest ancestor that declares one.
+///
 /// Call `scene` at the top of your `.tyx` to set the canvas size. Without it,
 /// candy defaults to 16cm × 9cm.
 #let scene(width: 16cm, height: 9cm, bg: white, body) = {

@@ -39,6 +39,36 @@ in a `page()` call, so each scene renders as an independent page. The Rust
 renderer treats each scene as an independent animation segment — rendering one
 scene never touches the content of another.
 
+The scene tree is a parsed `Vec<SceneInfo>` on the `Scene` AST (with an optional
+`root_scene` index), built by `parser::parse_tyx` from nested `scene` calls. The
+semantics enforced by the pipeline:
+
+- **Nesting** — scenes may nest; a `scene` inside another scene's body becomes a
+  child `SceneInfo` (`parent` links form the tree).
+- **Parent auto-hide** — `Scene::active_scene_at(time_ms)` returns the *deepest*
+  scene whose `[start_ms, end_ms]` interval contains the frame time (falling back
+  to the root scene). The renderer filters mobjects by `label_scene[label] ==
+  active`, so a child scene automatically hides its parent.
+- **Typst scope** — membership follows Typst's lexical scope: every mobject /
+  `play` / transform is attributed to `ctx.current_scene` (the innermost enclosing
+  scene) via `ctx.label_scene`. Entering a child scene pushes `current_scene` onto
+  a stack; leaving it restores the parent.
+- **One page per scene** — a scene's `page_size` (its `width`/`height`, read from
+  the *direct* named args only) defines the canvas of every frame in that scene.
+  `Scene::effective_page_pt(scene_id)` inherits the size from the nearest ancestor
+  that declares one, then the 16cm × 9cm default.
+- **Auto-split** — content overflowing a scene's page is **warned** (not hard-split)
+  by the renderer's `ensure_natural()` overflow check, signalling that it should be
+  broken into additional scenes.
+- **Implicit root** — when `scenes` is empty (no `scene` call), the whole document
+  is one implicit scene (id `0`) whose page is the root page size; this path is
+  backward-compatible with v0.1 (no `scenes` field). The renderer falls back to
+  "all mobjects, one canvas" whenever `scenes` is empty.
+
+Backward compatibility: legacy `.tyx` files with no `scene` calls produce an empty
+`scenes` vector, and every renderer path falls back to treating the whole document
+as a single scene — so v0.1 behavior is preserved.
+
 ## Morph Architecture
 
 Morph uses Flubber's algorithm, ported to Rust in `core/morph.rs`:

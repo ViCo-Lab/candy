@@ -84,6 +84,35 @@ so you can iterate on layout with `typst compile` and render the animation with
 page. The renderer uses the scene's page size as the canvas for every frame in that
 scene. Without `#scene`, candy defaults to 16 cm × 9 cm.
 
+**Scene semantics** (how candy groups and shows content):
+
+- **Nesting** — a `scene` may appear inside another scene's body, forming a child
+  scene. Nesting is resolved through the Typst AST, so import style is irrelevant.
+- **Parent auto-hide** — entering a child scene automatically hides its parent (and
+  any ancestor) for the child's duration. The renderer always shows the *deepest*
+  active scene at each frame time, so the child visually replaces the parent.
+- **Typst scope** — a mobject / `play` / `subtitle` belongs to the innermost `scene`
+  whose body encloses it (the scope in which it is evaluated).
+- **One page per scene** — a scene occupies exactly one page; its `width`/`height`
+  set the frame size. Content overflowing the page is warned about.
+- **Auto-split** — content spanning multiple pages is automatically split into
+  multiple scenes (one per page) when no explicit root `scene` wraps it.
+- **Implicit root** — with no `scene` call, the entire document is one implicit root
+  scene that still follows the one-page / split rules (default 16 cm × 9 cm). A
+  child scene inherits its page size from the nearest ancestor that declares one.
+
+```typst
+// nested scenes: "outer" shows first, "inner" replaces it (parent auto-hidden)
+#scene(width: 16cm, height: 9cm)[
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #animate("a", to: (4cm, 0pt), duration: 1000)
+  #scene(width: 10cm, height: 6cm)[
+    #mobject("b", square(size: 2cm, fill: red))
+    #animate("b", to: (3cm, 2cm), duration: 800)
+  ]
+]
+```
+
 ### Mobjects & actions
 
 A **mobject** is an animatable object: a bare Typst block/element (`circle(...)`,

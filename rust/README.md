@@ -237,7 +237,14 @@ the parser).
   `SaveState` / `Restore`, `Indicate`, `Flash`, `Wiggle`, `SetColor`, `Show` / `Hide`
   (instantaneous visibility toggles).
 - `FrameData` — a sampled transform state at a given `time_ms` for one target.
-- `Scene` — the parsed document: items, initial states, actions, subtitles, counters.
+- `Scene` — the parsed document: items, initial states, actions, subtitles,
+  counters. It also carries the **scene tree**: `scenes: Vec<SceneInfo>` (each with
+  `id` / `parent` / `scope` / `page_size` / `start_ms` / `end_ms` / `owns_labels`)
+  and an optional `root_scene` index. `active_scene_at(time_ms)` returns the deepest
+  scene active at a given frame (the renderer uses it to hide parent scenes);
+  `effective_page_pt(id)` resolves a scene's canvas size (inheriting from the nearest
+  ancestor that declares one). When `scenes` is empty (no `scene` call), the whole
+  document is one implicit scene — preserving v0.1 behavior.
 
 ### `core::scheduler` {#corescheduler}
 
