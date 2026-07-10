@@ -437,8 +437,18 @@ impl Renderer {
         (out, camera)
     }
 
-    /// Compute (once) the natural layout of every mobject by tagging each body
-    /// with a label and reading back its position from the SVG.
+    /// Compute (once) the natural layout of every mobject.
+    ///
+    /// Each scene's objects are laid out in a vertical flow (top-to-bottom,
+    /// horizontally centered) that mirrors where the same content would land
+    /// under plain Typst. This is what makes `#play` beats and `mobject` text
+    /// appear at their "standard mode" positions instead of all piling up at the
+    /// page origin (0, 0).
+    ///
+    /// We cannot rely on Typst's `data-typst-label` SVG attribute — the
+    /// `typst_svg` exporter used here does not emit it — so instead we measure
+    /// each object's bounding box by rendering it in isolation and stack the
+    /// boxes ourselves.
     fn ensure_natural(&mut self) -> Result<(), CandyError> {
         if self.natural_computed {
             return Ok(());
@@ -454,37 +464,67 @@ impl Renderer {
         self.page_h = page_h_cm * PT_PER_CM;
 
         let preamble = imports_preamble(&self.scene);
-        let mut src = format!(
-            "{preamble}\n#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: white)\n",
-            preamble = preamble,
-            w = self.page_w,
-            h = self.page_h,
-        );
-        // Deterministic order so positions are stable.
-        let mut labels: Vec<&Label> = self.scene.items.keys().collect();
-        labels.sort_by(|a, b| a.0.cmp(&b.0));
-        for label in labels {
-            // Substitute `ecval(...)` counter references (at t=0, i.e. the seed)
-            // before compiling. This isolated layout pass has no `#let name =
-            // ecounter(...)` binding in scope, so a bareword counter reference
-            // like `ecval(r)` would otherwise fail with "unknown variable: r".
-            let raw = self.scene.items[label].clone();
-            let body = substitute_counters(&self.scene, &raw, 0);
-            // Prefix with # so the body (a function-call expression like
-            // "rect(width: 2cm, fill: red)") is evaluated, not treated as text.
-            src.push_str(&format!("#{}\n", body));
-            src.push_str(&format!(" <__candy_{}>\n", label.0));
+
+        // Group labels by the scene that owns them, preserving declaration order
+        // within each scene. Legacy single-scene documents (no `scenes`) lay out
+        // every item on one page.
+        let mut by_scene: Vec<(usize, (f64, f64), Vec<Label>)> = Vec::new();
+        if self.scene.scenes.is_empty() {
+            let mut labels: Vec<Label> = self.scene.items.keys().cloned().collect();
+            labels.sort_by(|a, b| a.0.cmp(&b.0));
+            by_scene.push((0, (self.page_w, self.page_h), labels));
+        } else {
+            for s in &self.scene.scenes {
+                let pg = self.scene.effective_page_pt(s.id);
+                let mut ls: Vec<Label> = s.owns_labels.clone();
+                ls.sort_by(|a, b| a.0.cmp(&b.0));
+                by_scene.push((s.id, pg, ls));
+            }
         }
 
-        let doc = self.compile(&src)?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        let positions = parse_svg_positions(&svg)?;
+        let gap = 0.6 * PT_PER_CM; // vertical gap between stacked objects
+        let top_pad = 0.3 * PT_PER_CM;
+        let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
 
-        self.nat = positions;
+        for (sid, (pw, ph), labels) in &by_scene {
+            let mut cursor = top_pad;
+            for label in labels {
+                // Only `play` blocks and string-literal mobjects participate in
+                // the flow layout. Shapes (circle/rect/polygon/…) are animated
+                // from the page centre (their historical anchor), so leaving them
+                // at (0, 0) preserves existing animation behaviour and avoids
+                // stacking unrelated geometry off-canvas. This also matches the
+                // user-visible complaint: `play` beats and revealed text were all
+                // piling up at the origin instead of sitting at their "standard
+                // mode" (flow) positions.
+                let body_src = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
+                let is_flow = label.0.starts_with("__block_") || body_src.starts_with('"');
+                if !is_flow {
+                    continue;
+                }
+                // Content-less / synthetic objects (e.g. `none`) occupy no box.
+                let Some(bbox) = self.measure_label(&preamble, label) else {
+                    cursor += gap;
+                    continue;
+                };
+                let (minx, miny, maxx, maxy) = bbox;
+                let w = (maxx - minx).max(1.0);
+                let h = (maxy - miny).max(1.0);
+                let x = ((*pw - w) / 2.0).max(0.0); // center horizontally
+                // Place the object so its measured top-left lands at (x, cursor).
+                nat.insert(label.clone(), (x - minx, cursor - miny));
+                cursor += h + gap;
+            }
+            if cursor > *ph {
+                eprintln!(
+                    "warn: scene {sid} natural content height ({:.1}pt) overflows the \
+                     canvas ({:.1}pt); consider splitting it into more scenes",
+                    cursor, ph
+                );
+            }
+        }
+
+        self.nat = nat;
 
         // Build per-scene canvas sizes + label→scene ownership for auto-hide.
         // When `scenes` is empty (legacy single-scene document) we fall back to
@@ -499,21 +539,6 @@ impl Renderer {
             }
         }
         self.scene_pages = sp;
-
-        // One-page-per-scene check: warn if any mobject's natural position
-        // overflows the canvas. Content spanning multiple pages should be split
-        // into multiple scenes (the documented split rule); candy renders a
-        // single page per scene.
-        for (label, (x, y)) in &self.nat {
-            if *x > self.page_w || *y > self.page_h {
-                eprintln!(
-                    "warn: mobject @{} natural position ({:.1}pt, {:.1}pt) overflows the \
-                     canvas ({}pt × {}pt); a scene should occupy only one page — split \
-                     the overflowing content into another scene",
-                    label.0, x, y, self.page_w, self.page_h
-                );
-            }
-        }
 
         // Precompute morph plans (the expensive part) exactly once. For each
         // `#morph(from, to)` pair we render both bodies to SVG, extract their
@@ -550,6 +575,32 @@ impl Renderer {
 
         self.natural_computed = true;
         Ok(())
+    }
+
+    /// Measure a single mobject's bounding box (in Typst points, y-down,
+    /// page-origin) by rendering it in isolation on a large transparent page and
+    /// unioning the bounding boxes of all drawn geometry. Returns `None` for
+    /// content-less bodies (e.g. `none`).
+    fn measure_label(
+        &self,
+        preamble: &str,
+        label: &Label,
+    ) -> Option<(f64, f64, f64, f64)> {
+        let raw = self.scene.items.get(label)?;
+        // Synthetic / empty bodies render to nothing measurable.
+        if raw.trim().is_empty() || raw.trim() == "none" {
+            return None;
+        }
+        let body = substitute_counters(&self.scene, raw, 0);
+        // Prefix with `#` so the body (a function-call / content expression) is
+        // evaluated rather than treated as plain text.
+        let src = format!(
+            "{preamble}\n#set page(width: 4000pt, height: 4000pt, margin: 0pt, fill: none)\n#{body}\n"
+        );
+        let doc = self.compile(&src).ok()?;
+        let page = doc.pages().first()?;
+        let svg = typst_svg::svg(page, &SvgOptions::default());
+        bbox_of_svg(&svg)
     }
 
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
@@ -1423,59 +1474,6 @@ fn warp_canvas_with_camera(
     }
 }
 
-/// Parse `data-typst-label` positions out of a Typst SVG, accumulating group
-/// transforms to recover each labeled element's absolute (x, y) in points.
-fn parse_svg_positions(svg: &str) -> Result<HashMap<Label, (f64, f64)>, CandyError> {
-    let mut positions: HashMap<Label, (f64, f64)> = HashMap::new();
-    let mut stack: Vec<Matrix> = Vec::new();
-    let mut current = Matrix::identity();
-
-    let mut idx = 0;
-    while idx < svg.len() {
-        let Some(lt) = svg[idx..].find('<') else {
-            break;
-        };
-        let lt = idx + lt;
-        if svg[lt..].starts_with("</g>") {
-            if let Some(m) = stack.pop() {
-                current = m;
-            }
-            idx = lt + 4;
-            continue;
-        }
-        let Some(gt) = svg[lt..].find('>') else { break };
-        let gt = lt + gt;
-        let tag = &svg[lt + 1..gt];
-        if tag.starts_with("g ") || tag.starts_with("g>") || tag == "g" {
-            let mut m = current;
-            if let Some(t) = attr(tag, "transform") {
-                m = compose(current, parse_transform(&t));
-            }
-            if let Some(label) = attr(tag, "data-typst-label") {
-                positions.insert(Label(label), (m.e, m.f));
-            }
-            stack.push(current);
-            current = m;
-        }
-        idx = gt + 1;
-    }
-    Ok(positions)
-}
-
-/// Extract `name="value"` (single or double quoted) from a tag string.
-fn attr(tag: &str, name: &str) -> Option<String> {
-    let pat = format!("{name}=");
-    let i = tag.find(&pat)? + pat.len();
-    let b = tag.as_bytes().get(i)?;
-    if *b != b'"' && *b != b'\'' {
-        return None;
-    }
-    let q = *b as char;
-    let start = i + 1;
-    let end = start + tag[start..].find(q)?;
-    Some(tag[start..end].to_string())
-}
-
 /// A 2-D affine matrix `x' = a*x + c*y + e`, `y' = b*x + d*y + f`.
 #[derive(Clone, Copy)]
 struct Matrix {
@@ -1488,17 +1486,6 @@ struct Matrix {
 }
 
 impl Matrix {
-    fn identity() -> Self {
-        Matrix {
-            a: 1.0,
-            b: 0.0,
-            c: 0.0,
-            d: 1.0,
-            e: 0.0,
-            f: 0.0,
-        }
-    }
-
     /// Translation matrix (cm/pt units, same space as the rest of the pipeline).
     fn translation(x: f64, y: f64) -> Self {
         Matrix {
@@ -1573,79 +1560,203 @@ fn compose(a: Matrix, b: Matrix) -> Matrix {
     }
 }
 
-/// Parse a `transform` attribute (`translate(..)`, `scale(..)`, `matrix(..)`).
-fn parse_transform(s: &str) -> Matrix {
-    let mut m = Matrix::identity();
+/// Union the bounding boxes of every drawn element in a Typst SVG, returning
+/// `(min_x, min_y, max_x, max_y)` in the SVG's y-down, page-origin coordinate
+/// space (the same space `place_source` places objects in). Returns `None` when
+/// the SVG holds no measurable geometry (e.g. an empty / `none` body).
+///
+/// Typst's `typst_svg` exporter does not emit `data-typst-label`, so we cannot
+/// recover per-element identities from the markup. For layout we only need each
+/// object's extent, so we walk the SVG applying `transform`s (group + per-element,
+/// including the glyph `translate`s) and union every element's box. Path `d`
+/// strings use cubic Béziers; we approximate each path's extent by its
+/// control-point polygon — a slight over-estimate that is harmless for spacing.
+fn bbox_of_svg(svg: &str) -> Option<(f64, f64, f64, f64)> {
+    let mut stack: Vec<[f64; 6]> = Vec::new();
+    let mut cur: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    let mut idx = 0;
+    while idx < svg.len() {
+        let Some(lt) = svg[idx..].find('<') else {
+            break;
+        };
+        let lt = idx + lt;
+        if svg[lt..].starts_with("</g>") {
+            if let Some(m) = stack.pop() {
+                cur = m;
+            }
+            idx = lt + 4;
+            continue;
+        }
+        let Some(gt) = svg[lt..].find('>') else {
+            break;
+        };
+        let gt = lt + gt;
+        let tag = &svg[lt + 1..gt];
+        let is_g_open = tag == "g" || tag.starts_with("g ") || tag.starts_with("g>");
+        let mut el_matrix = cur;
+        if let Some(t) = svg_attr(tag, "transform") {
+            el_matrix = compose_matrix(cur, &parse_transform_attr(&t));
+        }
+        if is_g_open {
+            stack.push(cur);
+            cur = el_matrix;
+            idx = gt + 1;
+            continue;
+        }
+        let pts: Vec<(f64, f64)> = match tag.split_whitespace().next() {
+            Some("rect") => {
+                let (x, y) = (svg_num(tag, "x"), svg_num(tag, "y"));
+                let (w, h) = (svg_num(tag, "width"), svg_num(tag, "height"));
+                vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            }
+            Some("circle") => {
+                let (cx, cy, r) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "r"));
+                vec![(cx - r, cy - r), (cx + r, cy + r)]
+            }
+            Some("ellipse") => {
+                let (cx, cy) = (svg_num(tag, "cx"), svg_num(tag, "cy"));
+                let (rx, ry) = (svg_num(tag, "rx"), svg_num(tag, "ry"));
+                vec![(cx - rx, cy - ry), (cx + rx, cy + ry)]
+            }
+            Some("polygon") | Some("polyline") => svg_points(svg_attr(tag, "points")),
+            Some("path") => match svg_attr(tag, "d") {
+                Some(d) => collect_path_points(&d),
+                None => vec![],
+            },
+            _ => vec![],
+        };
+        for (x, y) in pts {
+            let (px, py) = apply_matrix(&el_matrix, x, y);
+            if px < min_x {
+                min_x = px;
+            }
+            if py < min_y {
+                min_y = py;
+            }
+            if px > max_x {
+                max_x = px;
+            }
+            if py > max_y {
+                max_y = py;
+            }
+        }
+        idx = gt + 1;
+    }
+    if min_x.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    }
+}
+
+/// Extract `name="value"` (single or double quoted) from a tag string.
+fn svg_attr(tag: &str, name: &str) -> Option<String> {
+    let pat = format!("{name}=");
+    let i = tag.find(&pat)? + pat.len();
+    let b = tag.as_bytes().get(i)?;
+    if *b != b'"' && *b != b'\'' {
+        return None;
+    }
+    let q = *b as char;
+    let start = i + 1;
+    let end = start + tag[start..].find(q)?;
+    Some(tag[start..end].to_string())
+}
+
+fn svg_num(tag: &str, name: &str) -> f64 {
+    svg_attr(tag, name)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// Parse a `points="x1,y1 x2,y2 ..."` attribute into coordinate pairs.
+fn svg_points(s: Option<String>) -> Vec<(f64, f64)> {
+    let Some(s) = s else {
+        return vec![];
+    };
+    s.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.trim().parse::<f64>().ok())
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .filter_map(|c| if c.len() == 2 { Some((c[0], c[1])) } else { None })
+        .collect()
+}
+
+/// Loose extent of an SVG path: every coordinate pair in `d` (control points
+/// included). Good enough for layout spacing.
+fn collect_path_points(d: &str) -> Vec<(f64, f64)> {
+    let nums: Vec<f64> = d
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.parse::<f64>().ok())
+        .collect();
+    nums.chunks(2)
+        .filter_map(|c| if c.len() == 2 { Some((c[0], c[1])) } else { None })
+        .collect()
+}
+
+/// Apply a 2-D affine `[a, b, c, d, e, f]` to a point.
+fn apply_matrix(m: &[f64; 6], x: f64, y: f64) -> (f64, f64) {
+    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
+/// Compose two affines so that `result` applies `b` then `a` (SVG `a b` order).
+fn compose_matrix(a: [f64; 6], b: &[f64; 6]) -> [f64; 6] {
+    [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ]
+}
+
+/// Parse a `transform` attribute (`translate` / `scale` / `rotate` / `matrix`).
+fn parse_transform_attr(s: &str) -> [f64; 6] {
+    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut rest = s;
     while let Some(open) = rest.find('(') {
-        let close = match rest[open..].find(')') {
-            Some(c) => open + c,
-            None => break,
+        let Some(close) = rest[open..].find(')') else {
+            break;
         };
+        let close = open + close;
         let name_start = rest[..open]
             .rfind(|c: char| !(c.is_alphabetic() || c == '-'))
             .map(|i| i + 1)
             .unwrap_or(0);
         let name = &rest[name_start..open];
-        let args = &rest[open + 1..close];
-        let nums = parse_floats(args);
+        let args: Vec<f64> = rest[open + 1..close]
+            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
         let tm = match name {
-            "translate" if nums.len() >= 2 => Matrix {
-                a: 1.0,
-                b: 0.0,
-                c: 0.0,
-                d: 1.0,
-                e: nums[0],
-                f: nums[1],
-            },
-            "translate" if nums.len() == 1 => Matrix {
-                a: 1.0,
-                b: 0.0,
-                c: 0.0,
-                d: 1.0,
-                e: nums[0],
-                f: 0.0,
-            },
-            "scale" if nums.len() >= 2 => Matrix {
-                a: nums[0],
-                b: 0.0,
-                c: 0.0,
-                d: nums[1],
-                e: 0.0,
-                f: 0.0,
-            },
-            "scale" if nums.len() == 1 => Matrix {
-                a: nums[0],
-                b: 0.0,
-                c: 0.0,
-                d: nums[0],
-                e: 0.0,
-                f: 0.0,
-            },
-            "matrix" if nums.len() >= 6 => Matrix {
-                a: nums[0],
-                b: nums[1],
-                c: nums[2],
-                d: nums[3],
-                e: nums[4],
-                f: nums[5],
-            },
-            _ => Matrix::identity(),
+            "translate" if args.len() >= 2 => [1.0, 0.0, 0.0, 1.0, args[0], args[1]],
+            "translate" => [1.0, 0.0, 0.0, 1.0, args.first().copied().unwrap_or(0.0), 0.0],
+            "scale" if args.len() >= 2 => [args[0], 0.0, 0.0, args[1], 0.0, 0.0],
+            "scale" => {
+                let s = args.first().copied().unwrap_or(1.0);
+                [s, 0.0, 0.0, s, 0.0, 0.0]
+            }
+            "rotate" if args.len() >= 1 => {
+                let r = args[0].to_radians();
+                let (s, c) = (r.sin(), r.cos());
+                [c, s, -s, c, 0.0, 0.0]
+            }
+            "matrix" if args.len() >= 6 => [args[0], args[1], args[2], args[3], args[4], args[5]],
+            _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         };
-        m = compose(m, tm);
+        m = compose_matrix(m, &tm);
         rest = &rest[close + 1..];
     }
     m
-}
-
-/// Parse whitespace/comma-separated floats.
-fn parse_floats(s: &str) -> Vec<f64> {
-    s.split(|c: char| {
-        !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
-    })
-    .filter(|t| !t.is_empty())
-    .filter_map(|t| t.parse::<f64>().ok())
-    .collect()
 }
 
 /// Test helper: compile a Typst source string to SVG (used to confirm the

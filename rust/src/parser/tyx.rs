@@ -432,7 +432,13 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
             for it in items.iter() {
                 let orig = it.original_name().as_str().to_string();
                 let bound = it.bound_name().as_str().to_string();
-                ctx.symbol_map.insert(bound, orig);
+                // Canonicalize the resolved symbol to kebab-case (the `CANDY`
+                // convention) and also accept the alternative naming
+                // convention for the bound name, so both `save_state` and
+                // `save-state` resolve to the same directive.
+                let canon = orig.replace('_', "-");
+                ctx.symbol_map.insert(bound.clone(), canon.clone());
+                ctx.symbol_map.insert(bound.replace('_', "-"), canon);
             }
         }
         None => {}
@@ -522,14 +528,24 @@ fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String> {
     match callee {
         Expr::Ident(id) => {
             let name = id.as_str();
+            // Accept both naming conventions: the public API and the Typst
+            // module use underscores (`save_state`, `set_color`,
+            // `counter_pause`), while the parser's `CANDY` set uses kebab-case
+            // (`save-state`, `set-color`). Normalize so a call resolves
+            // regardless of which convention the author wrote.
+            let norm = name.replace('_', "-");
             ctx.symbol_map
-                .get(name)
+                .get(&norm)
+                .or_else(|| ctx.symbol_map.get(name))
                 .filter(|o| CANDY.contains(&o.as_str()))
                 .cloned()
         }
         Expr::FieldAccess(fa) => {
             let field = fa.field().as_str();
-            if CANDY.contains(&field) {
+            let norm = field.replace('_', "-");
+            if CANDY.contains(&norm.as_str()) {
+                Some(norm)
+            } else if CANDY.contains(&field) {
                 Some(field.to_string())
             } else {
                 None
