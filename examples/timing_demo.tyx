@@ -7,6 +7,7 @@
 // Run:  candy build examples/timing_demo.tyx
 
 #scene(width: 16cm, height: 9cm)[
+  #subtitle([Timing: each action advances the timeline in sequence], position: "bottom")
   // Step 1: a dot appears (frame 0) and slides right over 1000ms.
   #mobject("dot", circle(radius: 0.8cm, fill: blue))
   #animate("dot", to: (5cm, 0cm), duration: 1000, easing: "smooth")
@@ -31,5 +32,5 @@
   #let r = ecounter("r", seed: 0, step: 1, duration: 2000)
   #mobject("num", text(24pt)[Count: #str(ecval(r))])
   #animate("num", to: (0cm, 3cm), duration: 2000, easing: "smooth")
-  #subtitle([Timing: each action advances the timeline in sequence], position: "bottom")
+
 ]

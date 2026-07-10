@@ -51,6 +51,9 @@ const CANDY: &[&str] = &[
     "spiral_in",
     "focus_on",
     "fade_transform",
+    // `#move-along-path` is exported by the Typst package with hyphens (see
+    // `typst/src/lib.typ`); the underscore alias is kept for backward-compat.
+    "move-along-path",
     "move_along_path",
     "morph",
     // Manim-style single-object content transform (the headline `Transform` /
@@ -465,7 +468,7 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "spiral_in" => process_spiral_in(&pos, &named, ctx),
         "focus_on" => process_focus_on(&pos, &named, ctx),
         "fade_transform" => process_fade_transform(&pos, &named, ctx),
-        "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
+        "move-along-path" | "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
         "morph" => process_morph(&pos, &named, ctx),
         "transform" => process_transform(&pos, &named, node, raw, ctx),
         // Subtitle + easing-counter modules.
@@ -1153,12 +1156,17 @@ fn process_move_along_path(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(1000.0)
+        .unwrap_or(30.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
 
-    // Parse the `path` named arg as an array of (x, y) tuples.
-    let points: Vec<(f64, f64)> = match named.get("path") {
+    // The path is the 2nd positional arg per the Typst signature
+    // (`#move-along-path(target, path, ...)`), but we also accept a named
+    // `path:` for flexibility. Either way it's an array of `(x, y)` tuples (cm).
+    let path_e: Option<&Expr> = named
+        .get("path")
+        .or_else(|| pos.get(1));
+    let points: Vec<(f64, f64)> = match path_e {
         Some(Expr::Array(arr)) => arr
             .items()
             .filter_map(|item| match item {

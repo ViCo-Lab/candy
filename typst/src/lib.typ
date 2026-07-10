@@ -330,14 +330,16 @@
   easing: "smooth",
 ) = none
 
-/// Move the target along a polyline through `points` (cm, absolute).
-/// The scheduler generates a keyframe at each point, evenly distributed
-/// across `duration`. Mirrors Manim's `MoveAlongPath` (linear path; arc/bezier
-/// paths are approximated as polylines).
+/// Move the target along a polyline through `points` (cm). Like `#animate`'s
+/// `to:`, the points are *relative to the object's natural layout position*
+/// (the position it has under plain Typst), not absolute page coordinates.
+/// The scheduler generates a keyframe at each point, evenly distributed across
+/// `duration`. Mirrors Manim's `MoveAlongPath` (linear path; arc/bezier paths
+/// are approximated as polylines).
 ///
 /// - `target`: the `label` of the object to move.
-/// - `path`: an array of `(x, y)` points in cm, e.g. `((0, 0), (4, 2), (8, 0))`.
-/// - `duration`: frames (default `30`).
+/// - `path`: an array of `(x, y)` points in cm, e.g. `((0cm, 0cm), (4cm, 2cm), (8cm, 0cm))`.
+/// - `duration`: how long the motion lasts, in **milliseconds** (default `30`).
 /// - `easing`: rate curve (default `"linear"`).
 #let move-along-path(
   target,
