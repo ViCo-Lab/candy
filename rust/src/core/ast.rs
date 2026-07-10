@@ -216,6 +216,31 @@ pub enum Action {
     },
 }
 
+/// A real shape-morph pair recorded by `#morph(from, to)` (as opposed to the
+/// cruder crossfade used for arbitrary content). The renderer precomputes a
+/// `MorphPlan` from the two bodies' outlines and, during `[start_ms, end_ms]`,
+/// renders the *target* (`to`) as the interpolated shape so the source shape
+/// visibly morphs into the target shape (instead of a plain opacity crossfade).
+///
+/// The pair window matches the `from`→`to` crossfade window emitted by the
+/// parser, so the two effects are composited (shape morph on `to`, fade-out on
+/// `from`).
+///
+/// `to_body`, when set, overrides `items[to]` as the *target outline* source for
+/// the plan (used by `#transform`, where `to` keeps its original body in
+/// `items` until the content-timeline swap, but the morph must interpolate
+/// toward the *new* content). The polygon is still emitted for `to`'s label.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MorphPair {
+    pub from: Label,
+    pub to: Label,
+    #[serde(default)]
+    pub to_body: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub easing: Easing,
+}
+
 impl Action {
     pub fn target(&self) -> &Label {
         match self {
@@ -317,6 +342,11 @@ pub struct Scene {
     /// rendered content.
     #[serde(default)]
     pub content_timeline: HashMap<Label, Vec<(u32, String)>>,
+    /// Real shape-morph pairs recorded by `#morph(from, to)`. The renderer
+    /// precomputes an outline interpolator per pair and morphs the `to` body's
+    /// shape across each pair's window. Empty unless `#morph` is used.
+    #[serde(default)]
+    pub morph_pairs: Vec<MorphPair>,
     /// Initial per-object transform (frame 0). Seeded from `candy.mobject`'s
     /// `at`/`scale`/`opacity`. Objects absent here default to origin/scale 1.
     #[serde(default)]
@@ -923,6 +953,7 @@ mod tests {
             scopes: Vec::new(),
             scenes: Vec::new(),
             root_scene: None,
+            morph_pairs: Vec::new(),
             private_metadata: PrivateMeta::default(),
         }
     }

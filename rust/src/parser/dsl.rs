@@ -78,6 +78,7 @@ mod tests {
             scopes: Vec::new(),
             scenes: Vec::new(),
             root_scene: None,
+            morph_pairs: Vec::new(),
             private_metadata: PrivateMeta::default(),
         };
         let json = serde_json::to_string(&scene).unwrap();

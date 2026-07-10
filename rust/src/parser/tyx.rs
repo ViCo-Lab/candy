@@ -57,12 +57,12 @@ const CANDY: &[&str] = &[
     // `ReplacementTransform`): morph a target mobject into NEW inline content
     // (e.g. an equation), keeping the original label reusable afterwards.
     "transform",
-    // Subtitle module (字幕模块).
+    // Subtitle module.
     "subtitle",
     // Scene module: `scene` establishes a nestable, scope-bounded, one-page
     // segment of the timeline (parent auto-hides when a child is active).
     "scene",
-    // Easing-counter module (缓动计数器模块): `ecounter` defines a named integer
+    // Easing-counter module: `ecounter` defines a named integer
     // counter, `ecval` reads its current integer value (substituted per-frame by
     // the renderer), and `counter_pause` / `counter_resume` / `counter_destroy`
     // drive its lifecycle. `ecval` is a no-op at parse time (the parser never
@@ -129,6 +129,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         slides: ctx.slides,
         items: ctx.items,
         content_timeline: ctx.content_timeline,
+        morph_pairs: ctx.morph_pairs,
         initial: ctx.initial,
         audio: ctx.audio,
         imports: ctx.imports.clone(),
@@ -184,21 +185,42 @@ fn collect_named_lengths(node: &LinkedNode, f: &mut impl FnMut(&str, f64)) {
 }
 
 /// Try to evaluate an expression as a length in cm. Handles `4cm`, `3in`,
-/// `5pt`, bare numbers (treated as cm).
+/// `5pt`, bare numbers (treated as cm), and **signed** lengths like `-4cm`
+/// (which Typst parses as `Expr::Math`, not `Expr::Numeric` — without this
+/// fallback a `#animate(to: (-4cm, 0cm))` would silently drop the move and the
+/// object would never leave its initial position).
 fn expr_length_cm(e: &Expr) -> Option<f64> {
     match e {
         Expr::Numeric(n) => {
             let (val, unit) = n.get();
-            match unit {
-                typst_syntax::ast::Unit::Cm => Some(val),
-                typst_syntax::ast::Unit::Mm => Some(val * 0.1),
-                typst_syntax::ast::Unit::Pt => Some(val / PT_PER_CM),
-                typst_syntax::ast::Unit::In => Some(val * 2.54),
-                _ => None,
-            }
+            return unit_to_cm(val, unit);
         }
-        Expr::Int(i) => Some(i.get() as f64),
-        Expr::Float(fl) => Some(fl.get()),
+        Expr::Int(i) => return Some(i.get() as f64),
+        Expr::Float(fl) => return Some(fl.get()),
+        // Signed lengths like `-4cm` / `+4cm` parse as a *unary operation*
+        // wrapping the inner `Numeric` (Typst surfaces them as `Expr::Unary`,
+        // not as a signed `Numeric`). Without handling this, `#animate(to:
+        // (-4cm, 0cm))` silently dropped the move and the object never left
+        // its initial position.
+        Expr::Unary(u) => {
+            let sign = match u.op() {
+                ast::UnOp::Neg => -1.0,
+                ast::UnOp::Pos => 1.0,
+                ast::UnOp::Not => return None,
+            };
+            return expr_length_cm(&u.expr()).map(|v| sign * v);
+        }
+        _ => None,
+    }
+}
+
+/// Convert a `(value, unit)` pair from Typst's `Numeric` node to centimeters.
+fn unit_to_cm(val: f64, unit: typst_syntax::ast::Unit) -> Option<f64> {
+    match unit {
+        typst_syntax::ast::Unit::Cm => Some(val),
+        typst_syntax::ast::Unit::Mm => Some(val * 0.1),
+        typst_syntax::ast::Unit::Pt => Some(val / PT_PER_CM),
+        typst_syntax::ast::Unit::In => Some(val * 2.54),
         _ => None,
     }
 }
@@ -223,6 +245,8 @@ struct ParseCtx {
     imports: Vec<String>,
     /// Per-label content switches recorded by `transform` (`(time_ms, new_body)`).
     content_timeline: HashMap<Label, Vec<(u32, String)>>,
+    /// Real shape-morph pairs recorded by `#morph(from, to)`.
+    morph_pairs: Vec<crate::core::ast::MorphPair>,
     /// Monotonic counter for synthetic `__xf_<label>_<n>` mobjects created by
     /// `transform`, so repeated transforms on the same label don't clash.
     xf_counter: usize,
@@ -404,7 +428,9 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
 
 /// Resolve and dispatch a single Candy function call.
 fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
-    let Some(sym) = call_symbol(&call, ctx) else { return };
+    let Some(sym) = call_symbol(&call, ctx) else {
+        return;
+    };
 
     let args = call.args();
     let mut pos: Vec<Expr> = Vec::new();
@@ -1179,13 +1205,19 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from);
 
-    // Hide the `to` object initially (it will fade in).
+    // Hide the `to` object initially (it will fade in as the shape morphs in).
     ctx.slides.push(Slide {
         duration_ms: 1,
         actions: vec![Action::Hide { target: to.clone() }],
     });
 
-    // Morph: `from` shrinks + fades out, `to` grows + fades in (parallel).
+    // The shape morph itself is rendered by the renderer (a `MorphPlan`
+    // precomputed from the two bodies' outlines). Here we only drive the
+    // *opacity* crossfade so `from` fades/shrinks out while `to` fades in at
+    // its natural size (no `ScaleBy 100` — that previously left `to` 100×
+    // oversized after the morph).
+    let start_ms = ctx.cursor + 1;
+    let end_ms = start_ms + duration;
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
@@ -1195,16 +1227,22 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
                 easing: easing.clone(),
             },
             Action::FadeOut {
-                target: from,
+                target: from.clone(),
                 easing: easing.clone(),
             },
-            Action::ScaleBy {
+            Action::FadeIn {
                 target: to.clone(),
-                factor: 100.0,
                 easing: easing.clone(),
             },
-            Action::FadeIn { target: to, easing },
         ],
+    });
+    ctx.morph_pairs.push(crate::core::ast::MorphPair {
+        from: from.clone(),
+        to: to.clone(),
+        to_body: None,
+        start_ms,
+        end_ms,
+        easing,
     });
     ctx.cursor += 1 + duration;
 }
@@ -1286,8 +1324,13 @@ fn process_transform(
     ctx.items.insert(tmp.clone(), old_body.clone());
     // The parked old-content mobject belongs to the *target's* scene so it is
     // shown/hidden together with the target across the transform.
-    ctx.label_scene
-        .insert(tmp.clone(), ctx.label_scene.get(&label).copied().unwrap_or(ctx.current_scene));
+    ctx.label_scene.insert(
+        tmp.clone(),
+        ctx.label_scene
+            .get(&label)
+            .copied()
+            .unwrap_or(ctx.current_scene),
+    );
     ctx.initial.insert(
         tmp.clone(),
         FrameData {
@@ -1312,6 +1355,22 @@ fn process_transform(
         .entry(label.clone())
         .or_default()
         .push((switch_at, new_body.clone()));
+
+    // Real shape morph: precompute a `MorphPlan` between the old content's
+    // outline and the new content's outline, and render the *target* (keeping
+    // its label so later `#animate`s still apply to it) as the interpolated shape
+    // during the window. This upgrades `transform` from a plain opacity crossfade
+    // to a genuine outline morph (the same machinery as `#morph`). The new
+    // content is passed via `to_body` so the plan uses it without spawning a
+    // stray mobject.
+    ctx.morph_pairs.push(crate::core::ast::MorphPair {
+        from: tmp.clone(),
+        to: label.clone(),
+        to_body: Some(new_body.clone()),
+        start_ms: switch_at,
+        end_ms: switch_at + duration,
+        easing: easing.clone(),
+    });
 
     // Single morph slide: the scheduler's native `Transform` action crossfades
     // `old` out while `target` (now showing `new_body`) fades in, inheriting

@@ -45,12 +45,21 @@ pub type Ring = Vec<Point>;
 // without the user providing explicit point arrays), and convert morphed
 // rings back to SVG path strings that Typst can render.
 
-/// Extract polygon rings from an SVG string. Walks the SVG byte stream
-/// looking for `<rect>`, `<circle>`, `<ellipse>`, `<polygon>`,
-/// `<polyline>`, and `<path d="...">` elements, converting each to a
-/// ring of 2D points. Multiple elements produce multiple rings.
-pub fn extract_rings_from_svg(svg: &str) -> Vec<Ring> {
-    let mut rings = Vec::new();
+/// A shape extracted from an SVG: its outline ring plus the paint that was
+/// applied to it (`fill` / `stroke`), captured as raw SVG color strings so the
+/// renderer can reproduce the original color when it re-emits the morphed shape
+/// as a Typst `polygon`.
+pub struct Shape {
+    pub ring: Ring,
+    pub fill: Option<String>,
+    pub stroke: Option<String>,
+}
+
+/// Extract [`Shape`]s (ring + paint) from an SVG string. Walks the SVG byte
+/// stream looking for `<rect>`, `<circle>`, `<ellipse>`, `<polygon>`,
+/// `<polyline>`, and `<path d="...">` elements, converting each to a `Shape`.
+pub fn extract_shapes_from_svg(svg: &str) -> Vec<Shape> {
+    let mut shapes = Vec::new();
     let mut pos = 0;
     while pos < svg.len() {
         let lt = match svg[pos..].find('<') {
@@ -68,21 +77,29 @@ pub fn extract_rings_from_svg(svg: &str) -> Vec<Ring> {
             None => break,
         };
         let tag_content = &svg[lt..=gt];
+        let fill = svg_attr(tag_content, "fill");
+        let stroke = svg_attr(tag_content, "stroke");
         match tag {
-            "rect" => { if let Some(r) = svg_rect(tag_content) { rings.push(r); } }
-            "circle" => { if let Some(r) = svg_circle(tag_content) { rings.push(r); } }
-            "ellipse" => { if let Some(r) = svg_ellipse(tag_content) { rings.push(r); } }
-            "polygon" | "polyline" => { if let Some(r) = svg_polyline(tag_content) { rings.push(r); } }
+            "rect" => { if let Some(r) = svg_rect(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
+            "circle" => { if let Some(r) = svg_circle(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
+            "ellipse" => { if let Some(r) = svg_ellipse(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
+            "polygon" | "polyline" => { if let Some(r) = svg_polyline(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
             "path" => {
                 if let Some(d) = svg_attr(tag_content, "d") {
-                    if let Some(r) = parse_path_d(&d) { rings.push(r); }
+                    if let Some(r) = parse_path_d(&d) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); }
                 }
             }
             _ => {}
         }
         pos = gt + 1;
     }
-    rings
+    shapes
+}
+
+/// Extract polygon rings from an SVG string (paint information dropped).
+/// Convenience wrapper over [`extract_shapes_from_svg`].
+pub fn extract_rings_from_svg(svg: &str) -> Vec<Ring> {
+    extract_shapes_from_svg(svg).into_iter().map(|s| s.ring).collect()
 }
 
 /// Convert a ring to an SVG path string (`M x,y L x,y ... Z`).
@@ -144,24 +161,409 @@ fn svg_polyline(tag: &str) -> Option<Ring> {
 }
 
 /// Parse SVG path `d` attribute (M/L/H/V/Z commands; curves approximated).
+/// Tokenize an SVG path `d` string into command letters and numeric arguments.
+///
+/// Unlike a naive whitespace split, this correctly separates a command letter
+/// that is *concatenated* with the following number (e.g. `0m` or `28.3c`, which
+/// Typst emits for circles/ellipses) so each becomes its own token.
+fn tokenize_path(d: &str) -> Vec<String> {
+    let chars: Vec<char> = d.chars().collect();
+    let is_cmd = |c: char| "MmLlHhVvCcSsQqTtAaZz".contains(c);
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() || c == ',' {
+            i += 1;
+            continue;
+        }
+        if is_cmd(c) {
+            tokens.push(c.to_string());
+            i += 1;
+            continue;
+        }
+        // Parse one number: optional sign, integer part, optional fraction,
+        // optional exponent (e/E with optional sign).
+        let start = i;
+        if c == '+' || c == '-' {
+            i += 1;
+        }
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            i += 1;
+        }
+        if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
+            i += 1;
+            if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+                i += 1;
+            }
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        if i == start {
+            // Not a command, not a number: skip the lone char to avoid an
+            // infinite loop.
+            i += 1;
+            continue;
+        }
+        tokens.push(chars[start..i].iter().collect());
+    }
+    tokens
+}
+
 fn parse_path_d(d: &str) -> Option<Ring> {
     let mut ring = Ring::new();
     let mut cur = [0.0_f64, 0.0_f64];
     let mut first = [0.0_f64, 0.0_f64];
     let mut started = false;
-    let tokens: Vec<&str> = d.split_whitespace().collect();
+    let tokens_owned = tokenize_path(d);
+    let tokens: Vec<&str> = tokens_owned.iter().map(|s| s.as_str()).collect();
     let mut i = 0;
+    let mut prev_ctrl: Option<Point> = None;
     while i < tokens.len() {
         match tokens[i] {
-            "M" | "L" => { if i+2 < tokens.len() { cur = [tokens[i+1].parse().ok()?, tokens[i+2].parse().ok()?]; if !started { first=cur; started=true; } ring.push(cur); i+=3; } else { break; } }
-            "H" => { if i+1 < tokens.len() { cur[0]=tokens[i+1].parse().ok()?; ring.push(cur); i+=2; } else { break; } }
-            "V" => { if i+1 < tokens.len() { cur[1]=tokens[i+1].parse().ok()?; ring.push(cur); i+=2; } else { break; } }
-            "Z"|"z" => { if started { ring.push(first); } i+=1; }
-            "C"|"c" => i+=7, "Q"|"q" => i+=5, "S"|"s"|"T"|"t" => i+=3, "A"|"a" => i+=8,
-            _ => { if let Ok(x)=tokens[i].parse::<f64>() { if i+1<tokens.len() { if let Ok(y)=tokens[i+1].parse::<f64>() { cur=[x,y]; ring.push(cur); i+=2; continue; } } } i+=1; }
+            "M" => {
+                if i + 2 < tokens.len() {
+                    cur = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    if !started {
+                        first = cur;
+                        started = true;
+                    }
+                    ring.push(cur);
+                    i += 3;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "L" => {
+                if i + 2 < tokens.len() {
+                    cur = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    ring.push(cur);
+                    i += 3;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "H" => {
+                if i + 1 < tokens.len() {
+                    cur[0] = tokens[i + 1].parse().ok()?;
+                    ring.push(cur);
+                    i += 2;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "V" => {
+                if i + 1 < tokens.len() {
+                    cur[1] = tokens[i + 1].parse().ok()?;
+                    ring.push(cur);
+                    i += 2;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            // Cubic Bézier — flatten into line segments (the heart of making
+            // circle/ellipse paths morthable). `flatten_cubic` pushes the
+            // segment's start point, so we dedup consecutively-near points after.
+            "C" => {
+                if i + 6 < tokens.len() {
+                    let c1 = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    let c2 = [tokens[i + 3].parse().ok()?, tokens[i + 4].parse().ok()?];
+                    let end = [tokens[i + 5].parse().ok()?, tokens[i + 6].parse().ok()?];
+                    flatten_cubic(cur, c1, c2, end, &mut ring, 3);
+                    cur = end;
+                    i += 7;
+                    prev_ctrl = Some(c2);
+                } else {
+                    break;
+                }
+            }
+            "Q" => {
+                if i + 4 < tokens.len() {
+                    let c = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    let end = [tokens[i + 3].parse().ok()?, tokens[i + 4].parse().ok()?];
+                    flatten_quad(cur, c, end, &mut ring, 3);
+                    cur = end;
+                    i += 5;
+                    prev_ctrl = Some(c);
+                } else {
+                    break;
+                }
+            }
+            // Smooth cubic: first control point is the reflection of the
+            // previous second control point (defaults to current point).
+            "S" => {
+                if i + 4 < tokens.len() {
+                    let c1 = prev_ctrl
+                        .map(|p| [2.0 * cur[0] - p[0], 2.0 * cur[1] - p[1]])
+                        .unwrap_or(cur);
+                    let c2 = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    let end = [tokens[i + 3].parse().ok()?, tokens[i + 4].parse().ok()?];
+                    flatten_cubic(cur, c1, c2, end, &mut ring, 3);
+                    cur = end;
+                    i += 5;
+                    prev_ctrl = Some(c2);
+                } else {
+                    break;
+                }
+            }
+            "T" => {
+                if i + 2 < tokens.len() {
+                    let c = prev_ctrl
+                        .map(|p| [2.0 * cur[0] - p[0], 2.0 * cur[1] - p[1]])
+                        .unwrap_or(cur);
+                    let end = [tokens[i + 1].parse().ok()?, tokens[i + 2].parse().ok()?];
+                    flatten_quad(cur, c, end, &mut ring, 3);
+                    cur = end;
+                    i += 3;
+                    prev_ctrl = Some(c);
+                } else {
+                    break;
+                }
+            }
+            "A" => {
+                if i + 7 < tokens.len() {
+                    let rx = tokens[i + 1].parse().ok()?;
+                    let ry = tokens[i + 2].parse().ok()?;
+                    let end = [tokens[i + 6].parse().ok()?, tokens[i + 7].parse().ok()?];
+                    arc_to_points(cur, rx, ry, &end, &mut ring);
+                    cur = end;
+                    i += 8;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            // Relative variants (lowercase): convert to absolute on the fly.
+            "m" => {
+                if i + 2 < tokens.len() {
+                    cur = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    if !started {
+                        first = cur;
+                        started = true;
+                    }
+                    ring.push(cur);
+                    i += 3;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "l" => {
+                if i + 2 < tokens.len() {
+                    cur = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    ring.push(cur);
+                    i += 3;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "h" => {
+                if i + 1 < tokens.len() {
+                    cur[0] += tokens[i + 1].parse::<f64>().ok()?;
+                    ring.push(cur);
+                    i += 2;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "v" => {
+                if i + 1 < tokens.len() {
+                    cur[1] += tokens[i + 1].parse::<f64>().ok()?;
+                    ring.push(cur);
+                    i += 2;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "c" => {
+                if i + 6 < tokens.len() {
+                    let c1 = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    let c2 = [
+                        cur[0] + tokens[i + 3].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 4].parse::<f64>().ok()?,
+                    ];
+                    let end = [
+                        cur[0] + tokens[i + 5].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 6].parse::<f64>().ok()?,
+                    ];
+                    flatten_cubic(cur, c1, c2, end, &mut ring, 3);
+                    cur = end;
+                    i += 7;
+                    prev_ctrl = Some(c2);
+                } else {
+                    break;
+                }
+            }
+            "q" => {
+                if i + 4 < tokens.len() {
+                    let c = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    let end = [
+                        cur[0] + tokens[i + 3].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 4].parse::<f64>().ok()?,
+                    ];
+                    flatten_quad(cur, c, end, &mut ring, 3);
+                    cur = end;
+                    i += 5;
+                    prev_ctrl = Some(c);
+                } else {
+                    break;
+                }
+            }
+            "s" => {
+                if i + 4 < tokens.len() {
+                    let c1 = prev_ctrl
+                        .map(|p| [2.0 * cur[0] - p[0], 2.0 * cur[1] - p[1]])
+                        .unwrap_or(cur);
+                    let c2 = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    let end = [
+                        cur[0] + tokens[i + 3].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 4].parse::<f64>().ok()?,
+                    ];
+                    flatten_cubic(cur, c1, c2, end, &mut ring, 3);
+                    cur = end;
+                    i += 5;
+                    prev_ctrl = Some(c2);
+                } else {
+                    break;
+                }
+            }
+            "t" => {
+                if i + 2 < tokens.len() {
+                    let c = prev_ctrl
+                        .map(|p| [2.0 * cur[0] - p[0], 2.0 * cur[1] - p[1]])
+                        .unwrap_or(cur);
+                    let end = [
+                        cur[0] + tokens[i + 1].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 2].parse::<f64>().ok()?,
+                    ];
+                    flatten_quad(cur, c, end, &mut ring, 3);
+                    cur = end;
+                    i += 3;
+                    prev_ctrl = Some(c);
+                } else {
+                    break;
+                }
+            }
+            "a" => {
+                if i + 7 < tokens.len() {
+                    let rx = tokens[i + 1].parse::<f64>().ok()?;
+                    let ry = tokens[i + 2].parse::<f64>().ok()?;
+                    let end = [
+                        cur[0] + tokens[i + 6].parse::<f64>().ok()?,
+                        cur[1] + tokens[i + 7].parse::<f64>().ok()?,
+                    ];
+                    arc_to_points(cur, rx, ry, &end, &mut ring);
+                    cur = end;
+                    i += 8;
+                    prev_ctrl = None;
+                } else {
+                    break;
+                }
+            }
+            "Z" | "z" => {
+                if started {
+                    ring.push(first);
+                }
+                i += 1;
+                prev_ctrl = None;
+            }
+            _ => {
+                // Bare coordinate pair: implicit lineto (also handles relative
+                // commands by treating them as absolute — acceptable for the
+                // shapes candy extracts).
+                if let Ok(x) = tokens[i].parse::<f64>() {
+                    if i + 1 < tokens.len() {
+                        if let Ok(y) = tokens[i + 1].parse::<f64>() {
+                            cur = [x, y];
+                            ring.push(cur);
+                            i += 2;
+                            prev_ctrl = None;
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
         }
     }
-    if ring.len() >= 3 { Some(ring) } else { None }
+    // Drop consecutive near-duplicate points introduced by curve flattening.
+    ring.dedup_by(|a, b| dist(a, b) < 1e-6);
+    if ring.len() >= 3 {
+        Some(ring)
+    } else {
+        None
+    }
+}
+
+/// Flatten an SVG elliptical arc (endpoint parameterization) into line
+/// segments appended to `ring`. Uses the standard endpoint→center conversion;
+/// if the radii are degenerate we fall back to a straight line to `end`.
+fn arc_to_points(start: Point, rx_in: f64, ry_in: f64, end: &Point, ring: &mut Ring) {
+    let mut rx = rx_in.abs().max(1e-6);
+    let mut ry = ry_in.abs().max(1e-6);
+    let dx = (end[0] - start[0]) / 2.0;
+    let dy = (end[1] - start[1]) / 2.0;
+    let phi = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+    if phi > 1.0 {
+        // Radii too small to span the chord; scale them up so the arc is valid.
+        let s = phi.sqrt();
+        rx *= s;
+        ry *= s;
+    }
+    // Center in the transformed (axis-aligned) frame.
+    let num = (rx * rx * ry * ry) - (rx * rx * dy * dy) - (ry * ry * dx * dx);
+    let den = (rx * rx * dy * dy) + (ry * ry * dx * dx);
+    let coef = if den <= 0.0 {
+        0.0
+    } else {
+        (num / den).sqrt()
+    };
+    let cx = coef * (rx * dy) / ry;
+    let cy = -coef * (ry * dx) / rx;
+    // Transform center back to the original coordinate frame.
+    let cx = cx + (start[0] + end[0]) / 2.0;
+    let cy = cy + (start[1] + end[1]) / 2.0;
+    // Angles from center to start/end.
+    let theta1 = ((start[1] - cy) / ry).atan2((start[0] - cx) / rx);
+    let theta2 = ((end[1] - cy) / ry).atan2((end[0] - cx) / rx);
+    let mut dtheta = theta2 - theta1;
+    // Normalize to (-π, π].
+    while dtheta > std::f64::consts::PI {
+        dtheta -= 2.0 * std::f64::consts::PI;
+    }
+    while dtheta < -std::f64::consts::PI {
+        dtheta += 2.0 * std::f64::consts::PI;
+    }
+    let n = 24usize;
+    for k in 1..=n {
+        let t = theta1 + dtheta * (k as f64) / (n as f64);
+        let x = cx + rx * t.cos();
+        let y = cy + ry * t.sin();
+        ring.push([x, y]);
+    }
 }
 
 // ─── Geometry primitives (math.js) ─────────────────────────────────────────
@@ -185,7 +587,7 @@ fn point_along(a: &Point, b: &Point, pct: f64) -> Point {
 
 /// Signed area of a ring (positive = clockwise in screen coordinates where
 /// y points down). Uses the shoelace formula.
-fn polygon_area(ring: &[Point]) -> f64 {
+pub fn polygon_area(ring: &[Point]) -> f64 {
     if ring.len() < 3 {
         return 0.0;
     }
@@ -340,12 +742,22 @@ pub fn interpolate_ring(mut from: Ring, mut to: Ring, max_segment_length: f64) -
     normalize_ring(&mut from, max_segment_length);
     normalize_ring(&mut to, max_segment_length);
 
-    // Equalize point counts.
-    let diff = from.len() as i64 - to.len() as i64;
-    if diff < 0 {
-        add_points(&mut from, (-diff) as usize);
-    } else if diff > 0 {
-        add_points(&mut to, diff as usize);
+    // Equalize point counts. `add_points` may over/under-shoot the requested
+    // count by one (floating-point accumulation in its arc-length stepping), so
+    // we pad the shorter ring one point at a time until both match the
+    // pre-equalization maximum, and truncate defensively if a ring overshot.
+    let target = from.len().max(to.len());
+    while from.len() < target {
+        add_points(&mut from, 1);
+    }
+    while to.len() < target {
+        add_points(&mut to, 1);
+    }
+    if from.len() > target {
+        from.truncate(target);
+    }
+    if to.len() > target {
+        to.truncate(target);
     }
 
     // Align: find best cyclic rotation.
@@ -368,6 +780,56 @@ pub fn interpolate_ring(mut from: Ring, mut to: Ring, max_segment_length: f64) -
 pub fn morph(from: &[Point], to: &[Point], t: f64, max_segment_length: f64) -> Ring {
     let interp = interpolate_ring(from.to_vec(), to.to_vec(), max_segment_length);
     interp(t)
+}
+
+/// A precomputed morph between two rings.
+///
+/// Building a `MorphPlan` is the *expensive* part: it renders/extracts both
+/// shapes (caller-supplied), normalizes winding, bisects long segments,
+/// equalizes point counts, and finds the best cyclic alignment — all O(n²) in
+/// the worst case. Once built, sampling it at any `t ∈ [0, 1]` is a cheap
+/// index-by-index `lerp`, so the plan should be constructed **once** (e.g. in
+/// a renderer's natural-layout pass) and reused for every animation frame.
+///
+/// `fill` / `stroke` are carried so the morphed shape can be re-emitted with
+/// the original paint.
+pub struct MorphPlan {
+    interp: Box<dyn Fn(f64) -> Ring + Send + Sync>,
+    /// Fill color captured from the *target* shape (so the morph ends with the
+    /// target's color).
+    pub fill: Option<String>,
+    /// Stroke color captured from the *target* shape.
+    pub stroke: Option<String>,
+}
+
+impl MorphPlan {
+    /// Build a plan from two rings (point counts/alignment resolved here).
+    pub fn new(
+        from: Ring,
+        to: Ring,
+        fill: Option<String>,
+        stroke: Option<String>,
+        max_segment_length: f64,
+    ) -> Self {
+        let interp = interpolate_ring(from, to, max_segment_length);
+        MorphPlan {
+            interp: Box::new(interp),
+            fill,
+            stroke,
+        }
+    }
+
+    /// Sample the interpolated ring at parameter `t` (clamped to `[0, 1]`).
+    pub fn at(&self, t: f64) -> Ring {
+        let t = if t < 0.0 {
+            0.0
+        } else if t > 1.0 {
+            1.0
+        } else {
+            t
+        };
+        (self.interp)(t)
+    }
 }
 
 // ─── Shape generators (shape.js) ───────────────────────────────────────────

@@ -1,0 +1,36 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates *real shape morphing* via `#morph(from, to)`.
+//
+// The renderer precomputes an outline interpolator once (performance-first:
+// both bodies are rendered to SVG and their rings extracted/aligned a single
+// time) and, during the morph window, renders the `to` object as the
+// interpolated shape — so the source shape *visibly morphs* into the target
+// shape (a true outline morph, not just an opacity crossfade). The `from`
+// object simultaneously fades + shrinks out at its own position.
+//
+// Run:  candy build examples/morph_demo.tyx
+
+#scene(width: 16cm, height: 9cm)[
+  // A blue circle morphs into a red square.
+  #mobject("circ", circle(radius: 1.5cm, fill: blue))
+  #mobject("sq", square(size: 3cm, fill: red))
+
+  // First slide the two shapes apart so the morph is clearly visible.
+  #animate("circ", to: (-4cm, 0cm), duration: 800, easing: "smooth")
+  #animate("sq", to: (4cm, 0cm), duration: 800, easing: "smooth")
+
+  // The real shape morph (circle outline → square outline).
+  #morph("circ", "sq", duration: 1200, easing: "smooth")
+
+  // A second, independent morph: a triangle into a polygon, on the lower row.
+  #mobject("tri", polygon((0cm, 0cm), (1.5cm, 2.6cm), (3cm, 0cm), fill: green))
+  #mobject("star", polygon(
+    (0cm, 0cm), (0.6cm, 1.8cm), (2.8cm, 1.8cm), (1cm, 3cm), (1.6cm, 4.8cm),
+    (0cm, 3.6cm), (-1.6cm, 4.8cm), (-1cm, 3cm), (-2.8cm, 1.8cm), (-0.6cm, 1.8cm),
+    fill: purple,
+  ))
+  #animate("tri", to: (-4cm, -3cm), duration: 800, easing: "smooth")
+  #animate("star", to: (4cm, -3cm), duration: 800, easing: "smooth")
+  #morph("tri", "star", duration: 1200, easing: "smooth")
+]

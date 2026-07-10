@@ -1,0 +1,35 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates *timing / sequential* animation: every action advances the
+// timeline in order, `#pause` holds a beat, and `#play` reveals content as its
+// own animation unit. The full clip is one implicit timeline (one page).
+//
+// Run:  candy build examples/timing_demo.tyx
+
+#scene(width: 16cm, height: 9cm)[
+  // Step 1: a dot appears (frame 0) and slides right over 1000ms.
+  #mobject("dot", circle(radius: 0.8cm, fill: blue))
+  #animate("dot", to: (5cm, 0cm), duration: 1000, easing: "smooth")
+
+  // Hold a beat so the viewer registers the new position.
+  #pause(duration: 600)
+
+  // Step 2: a box grows in on the left, sequenced *after* the dot settles.
+  #mobject("box", square(size: 2cm, fill: orange))
+  #animate("box", scale: 1.5, duration: 800, easing: "ease-out")
+  #animate("box", rotate: 45, duration: 800, easing: "ease-in-out")
+
+  // Step 3: reveal captions beat-by-beat via `play` (each its own unit).
+  #play([#text(28pt, weight: "bold")[Step 1 — move]], duration: 700)
+  #play([#text(28pt, weight: "bold")[Step 2 — grow + rotate]], duration: 700)
+
+  // Step 4: an object travels along a polyline (absolute cm points).
+  #mobject("tri", polygon((0cm, 0cm), (1cm, 2cm), (2cm, 0cm), fill: green))
+  #move-along-path("tri", ((0cm, -2cm), (4cm, -2cm), (8cm, 0cm)), duration: 1500, easing: "linear")
+
+  // Step 5: a synchronized caption + easing counter (count 0→… over 2000ms).
+  #let r = ecounter("r", seed: 0, step: 1, duration: 2000)
+  #mobject("num", text(24pt)[Count: #str(ecval(r))])
+  #animate("num", to: (0cm, 3cm), duration: 2000, easing: "smooth")
+  #subtitle([Timing: each action advances the timeline in sequence], position: "bottom")
+]

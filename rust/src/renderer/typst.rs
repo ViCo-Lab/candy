@@ -36,9 +36,15 @@ use typst_utils::{LazyHash, Scalar};
 
 use crate::core::ast::{FrameData, Label, Scene, SubPos, Subtitle};
 use crate::core::error::CandyError;
+use crate::core::morph::{extract_shapes_from_svg, MorphPlan, polygon_area};
 
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 const PT_PER_CM: f64 = 28.346_456_692_913_385;
+
+/// Maximum segment length (in Typst points) when bisecting morph outline rings.
+/// Smaller = smoother morph but more points (the plan is sampled per frame, so
+/// the per-frame cost is linear in the point count — 3pt is a good balance).
+const MORPH_MAX_SEGMENT: f64 = 3.0;
 
 /// A no-op downloader used when the `system-downloader` feature is disabled.
 /// Returns NotFound for every URL, so @preview packages resolve only from
@@ -209,6 +215,11 @@ pub struct Renderer {
     scene_pages: HashMap<usize, (f64, f64)>,
     /// label -> owning scene id (for parent auto-hide).
     label_scene: HashMap<Label, usize>,
+    /// Precomputed outline interpolators for `#morph` pairs, keyed by
+    /// `(from, to)`. Built once in `ensure_natural` (the expensive part:
+    /// render both bodies to SVG, extract + align their outline rings). Each
+    /// frame then just samples the plan — this is the performance-first design.
+    morph_cache: HashMap<(Label, Label), MorphPlan>,
 }
 
 impl Renderer {
@@ -233,6 +244,7 @@ impl Renderer {
             natural_computed: false,
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
+            morph_cache: HashMap::new(),
         })
     }
 
@@ -327,6 +339,39 @@ impl Renderer {
             }
         }
 
+        // Precompute morph plans (the expensive part) exactly once. For each
+        // `#morph(from, to)` pair we render both bodies to SVG, extract their
+        // outline rings, normalize each ring to its own local origin, and build
+        // a `MorphPlan`. Each frame then only *samples* the plan — this is the
+        // performance-first design (no per-frame SVG ring extraction).
+        for pair in &self.scene.morph_pairs {
+            let fb = self.scene.items.get(&pair.from);
+            // For `transform`, `to_body` overrides `items[to]` (which still holds
+            // the *original* body until the content-timeline swap) so the morph
+            // interpolates toward the new content.
+            let tb = pair
+                .to_body
+                .as_ref()
+                .or_else(|| self.scene.items.get(&pair.to));
+            let (Some(fb), Some(tb)) = (fb, tb) else {
+                continue;
+            };
+            let Some((fr, _, _)) = self.body_largest_shape(fb) else {
+                continue;
+            };
+            let Some((tr, fill, stroke)) = self.body_largest_shape(tb) else {
+                continue;
+            };
+            let fl = localize_ring(fr);
+            let tl = localize_ring(tr);
+            if fl.is_empty() || tl.is_empty() {
+                continue;
+            }
+            let plan = MorphPlan::new(fl, tl, fill, stroke, MORPH_MAX_SEGMENT);
+            self.morph_cache
+                .insert((pair.from.clone(), pair.to.clone()), plan);
+        }
+
         self.natural_computed = true;
         Ok(())
     }
@@ -364,7 +409,9 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = content_for(&self.scene, label, time_ms);
+        let body = self
+            .morph_body_for(label, time_ms)
+            .unwrap_or_else(|| content_for(&self.scene, label, time_ms));
         let preamble = imports_preamble(&self.scene);
         let placed = place_source(
             page_w,
@@ -647,7 +694,9 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = content_for(&self.scene, label, time_ms);
+        let body = self
+            .morph_body_for(label, time_ms)
+            .unwrap_or_else(|| content_for(&self.scene, label, time_ms));
         let preamble = imports_preamble(&self.scene);
 
         let src = place_source(
@@ -734,6 +783,67 @@ impl Renderer {
             height: pix.height() as usize,
             rgba: pix.data().to_vec(),
         })
+    }
+
+    /// Render a mobject body in isolation and return its largest outline shape
+    /// (by absolute area) as a ring of points plus its paint. Returns `None` if
+    /// the body produces no extractable outline (e.g. an image or a body whose
+    /// shape candy can't morph — those fall back to the plain crossfade).
+    fn body_largest_shape(
+        &self,
+        body: &str,
+    ) -> Option<(Vec<[f64; 2]>, Option<String>, Option<String>)> {
+        let preamble = imports_preamble(&self.scene);
+        let pre = if preamble.is_empty() {
+            String::new()
+        } else {
+            format!("{preamble}\n")
+        };
+        let src = format!(
+            "{pre}#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: none)\n#{body}\n",
+            w = self.page_w,
+            h = self.page_h,
+        );
+        let doc = self.compile(&src).ok()?;
+        let page = doc.pages().first()?;
+        let svg = typst_svg::svg(page, &SvgOptions::default());
+        let shapes = extract_shapes_from_svg(&svg);
+        shapes
+            .into_iter()
+            .max_by(|a, b| {
+                polygon_area(&a.ring)
+                    .abs()
+                    .partial_cmp(&polygon_area(&b.ring).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|s| (s.ring, s.fill, s.stroke))
+    }
+
+    /// If `label` is the `to` target of an active `#morph` pair at `time_ms`,
+    /// return the morphed shape as a Typst `polygon(...)` body (without a
+    /// leading `#` — the caller's `place_source` prepends it). Outside the pair
+    /// window `None` is returned so the object renders its normal body (this
+    /// also makes the hand-off at `end_ms` seamless: at `t = end_ms` the morphed
+    /// polygon equals the `to` body's own outline).
+    fn morph_body_for(&self, label: &Label, time_ms: u32) -> Option<String> {
+        for pair in &self.scene.morph_pairs {
+            if &pair.to != label {
+                continue;
+            }
+            if time_ms < pair.start_ms || time_ms > pair.end_ms {
+                return None;
+            }
+            let key = (pair.from.clone(), pair.to.clone());
+            let plan = self.morph_cache.get(&key)?;
+            let denom = (pair.end_ms - pair.start_ms).max(1) as f64;
+            let p = (((time_ms - pair.start_ms) as f64) / denom).clamp(0.0, 1.0);
+            let ring = plan.at(p);
+            if ring.is_empty() {
+                return None;
+            }
+            return Some(polygon_svg(&ring, &plan.fill, &plan.stroke));
+        }
+        None
     }
 }
 
@@ -889,6 +999,67 @@ fn render_subtitle_svg_impl(
         .first()
         .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
     Ok(typst_svg::svg(page, &SvgOptions::default()))
+}
+
+/// Translate a ring so its bounding-box top-left sits at the origin. Morph
+/// outlines are interpolated in this local frame and later placed (via
+/// `place_source`) at the target mobject's natural top-left, so the morph is
+/// anchored correctly and matches standard Typst positioning at `t = 1`.
+fn localize_ring(ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if ring.is_empty() {
+        return ring;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    for p in &ring {
+        if p[0] < min_x {
+            min_x = p[0];
+        }
+        if p[1] < min_y {
+            min_y = p[1];
+        }
+    }
+    ring.into_iter()
+        .map(|p| [p[0] - min_x, p[1] - min_y])
+        .collect()
+}
+
+/// Convert an SVG paint color string (as captured from a Typst-rendered SVG,
+/// which uses hex like `#0074d9` or `rgb(...)`) into a Typst color expression
+/// that is safe to embed in code mode (e.g. inside `polygon(fill: …, …)`).
+///
+/// Typst's `#` is a code-mode marker, so a raw `#0074d9` would be a syntax
+/// error — we wrap hex colors as `rgb("#0074d9")`, which Typst accepts.
+fn svg_color_to_typst(color: &str) -> String {
+    let c = color.trim();
+    if let Some(hex) = c.strip_prefix('#') {
+        // `#rrggbb` / `#rrggbbaa` → rgb("#…")
+        format!("rgb(\"#{hex}\")")
+    } else if c.starts_with("rgb(") || c.starts_with("rgba(") || c.starts_with("hsl(") {
+        // Already a valid Typst color expression.
+        c.to_string()
+    } else {
+        // Named color (`red`, `blue`, …) or anything else — pass through.
+        c.to_string()
+    }
+}
+
+/// Build a Typst `polygon(...)` body (no leading `#`) from a ring, preserving
+/// the target shape's paint. Points are emitted as absolute `(x*pt, y*pt)`.
+fn polygon_svg(ring: &[[f64; 2]], fill: &Option<String>, stroke: &Option<String>) -> String {
+    let pts: Vec<String> = ring
+        .iter()
+        .map(|p| format!("({:.2}pt, {:.2}pt)", p[0], p[1]))
+        .collect();
+    let fill = svg_color_to_typst(fill.clone().unwrap_or_else(|| "black".to_string()).as_str());
+    let stroke_attr = match stroke {
+        Some(s) => format!(", stroke: {}", svg_color_to_typst(s)),
+        None => String::new(),
+    };
+    format!(
+        "polygon(fill: {fill}{stroke_attr}, {pts})",
+        pts = pts.join(", ")
+    )
 }
 
 fn place_source(
@@ -1174,6 +1345,7 @@ fn content_timeline_swaps_rendered_body() {
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
+        morph_pairs: Vec::new(),
         private_metadata: PrivateMeta::default(),
     };
 
@@ -1230,6 +1402,7 @@ fn subtitle_stays_in_viewport() {
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
+        morph_pairs: Vec::new(),
         private_metadata: PrivateMeta::default(),
     };
 
@@ -1253,4 +1426,77 @@ fn subtitle_stays_in_viewport() {
         max_y <= page_h + 1.0,
         "subtitle overflows viewport: max translate y = {max_y} > page_h {page_h}"
     );
+}
+
+/// Verify the performance-first morph path: the renderer precomputes a
+/// `MorphPlan` and, during the pair window, returns the `to` object's body as
+/// an interpolated `polygon(...)` (a real shape morph, not a plain crossfade).
+/// Outside the window it falls back to the normal body (seamless hand-off).
+#[test]
+fn morph_renders_interpolated_polygon() {
+    use crate::core::ast::{MorphPair, Slide};
+    use crate::core::easing::Easing;
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    let mut items = HashMap::new();
+    items.insert(Label("a".into()), "circle(radius: 1cm, fill: blue)".into());
+    items.insert(Label("b".into()), "square(size: 2cm, fill: red)".into());
+    let morph_pairs = vec![MorphPair {
+        from: Label("a".into()),
+        to: Label("b".into()),
+        to_body: None,
+        start_ms: 0,
+        end_ms: 100,
+        easing: Easing::Linear,
+    }];
+    let scene = Scene {
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
+        items,
+        content_timeline: HashMap::new(),
+        morph_pairs,
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        subtitles: Vec::new(),
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
+        scenes: Vec::new(),
+        root_scene: None,
+        private_metadata: PrivateMeta::default(),
+    };
+
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+
+    // Before the window: normal body (b is just a square).
+    assert!(
+        r.morph_body_for(&Label("b".into()), 101).is_none(),
+        "after the morph window, the object renders its normal body"
+    );
+    // At the start of the window: a polygon shaped like the *source* (circle).
+    let body0 = r
+        .morph_body_for(&Label("b".into()), 0)
+        .expect("expected a morphed polygon at t=0");
+    assert!(body0.starts_with("polygon("), "morph body must be a polygon");
+    // Mid-window: still a polygon (interpolated shape).
+    assert!(
+        r.morph_body_for(&Label("b".into()), 50)
+            .unwrap()
+            .starts_with("polygon(")
+    );
+    // At the end of the window: polygon shaped like the *target* (square) — and
+    // visually identical to rendering `b` normally (seamless hand-off).
+    let body_end = r
+        .morph_body_for(&Label("b".into()), 100)
+        .expect("expected a morphed polygon at t=end");
+    assert!(body_end.starts_with("polygon("));
+
+    // The plan was actually precomputed (not empty).
+    assert!(!r.morph_cache.is_empty(), "morph plan should be cached");
 }
