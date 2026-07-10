@@ -74,6 +74,38 @@ impl Label {
 /// - **Visibility**: [`Action::Show`] / [`Action::Hide`] are instantaneous
 ///   (0-duration) visibility toggles, useful for "appear/disappear without
 ///   fading" effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PathMode {
+    /// Connect the points with straight segments (default; the v0.1 behavior).
+    #[default]
+    Polyline,
+    /// Treat the points as waypoints of a smooth (Catmull-Rom) spline and
+    /// sample a dense polyline through them, so motion is curved. Arc/bezier
+    /// paths are approximated by this spline. With `orient: true` the object
+    /// is additionally rotated to face its direction of travel.
+    Bezier,
+}
+
+/// A single keyframe inside a [`Action::Track`]. Every transform field is
+/// optional; omitted fields carry their *previous* value forward (the object's
+/// current state at the start of the slide is the baseline).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackKey {
+    /// Time offset from the slide start, in ms.
+    pub t: u32,
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub scale: Option<f64>,
+    #[serde(default)]
+    pub opacity: Option<f64>,
+    #[serde(default)]
+    pub rotation: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
     // ---- Core transforms (candy v0.1) ----
@@ -128,13 +160,29 @@ pub enum Action {
         opacity: f64,
         easing: Easing,
     },
-    /// Move the target along a polyline through `points` (in cm, absolute).
-    /// The scheduler generates a keyframe at each point, distributed evenly
-    /// across the slide's duration. Mirrors Manim's `MoveAlongPath` (for
-    /// linear paths; arc/bezier paths are approximated as polylines).
+    /// Move the target along a path through `points` (in cm). The scheduler
+    /// generates a keyframe at each point, distributed evenly across the
+    /// slide's duration. `mode` selects `Polyline` (straight segments) or
+    /// `Bezier` (a smooth Catmull-Rom spline sampled into a dense polyline;
+    /// arc/bezier paths are approximated this way). With `orient: true` and a
+    /// `Bezier` path the object is rotated to face its direction of travel.
+    /// Mirrors Manim's `MoveAlongPath`.
     MoveAlongPath {
         target: Label,
         points: Vec<(f64, f64)>,
+        #[serde(default)]
+        mode: PathMode,
+        #[serde(default)]
+        orient: bool,
+        easing: Easing,
+    },
+    /// Drive a single target through multiple keyframes, each controlling a
+    /// subset of its properties (`x`, `y`, `scale`, `opacity`, `rotation`).
+    /// Omitted properties carry their previous value forward. This removes the
+    /// need for many sequential `#animate`s and mirrors a timeline track.
+    Track {
+        target: Label,
+        keyframes: Vec<TrackKey>,
         easing: Easing,
     },
 
@@ -214,6 +262,21 @@ pub enum Action {
         old: Label,
         easing: Easing,
     },
+
+    /// A global camera transform (pan + zoom + rotate) applied to the whole
+    /// scene. Implemented as a synthetic `__camera__` mobject whose `x`/`y` are
+    /// pan offsets (cm, from the page center), `scale` is the zoom factor, and
+    /// `rotation` is the camera tilt (clockwise degrees). The renderer reads it
+    /// once per frame and applies it as a wrapping transform; it is never
+    /// rendered as a visible object. Mirrors Manim's camera pan/zoom.
+    Camera {
+        target: Label,
+        x: f64,
+        y: f64,
+        zoom: f64,
+        rotate: f64,
+        easing: Easing,
+    },
 }
 
 /// A real shape-morph pair recorded by `#morph(from, to)` (as opposed to the
@@ -246,7 +309,9 @@ impl Action {
         match self {
             Action::MoveTo { target, .. }
             | Action::MoveBy { target, .. }
-            | Action::MoveAlongPath { target, .. }
+            |             Action::MoveAlongPath { target, .. }
+            | Action::Track { target, .. }
+            | Action::Camera { target, .. }
             | Action::Scale { target, .. }
             | Action::ScaleBy { target, .. }
             | Action::Rotate { target, .. }
@@ -271,7 +336,9 @@ impl Action {
         match self {
             Action::MoveTo { easing, .. }
             | Action::MoveBy { easing, .. }
-            | Action::MoveAlongPath { easing, .. }
+            |             Action::MoveAlongPath { easing, .. }
+            | Action::Track { easing, .. }
+            | Action::Camera { easing, .. }
             | Action::Scale { easing, .. }
             | Action::ScaleBy { easing, .. }
             | Action::Rotate { easing, .. }
@@ -397,6 +464,11 @@ pub struct Scene {
     /// "legacy single-scene document" — behavior is identical to v0.1.
     #[serde(default)]
     pub root_scene: Option<usize>,
+    /// Group parent map: child label → parent label. Used by the renderer to
+    /// compose group transforms (parent→child). Functional data lives here,
+    /// not in `private_metadata`.
+    #[serde(default)]
+    pub groups: HashMap<Label, Label>,
     pub private_metadata: PrivateMeta,
 }
 
@@ -954,6 +1026,7 @@ mod tests {
             scenes: Vec::new(),
             root_scene: None,
             morph_pairs: Vec::new(),
+            groups: HashMap::new(),
             private_metadata: PrivateMeta::default(),
         }
     }

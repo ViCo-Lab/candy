@@ -23,8 +23,8 @@ use typst_syntax::ast::{self, AstNode, Expr};
 use typst_syntax::parse;
 
 use crate::core::ast::{
-    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, Scene,
-    SceneInfo, Slide, SubPos, Subtitle,
+    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
+    Scene, SceneInfo, Slide, SubPos, Subtitle, TrackKey,
 };
 use crate::core::easing::Easing;
 use crate::core::error::CandyError;
@@ -60,6 +60,16 @@ const CANDY: &[&str] = &[
     // `ReplacementTransform`): morph a target mobject into NEW inline content
     // (e.g. an equation), keeping the original label reusable afterwards.
     "transform",
+    // Multi-keyframe track: drive one target through several keyframes, each
+    // controlling a subset of its properties. Mirrors a timeline track.
+    "track",
+    // Global camera pan / zoom / rotate.
+    "camera",
+    // Parent→child grouping: children inherit the parent's transform.
+    "group",
+    // Progressive text reveal (per-char / per-word) and typewriter.
+    "reveal",
+    "typewriter",
     // Subtitle module.
     "subtitle",
     // Scene module: `scene` establishes a nestable, scope-bounded, one-page
@@ -145,6 +155,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         scopes: ctx.scopes,
         scenes: ctx.scenes,
         root_scene: Some(0),
+        groups: ctx.groups.clone(),
         private_metadata: private,
     };
     scene.validate().map_err(CandyError::Parse)?; // E002
@@ -271,6 +282,8 @@ struct ParseCtx {
     /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
     /// owns mobjects declared right now; `scene_stack` tracks open scenes.
     scenes: Vec<crate::core::ast::SceneInfo>,
+    /// Parent→child grouping links (`child → parent`), recorded by `#group`.
+    groups: HashMap<Label, Label>,
     /// Next fresh scene id (root is `0`, assigned in `parse_tyx`).
     next_scene_id: usize,
     /// Open scene ids (top = innermost active scene).
@@ -471,6 +484,11 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "move-along-path" | "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
         "morph" => process_morph(&pos, &named, ctx),
         "transform" => process_transform(&pos, &named, node, raw, ctx),
+        // Multi-keyframe track + camera + grouping + text reveal.
+        "track" => process_track(&pos, &named, ctx),
+        "camera" => process_camera(&pos, &named, ctx),
+        "group" => process_group(&pos, &named, ctx),
+        "reveal" | "typewriter" => process_reveal(&pos, &named, sym.as_str(), ctx),
         // Subtitle + easing-counter modules.
         "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
         "ecounter" => process_ecounter(&pos, &named, ctx),
@@ -1184,10 +1202,298 @@ fn process_move_along_path(
         actions: vec![Action::MoveAlongPath {
             target: label,
             points,
+            mode: PathMode::Polyline,
+            orient: false,
             easing: easing.clone(),
         }],
     });
     ctx.cursor += duration;
+}
+
+/// `#track(target, ((t, (x, y, scale, opacity, rotation)), ...), duration:,
+/// easing:)` — a multi-keyframe timeline for one target. Each keyframe is a
+/// tuple `(t_ms, (x, y, scale, opacity, rotation))`; omitted properties carry
+/// their previous value forward. `t` is relative to the slide start (ms).
+fn process_track(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(1000.0)
+        .max(1.0) as u32;
+    let easing = resolve_easing(named, &label);
+
+    // Keyframes come from the 2nd positional arg (an array of tuples) or
+    // `keys:`. Each tuple is `(t, (x, y, scale, opacity, rotation))`.
+    let keys_e: Option<&Expr> = named.get("keys").or_else(|| pos.get(1));
+    let keyframes: Vec<TrackKey> = match keys_e {
+        Some(Expr::Array(arr)) => arr
+            .items()
+            .filter_map(|item| match item {
+                ast::ArrayItem::Pos(e) => track_key_from_expr(&e),
+                ast::ArrayItem::Spread(_) => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if keyframes.is_empty() {
+        return;
+    }
+    ctx.slides.push(Slide {
+        duration_ms: duration,
+        actions: vec![Action::Track {
+            target: label,
+            keyframes,
+            easing,
+        }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `#camera(x:, y:, zoom:, rotate:, duration:, easing:)` — a global pan + zoom
+/// + rotate applied to the whole scene. Implemented via a synthetic
+/// `__camera__` mobject so it flows through the normal scheduler / interpolator
+/// pipeline; the renderer reads it once per frame and never draws it.
+fn process_camera(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(1000.0)
+        .max(1.0) as u32;
+    let easing = match named.get("easing") {
+        Some(Expr::Str(s)) => Easing::from_str(s.get().as_str()).unwrap_or(Easing::Linear),
+        _ => Easing::Linear,
+    };
+    let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
+    let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
+    let zoom = named.get("zoom").and_then(expr_to_f64).unwrap_or(1.0).max(1e-3);
+    let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(0.0);
+
+    let cam = Label("__camera__".into());
+    register_synthetic_mobject(ctx, &cam, "none");
+    ctx.slides.push(Slide {
+        duration_ms: duration,
+        actions: vec![Action::Camera {
+            target: cam,
+            x,
+            y,
+            zoom,
+            rotate,
+            easing,
+        }],
+    });
+    ctx.cursor += duration;
+}
+
+/// `#group(name, ("child1", "child2", ...))` — declare `name` as a synthetic
+/// parent mobject and attach each listed child to it. Subsequent `#animate(name,
+/// ...)` moves / rotates / scales all children together (parent→child transform
+/// inheritance). Groups may be nested (a child may itself be a group).
+fn process_group(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
+    let name = pos
+        .first()
+        .or_else(|| named.get("name"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        });
+    let Some(name) = name else {
+        return;
+    };
+    let parent = Label(name);
+    register_synthetic_mobject(ctx, &parent, "none");
+
+    // Children from the 2nd positional array or `members:`.
+    let members_e: Option<&Expr> = named.get("members").or_else(|| pos.get(1));
+    let children: Vec<Label> = match members_e {
+        Some(Expr::Array(arr)) => arr
+            .items()
+            .filter_map(|it| match it {
+                ast::ArrayItem::Pos(Expr::Str(s)) => Some(Label(s.get().to_string())),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    for c in children {
+        ctx.groups.insert(c, parent.clone());
+    }
+}
+
+/// `#reveal(target, by: "char"|"word", duration:, easing:)` and
+/// `#typewriter(target, duration:, easing:)` — progressively reveal a *string*
+/// mobject (e.g. `"Hello"`) by swapping its body to longer and longer prefixes
+/// over `duration`. Non-string bodies fall back to a plain FadeIn with a warning
+/// (char/word reveal only makes sense for text).
+fn process_reveal(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+    sym: &str,
+    ctx: &mut ParseCtx,
+) {
+    let Some(label) = target_arg(pos, named) else {
+        return;
+    };
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(1000.0)
+        .max(1.0) as u32;
+    let by = match named.get("by") {
+        Some(Expr::Str(s)) => s.get().to_string(),
+        _ => {
+            if sym == "typewriter" {
+                "char".to_string()
+            } else {
+                "char".to_string()
+            }
+        }
+    };
+    let _ = resolve_easing(named, &label);
+
+    // The body must be a string literal ("...") for char/word reveal.
+    let Some(body) = ctx.items.get(&label) else {
+        return;
+    };
+    let Some(inner) = strip_string_literal(body) else {
+        eprintln!(
+            "warn: #reveal/@{} body is not a string literal; falling back to FadeIn",
+            label.0
+        );
+        ctx.slides.push(Slide {
+            duration_ms: duration,
+            actions: vec![Action::FadeIn {
+                target: label,
+                easing: Easing::Linear,
+            }],
+        });
+        ctx.cursor += duration;
+        return;
+    };
+
+    let chunks: Vec<String> = if by == "word" {
+        inner.split_whitespace().map(|s| s.to_string()).collect()
+    } else {
+        inner.chars().map(|c| c.to_string()).collect()
+    };
+    let n = chunks.len().max(1);
+    let step = (duration as f64 / n as f64).ceil().max(1.0) as u32;
+    let start = ctx.cursor;
+
+    let tl = ctx.content_timeline.entry(label.clone()).or_default();
+    // Hide until the reveal starts (use `none` so the body compiles to nothing).
+    tl.push((start, "none".to_string()));
+    for k in 1..=n {
+        let prefix: String = if by == "word" {
+            chunks[..k].join(" ")
+        } else {
+            chunks[..k].concat()
+        };
+        let at = (start + k as u32 * step).min(start + duration);
+        tl.push((at, format!("\"{prefix}\"")));
+    }
+    tl.push((start + duration, format!("\"{inner}\"")));
+
+    ctx.slides.push(Slide {
+        duration_ms: duration,
+        actions: vec![],
+    });
+    ctx.cursor += duration;
+}
+
+/// Register a synthetic mobject (e.g. the camera or a group parent) with an
+/// empty body, without overwriting an existing one.
+fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
+    if !ctx.items.contains_key(label) {
+        ctx.items.insert(label.clone(), body.to_string());
+        ctx.label_scene.insert(label.clone(), ctx.current_scene);
+        ctx.initial.insert(
+            label.clone(),
+            FrameData {
+                time_ms: 0,
+                target: label.clone(),
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 1.0,
+                rotation: 0.0,
+                easing: Easing::Linear,
+            },
+        );
+    }
+}
+
+/// Parse a `#track` keyframe tuple `(t, (x, y, scale, opacity, rotation))` into
+/// a [`TrackKey`]. `x`/`y` are unit-aware centimeters; `scale`/`opacity`/
+/// `rotation` are unitless numbers.
+fn track_key_from_expr(e: &Expr) -> Option<TrackKey> {
+    let tag = match e {
+        Expr::Array(_) => "Array",
+        Expr::Parenthesized(_) => "Paren",
+        _ => "Other",
+    };
+    eprintln!("DBG kf variant: {}", tag);
+    // A parenthesized tuple `(a, b, ...)` surfaces as `Expr::Parenthesized`
+    // wrapping an `Expr::Array` in typst_syntax, so unwrap either form.
+    let arr = match as_array(e) {
+        Some(a) => a,
+        None => return None,
+    };
+    let items: Vec<ast::ArrayItem> = arr.items().collect();
+    if items.len() < 2 {
+        return None;
+    }
+    let t = match &items[0] {
+        ast::ArrayItem::Pos(e) => expr_to_f64(e)?,
+        _ => return None,
+    } as u32;
+    let st: Vec<ast::ArrayItem> = match &items[1] {
+        ast::ArrayItem::Pos(e) => match as_array(e) {
+            Some(a) => a.items().collect(),
+            None => return None,
+        },
+        _ => return None,
+    };
+    let x = st.get(0).and_then(|it| match it {
+        ast::ArrayItem::Pos(e) => expr_length_cm(e),
+        _ => None,
+    });
+    let y = st.get(1).and_then(|it| match it {
+        ast::ArrayItem::Pos(e) => expr_length_cm(e),
+        _ => None,
+    });
+    let scale = st.get(2).and_then(|it| match it {
+        ast::ArrayItem::Pos(e) => expr_to_f64(e),
+        _ => None,
+    });
+    let opacity = st.get(3).and_then(|it| match it {
+        ast::ArrayItem::Pos(e) => expr_to_f64(e),
+        _ => None,
+    });
+    let rotation = st.get(4).and_then(|it| match it {
+        ast::ArrayItem::Pos(e) => expr_to_f64(e),
+        _ => None,
+    });
+    Some(TrackKey {
+        t,
+        x,
+        y,
+        scale,
+        opacity,
+        rotation,
+    })
+}
+
+/// If `body` is a string literal `"..."`, return its inner text; else `None`.
+fn strip_string_literal(body: &str) -> Option<String> {
+    let b = body.trim();
+    if b.starts_with('"') && b.ends_with('"') && b.len() >= 2 {
+        Some(b[1..b.len() - 1].to_string())
+    } else {
+        None
+    }
 }
 
 /// `morph(from, to, duration: 24, easing: "smooth")` — crossfade + scale
@@ -1579,6 +1885,21 @@ fn expr_to_f64(e: &Expr) -> Option<f64> {
 fn expr_to_bool(e: &Expr) -> Option<bool> {
     match e {
         Expr::Bool(b) => Some(b.get()),
+        _ => None,
+    }
+}
+
+/// If `e` is an array literal `(a, b, ...)` — possibly wrapped in
+/// `Expr::Parenthesized` — return the inner `Array` node. Used by
+/// `track_key_from_expr`, which must accept parenthesized tuples the same way
+/// `tuple_cm` does.
+fn as_array<'a>(e: &'a Expr<'a>) -> Option<ast::Array<'a>> {
+    match e {
+        Expr::Array(a) => Some(a.clone()),
+        Expr::Parenthesized(p) => match p.expr() {
+            Expr::Array(a) => Some(a.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }

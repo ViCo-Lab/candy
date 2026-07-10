@@ -346,6 +346,76 @@
   path,
   duration: 30,
   easing: "linear",
+  mode: "polyline",
+  orient: false,
+) = none
+
+/// Drive a single target through several keyframes, each controlling a subset
+/// of its properties. Mirrors a timeline track and removes the need for many
+/// sequential `#animate`s.
+///
+/// - `target`: the `label` of the object to animate.
+/// - `keys`: an array of `(t, (x, y, scale, opacity, rotation))` tuples, where
+///   `t` is the time offset (ms) from the slide start and each inner value is
+///   *optional* — omitted properties carry their previous value forward. `x`/
+///   `y` are in cm; `scale`/`opacity`/`rotation` are unitless. A keyframe may
+///   also be written as `(t, x, y, scale, opacity, rotation)` (flat) — Candy
+///   reads the state from the second element when present, else the tail.
+/// - `duration`: how long the track lasts, in **milliseconds** (default `1000`).
+/// - `easing`: rate curve for every segment (default `"linear"`).
+#let track(
+  target,
+  keys: (),
+  duration: 1000,
+  easing: "linear",
+) = none
+
+/// A global camera pan + zoom + rotate, applied to the whole scene. Mirrors
+/// Manim's camera moves (e.g. `self.camera.frame.shift(...)`).
+///
+/// - `x`, `y`: pan offset in cm from the page center (default `0`).
+/// - `zoom`: zoom factor (default `1.0`; `> 1` zooms in).
+/// - `rotate`: camera tilt in degrees clockwise (default `0`).
+/// - `duration`, `easing`: as usual.
+#let camera(
+  x: 0,
+  y: 0,
+  zoom: 1.0,
+  rotate: 0,
+  duration: 1000,
+  easing: "linear",
+) = none
+
+/// Group several objects under a synthetic parent so they move/scale/rotate
+/// together. Animate the `name` afterwards (e.g. `#animate("g", to: (...))`)
+/// to transform every member. Groups may be nested.
+///
+/// - `name`: the label of the group (becomes a synthetic parent mobject).
+/// - `members`: an array of member `label` strings.
+#let group(
+  name,
+  members: (),
+) = none
+
+/// Progressively reveal a *string* mobject by swapping its body to longer and
+/// longer prefixes over `duration`. `by: "char"` reveals per character,
+/// `by: "word"` per word. Non-string bodies fall back to a plain fade-in.
+///
+/// - `target`: the `label` of the (string) object to reveal.
+/// - `by`: `"char"` (default) or `"word"`.
+/// - `duration`, `easing`: as usual.
+#let reveal(
+  target,
+  by: "char",
+  duration: 1000,
+  easing: "linear",
+) = none
+
+/// Typewriter reveal — a convenience alias for `#reveal(.., by: "char")`.
+#let typewriter(
+  target,
+  duration: 1000,
+  easing: "linear",
 ) = none
 
 /// Morph one mobject into another by crossfading + scaling. Both mobjects must

@@ -18,6 +18,7 @@
 //! limitation: any valid Typst document now compiles in candy's World.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -198,6 +199,23 @@ impl<'a> World for CandyWorld<'a> {
     }
 }
 
+/// Cache key for the per-object rasterized **sprite** cache (see
+/// `sprite_cache`). Identical key ⇒ the object's full-canvas RGBA can be
+/// reused without re-running Typst rasterization (`render`). Positions are
+/// quantized to 0.01cm, scale to 0.1%, rotation to 0.1° — fine enough that
+/// paused / static objects (the bulk of most timelines) hit the cache every
+/// frame, while genuinely moving objects miss it (correctly re-rasterizing).
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct SpriteKey {
+    label: String,
+    body_hash: u64,
+    scale_q: u32,
+    rot_q: u32,
+    x_q: u32,
+    y_q: u32,
+    ppi_q: u32,
+}
+
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
     scene: Scene,
@@ -232,6 +250,14 @@ pub struct Renderer {
     /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
     /// parallel frame-render loop.
     body_cache: Mutex<HashMap<String, Arc<PagedDocument>>>,
+    /// Per-object rasterized-sprite cache. Keyed by the effective render state
+    /// (label + body source + quantized scale/rotation/position + ppi). This is
+    /// the *second* performance layer on top of `body_cache`: even after the
+    /// Typst source is memoized, rasterizing it to RGBA (`render`) is expensive,
+    /// so identical states reuse the previously rasterized frame. The page
+    /// size / canvas is constant, so the cached `RenderedFrame` composites
+    /// directly. `Mutex` for the same `&self`-shared reason as `body_cache`.
+    sprite_cache: Mutex<HashMap<SpriteKey, Arc<crate::renderer::RenderedFrame>>>,
 }
 
 impl Renderer {
@@ -258,6 +284,7 @@ impl Renderer {
             label_scene: HashMap::new(),
             morph_cache: HashMap::new(),
             body_cache: Mutex::new(HashMap::new()),
+            sprite_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -305,6 +332,109 @@ impl Renderer {
     fn resolve_body(&self, label: &Label, time_ms: u32) -> String {
         self.morph_body_for(label, time_ms)
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
+    }
+
+    /// Compose a parent transform onto a child transform (group support).
+    /// Both are deltas from their respective natural positions; the result is
+    /// the child's effective transform with the parent's pan/zoom/rotate applied
+    /// to the child's local offset.
+    fn compose_transforms(parent: &FrameData, child: &FrameData) -> FrameData {
+        let r = parent.rotation.to_radians();
+        let (s, c) = (r.sin(), r.cos());
+        let lx = child.x * c - child.y * s;
+        let ly = child.x * s + child.y * c;
+        FrameData {
+            time_ms: child.time_ms,
+            target: child.target.clone(),
+            x: parent.x + lx * parent.scale,
+            y: parent.y + ly * parent.scale,
+            scale: parent.scale * child.scale,
+            opacity: (parent.opacity * child.opacity).clamp(0.0, 1.0),
+            rotation: parent.rotation + child.rotation,
+            easing: child.easing.clone(),
+        }
+    }
+
+    /// Resolve the effective per-frame transform of `label`, walking up the
+    /// group parent chain (cycle-guarded) and composing each ancestor.
+    fn effective_state(&self, label: &Label, states: &HashMap<Label, FrameData>) -> FrameData {
+        // Build the ancestor chain root → … → immediate parent → label.
+        let mut chain = vec![label.clone()];
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = label.clone();
+        while let Some(p) = self.scene.groups.get(&cur) {
+            if !seen.insert(p.clone()) {
+                break; // cycle guard
+            }
+            chain.push(p.clone());
+            cur = p.clone();
+        }
+        chain.reverse(); // root first
+        let mut combined = states
+            .get(&chain[0])
+            .cloned()
+            .unwrap_or_else(|| self.initial_for(chain[0].clone(), 0));
+        for anc in chain.iter().skip(1) {
+            let child = states
+                .get(anc)
+                .cloned()
+                .unwrap_or_else(|| self.initial_for(anc.clone(), 0));
+            combined = Self::compose_transforms(&combined, &child);
+        }
+        combined
+    }
+
+    /// Build the per-frame object states: seed from `all_frames` + `scene.items`,
+    /// then apply group (parent→child) transform composition. Returns the map of
+    /// label → effective transform (excluding the synthetic camera and any
+    /// synthetic group-parent containers, which are never drawn), plus the
+    /// camera state if present.
+    fn prepare_states(
+        &self,
+        all_frames: &[FrameData],
+        time_ms: u32,
+    ) -> (HashMap<Label, FrameData>, Option<FrameData>) {
+        let mut states: HashMap<Label, FrameData> = HashMap::new();
+        for f in all_frames {
+            if f.time_ms <= time_ms {
+                states
+                    .entry(f.target.clone())
+                    .and_modify(|e| {
+                        if f.time_ms >= e.time_ms {
+                            *e = f.clone();
+                        }
+                    })
+                    .or_insert_with(|| f.clone());
+            }
+        }
+        for label in self.scene.items.keys() {
+            states
+                .entry(label.clone())
+                .or_insert_with(|| self.initial_for(label.clone(), time_ms));
+        }
+
+        // Camera is a synthetic mobject; extract and remove it from the draw set.
+        let camera = states.get(&Label(CAMERA_LABEL.into())).cloned();
+        states.remove(&Label(CAMERA_LABEL.into()));
+
+        // Synthetic group parents (empty body) are containers, not drawn.
+        let parent_labels: std::collections::HashSet<&Label> =
+            self.scene.groups.values().collect();
+
+        let mut out: HashMap<Label, FrameData> = HashMap::new();
+        for label in states.keys() {
+            if parent_labels.contains(label)
+                && self
+                    .scene
+                    .items
+                    .get(label)
+                    .map_or(false, |b| b.trim() == "none")
+            {
+                continue;
+            }
+            out.insert(label.clone(), self.effective_state(label, &states));
+        }
+        (out, camera)
     }
 
     /// Compute (once) the natural layout of every mobject by tagging each body
@@ -457,6 +587,29 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = self.resolve_body(label, time_ms);
         let preamble = imports_preamble(&self.scene);
+
+        // Sprite cache: identical (label + body + quantized transform + ppi)
+        // states reuse the previously rasterized RGBA, skipping Typst's
+        // `render`. Paused / static objects are the common case and hit this
+        // every frame; genuinely moving objects miss it (correctly re-raster).
+        let body_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            body.hash(&mut h);
+            std::hash::Hasher::finish(&h)
+        };
+        let key = SpriteKey {
+            label: label.0.clone(),
+            body_hash,
+            scale_q: (scale_pct * 10.0).round().max(0.0) as u32,
+            rot_q: (st.rotation * 10.0).round() as u32,
+            x_q: ((abs_x_cm + 1e6) * 100.0).round().max(0.0) as u32,
+            y_q: ((abs_y_cm + 1e6) * 100.0).round().max(0.0) as u32,
+            ppi_q: (pixel_per_pt * 100.0).round() as u32,
+        };
+        if let Some(cached) = self.sprite_cache.lock().unwrap().get(&key) {
+            return Ok((**cached).clone());
+        }
+
         let placed = place_source(
             page_w,
             page_h,
@@ -478,11 +631,16 @@ impl Renderer {
             render_bleed: false,
         };
         let pix = render(page, &opts);
-        Ok(crate::renderer::RenderedFrame {
+        let frame = crate::renderer::RenderedFrame {
             width: pix.width() as usize,
             height: pix.height() as usize,
             rgba: pix.data().to_vec(),
-        })
+        };
+        self.sprite_cache
+            .lock()
+            .unwrap()
+            .insert(key, Arc::new(frame.clone()));
+        Ok(frame)
     }
 
     /// Composite all mobjects (per-object opacity) onto an opaque-white canvas.
@@ -508,24 +666,9 @@ impl Renderer {
         all_frames: &[FrameData],
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        let mut states: HashMap<Label, FrameData> = HashMap::new();
-        for f in all_frames {
-            if f.time_ms <= time_ms {
-                states
-                    .entry(f.target.clone())
-                    .and_modify(|e| {
-                        if f.time_ms >= e.time_ms {
-                            *e = f.clone();
-                        }
-                    })
-                    .or_insert_with(|| f.clone());
-            }
-        }
-        for label in self.scene.items.keys() {
-            states
-                .entry(label.clone())
-                .or_insert_with(|| self.initial_for(label.clone(), time_ms));
-        }
+        // Resolve per-object effective transforms (group composition applied)
+        // and extract the optional global camera state.
+        let (states, camera) = self.prepare_states(all_frames, time_ms);
 
         // Resolve the active scene (innermost scene at this frame time) and its
         // canvas. Entering a child scene hides its parent — we render only the
@@ -576,6 +719,11 @@ impl Renderer {
         let mut canvas = vec![255u8; w * h * 4];
         for (opacity, f) in &objs {
             composite_over(&mut canvas, f, *opacity, w, h);
+        }
+        // Apply the global camera (pan + zoom + rotate) by warping the
+        // composited canvas through the inverse camera transform.
+        if let Some(cam) = &camera {
+            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt);
         }
         Ok(crate::renderer::RenderedFrame {
             width: w,
@@ -646,24 +794,9 @@ impl Renderer {
         all_frames: &[FrameData],
     ) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
-        let mut states: HashMap<Label, FrameData> = HashMap::new();
-        for f in all_frames {
-            if f.time_ms <= time_ms {
-                states
-                    .entry(f.target.clone())
-                    .and_modify(|e| {
-                        if f.time_ms >= e.time_ms {
-                            *e = f.clone();
-                        }
-                    })
-                    .or_insert_with(|| f.clone());
-            }
-        }
-        for label in self.scene.items.keys() {
-            states
-                .entry(label.clone())
-                .or_insert_with(|| self.initial_for(label.clone(), time_ms));
-        }
+        // Resolve per-object effective transforms (group composition applied)
+        // and extract the optional global camera state.
+        let (states, camera) = self.prepare_states(all_frames, time_ms);
 
         // Deterministic z-order (same as the video path).
         let mut labels: Vec<&Label> = states.keys().collect();
@@ -694,6 +827,15 @@ impl Renderer {
             pw = pw, ph = ph
         ));
 
+        // A present camera wraps the whole scene (objects + subtitles) in a
+        // single global transform group. The white background stays fixed.
+        if let Some(cam) = &camera {
+            out.push_str(&format!(
+                "<g transform=\"{}\">\n",
+                camera_transform_svg(cam, pw, ph)
+            ));
+        }
+
         for label in labels {
             // Parent auto-hide: skip mobjects not owned by the active scene.
             if !self.scene.scenes.is_empty()
@@ -717,6 +859,10 @@ impl Renderer {
                 out.push_str(&svg);
                 out.push('\n');
             }
+        }
+
+        if camera.is_some() {
+            out.push_str("</g>\n");
         }
 
         out.push_str("</svg>\n");
@@ -1164,6 +1310,119 @@ fn composite_over(
     }
 }
 
+/// Synthetic label used by `#camera` (a global pan/zoom/rotate transform).
+/// Never rendered as an object — the renderer reads its per-frame state and
+/// applies it as a wrapping transform over the whole scene.
+pub(crate) const CAMERA_LABEL: &str = "__camera__";
+
+/// SVG `<g transform>` attribute for the camera (pan + zoom + rotate about the
+/// page center), in Typst points.
+fn camera_transform_svg(cam: &FrameData, page_w: f64, page_h: f64) -> String {
+    let (cx, cy) = (page_w / 2.0, page_h / 2.0);
+    let ncx = -cx;
+    let ncy = -cy;
+    let dx = cam.x * PT_PER_CM;
+    let dy = cam.y * PT_PER_CM;
+    let s = cam.scale;
+    let r = cam.rotation;
+    format!(
+        "translate({cx} {cy}) rotate({r}) scale({s}) translate({ncx} {ncy}) translate({dx} {dy})"
+    )
+}
+
+/// Forward camera matrix (scene → screen) in *pixel* space, for the pixel-path
+/// warp. `ppi` is `pixel_per_pt`.
+fn camera_matrix_px(
+    cam: &FrameData,
+    page_w_pt: f64,
+    page_h_pt: f64,
+    ppi: f32,
+) -> Matrix {
+    let (cx, cy) = (page_w_pt * ppi as f64 / 2.0, page_h_pt * ppi as f64 / 2.0);
+    let dx = cam.x * PT_PER_CM * ppi as f64;
+    let dy = cam.y * PT_PER_CM * ppi as f64;
+    let s = cam.scale;
+    let r = cam.rotation;
+    compose(
+        compose(
+            compose(
+                compose(Matrix::translation(cx, cy), Matrix::rotation(r)),
+                Matrix::scaling(s),
+            ),
+            Matrix::translation(-cx, -cy),
+        ),
+        Matrix::translation(dx, dy),
+    )
+}
+
+/// Bilinear-sample a RGBA canvas at `(x, y)` (in pixels). Out-of-bounds samples
+/// return opaque white (the page background).
+fn sample_bilinear(src: &[u8], w: usize, h: usize, x: f64, y: f64) -> (u8, u8, u8, u8) {
+    if x < 0.0 || y < 0.0 || x > w as f64 - 1.0 || y > h as f64 - 1.0 {
+        return (255, 255, 255, 255);
+    }
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let fx = x - x0 as f64;
+    let fy = y - y0 as f64;
+    let idx = |x: usize, y: usize| -> [u8; 4] {
+        let i = (y * w + x) * 4;
+        [src[i], src[i + 1], src[i + 2], src[i + 3]]
+    };
+    let p00 = idx(x0, y0);
+    let p10 = idx(x1, y0);
+    let p01 = idx(x0, y1);
+    let p11 = idx(x1, y1);
+    let lerp = |a: u8, b: u8, t: f64| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+    let top = [
+        lerp(p00[0], p10[0], fx),
+        lerp(p00[1], p10[1], fx),
+        lerp(p00[2], p10[2], fx),
+        lerp(p00[3], p10[3], fx),
+    ];
+    let bot = [
+        lerp(p01[0], p11[0], fx),
+        lerp(p01[1], p11[1], fx),
+        lerp(p01[2], p11[2], fx),
+        lerp(p01[3], p11[3], fx),
+    ];
+    (
+        lerp(top[0], bot[0], fy),
+        lerp(top[1], bot[1], fy),
+        lerp(top[2], bot[2], fy),
+        lerp(top[3], bot[3], fy),
+    )
+}
+
+/// Warp a fully-composited (opaque white) canvas through the inverse camera
+/// transform, sampling the source with bilinear filtering.
+fn warp_canvas_with_camera(
+    canvas: &mut [u8],
+    w: usize,
+    h: usize,
+    cam: &FrameData,
+    page_w_pt: f64,
+    page_h_pt: f64,
+    ppi: f32,
+) {
+    let m = camera_matrix_px(cam, page_w_pt, page_h_pt, ppi);
+    let inv = m.inverse();
+    let src = canvas.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = inv.apply(x as f64, y as f64);
+            let (r, g, b, a) = sample_bilinear(&src, w, h, sx, sy);
+            let di = (y * w + x) * 4;
+            canvas[di] = r;
+            canvas[di + 1] = g;
+            canvas[di + 2] = b;
+            canvas[di + 3] = a;
+        }
+    }
+}
+
 /// Parse `data-typst-label` positions out of a Typst SVG, accumulating group
 /// transforms to recover each labeled element's absolute (x, y) in points.
 fn parse_svg_positions(svg: &str) -> Result<HashMap<Label, (f64, f64)>, CandyError> {
@@ -1237,6 +1496,67 @@ impl Matrix {
             d: 1.0,
             e: 0.0,
             f: 0.0,
+        }
+    }
+
+    /// Translation matrix (cm/pt units, same space as the rest of the pipeline).
+    fn translation(x: f64, y: f64) -> Self {
+        Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: x,
+            f: y,
+        }
+    }
+
+    /// Uniform scale matrix.
+    fn scaling(s: f64) -> Self {
+        Matrix {
+            a: s,
+            b: 0.0,
+            c: 0.0,
+            d: s,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    /// Rotation matrix, `deg` degrees clockwise (Typst convention; +y down).
+    fn rotation(deg: f64) -> Self {
+        let r = deg.to_radians();
+        let (s, c) = (r.sin(), r.cos());
+        Matrix {
+            a: c,
+            b: s,
+            c: -s,
+            d: c,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    /// Apply the affine to a point `(x, y)`, returning the mapped point.
+    fn apply(&self, x: f64, y: f64) -> (f64, f64) {
+        (
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        )
+    }
+
+    /// Inverse affine. Panics only on a degenerate (zero-determinant) matrix,
+    /// which the camera never produces (zoom is clamped to `> 0`).
+    fn inverse(&self) -> Matrix {
+        let det = self.a * self.d - self.b * self.c;
+        let inv = 1.0 / det;
+        Matrix {
+            a: self.d * inv,
+            b: -self.b * inv,
+            c: -self.c * inv,
+            d: self.a * inv,
+            e: (self.c * self.f - self.d * self.e) * inv,
+            f: (self.b * self.e - self.a * self.f) * inv,
         }
     }
 }
@@ -1388,6 +1708,7 @@ fn content_timeline_swaps_rendered_body() {
         scenes: Vec::new(),
         root_scene: None,
         morph_pairs: Vec::new(),
+        groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
 
@@ -1445,6 +1766,7 @@ fn subtitle_stays_in_viewport() {
         scenes: Vec::new(),
         root_scene: None,
         morph_pairs: Vec::new(),
+        groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
 
@@ -1510,6 +1832,7 @@ fn morph_renders_interpolated_polygon() {
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
+        groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
 

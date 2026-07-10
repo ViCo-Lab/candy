@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::ast::{Action, FrameData, Label, Scene};
+use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
 use crate::core::easing::Easing;
 use crate::core::error::CandyError;
 
@@ -251,12 +251,22 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     continue;
                 }
 
-                // ---- MoveAlongPath: keyframe at each point ----
-                Action::MoveAlongPath { points, .. } => {
+                // ---- MoveAlongPath: keyframe at each path point ----
+                Action::MoveAlongPath { points, mode, orient, .. } => {
                     if points.is_empty() {
                         continue;
                     }
-                    let n = points.len() as u32;
+                    // Resolve the path to a list of (x, y) keyframe points.
+                    // `Bezier` mode samples a smooth Catmull-Rom spline through
+                    // the waypoints (arc/bezier paths are approximated this way).
+                    let pts: Vec<(f64, f64)> = match mode {
+                        PathMode::Bezier => sample_path_smooth(points, 8),
+                        PathMode::Polyline => points.clone(),
+                    };
+                    let n = pts.len() as u32;
+                    if n == 0 {
+                        continue;
+                    }
                     let seg = slide.duration_ms / n.max(1);
                     // Start keyframe = current state.
                     per_item.entry(t.clone()).or_default().push(FrameData {
@@ -265,20 +275,89 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
                         easing: easing.clone(),
                     });
-                    // One keyframe per path point, evenly distributed.
-                    for (i, &(px, py)) in points.iter().enumerate() {
-                        let kf_frame = start + (i as u32 + 1) * seg;
-                        let kf_frame = kf_frame.min(end);
+                    // One keyframe per resolved path point, evenly distributed.
+                    for (i, &(px, py)) in pts.iter().enumerate() {
+                        let kf_frame = (start + (i as u32 + 1) * seg).min(end);
+                        // Optional orientation: rotate to face the direction of
+                        // travel, relative to the object's start rotation.
+                        let mut rot = s.rotation;
+                        if *orient && i + 1 < pts.len() {
+                            let (nx, ny) = pts[i + 1];
+                            rot = s.rotation + (ny - py).atan2(nx - px).to_degrees();
+                        }
                         per_item.entry(t.clone()).or_default().push(FrameData {
                             time_ms: kf_frame,
                             target: t.clone(),
-                            x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                            x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: rot,
                             easing: easing.clone(),
                         });
                     }
                     // Update state to the last point.
-                    let last = *points.last().unwrap();
+                    let last = *pts.last().unwrap();
                     state.insert(t.clone(), State { x: last.0, y: last.1, ..s });
+                    continue;
+                }
+
+                // ---- Track: multiple keyframes, each a subset of properties ----
+                Action::Track { keyframes, .. } => {
+                    if keyframes.is_empty() {
+                        continue;
+                    }
+                    // Sort by time; dedupe equal times (last wins).
+                    let mut ks: Vec<&crate::core::ast::TrackKey> = keyframes.iter().collect();
+                    ks.sort_by_key(|k| k.t);
+                    // Start keyframe = current state.
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        time_ms: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing: easing.clone(),
+                    });
+                    let mut cur = s;
+                    for k in ks {
+                        let tt = (start + k.t).min(end).max(start);
+                        let ns = State {
+                            x: k.x.unwrap_or(cur.x),
+                            y: k.y.unwrap_or(cur.y),
+                            scale: k.scale.unwrap_or(cur.scale),
+                            opacity: k.opacity.unwrap_or(cur.opacity),
+                            rotation: k.rotation.unwrap_or(cur.rotation),
+                        };
+                        per_item.entry(t.clone()).or_default().push(FrameData {
+                            time_ms: tt,
+                            target: t.clone(),
+                            x: ns.x, y: ns.y, scale: ns.scale, opacity: ns.opacity, rotation: ns.rotation,
+                            easing: easing.clone(),
+                        });
+                        cur = ns;
+                    }
+                    state.insert(t.clone(), cur);
+                    continue;
+                }
+
+                // ---- Camera: a global pan + zoom + rotate (synthetic target) ----
+                Action::Camera { x, y, zoom, rotate, .. } => {
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        time_ms: start,
+                        target: t.clone(),
+                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        easing: easing.clone(),
+                    });
+                    let ns = State {
+                        x: *x,
+                        y: *y,
+                        scale: *zoom,
+                        rotation: *rotate,
+                        opacity: 1.0,
+                        ..s
+                    };
+                    per_item.entry(t.clone()).or_default().push(FrameData {
+                        time_ms: end,
+                        target: t.clone(),
+                        x: ns.x, y: ns.y, scale: ns.scale, opacity: ns.opacity, rotation: ns.rotation,
+                        easing: easing.clone(),
+                    });
+                    state.insert(t.clone(), ns);
                     continue;
                 }
 
@@ -479,7 +558,9 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
         | Action::Show { .. }
         | Action::Hide { .. }
         | Action::SetColor { .. }
-        | Action::Transform { .. } => s,
+        | Action::Transform { .. }
+        | Action::Track { .. }
+        | Action::Camera { .. } => s,
     };
     state.insert(t.clone(), ns);
 }
@@ -500,6 +581,40 @@ fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
         last = Some((f.target.clone(), f.time_ms));
     }
     Ok(())
+}
+
+/// One-dimensional Catmull-Rom interpolation (see `interpolator.rs`).
+fn catmull1(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    0.5 * (2.0 * p1 + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+}
+
+/// Sample a smooth (Catmull-Rom) spline through `points`, emitting
+/// `samples_per_seg` sub-points per original segment. Arc/bezier paths are
+/// approximated by this spline. The original endpoints are always included.
+fn sample_path_smooth(points: &[(f64, f64)], samples_per_seg: u32) -> Vec<(f64, f64)> {
+    if points.len() < 2 || samples_per_seg == 0 {
+        return points.to_vec();
+    }
+    let n = points.len();
+    let mut out = Vec::new();
+    for i in 0..n - 1 {
+        let p0 = points[i.saturating_sub(1)];
+        let p1 = points[i];
+        let p2 = points[i + 1];
+        let p3 = points[(i + 2).min(n - 1)];
+        for j in 0..samples_per_seg {
+            let t = j as f64 / samples_per_seg as f64;
+            out.push((
+                catmull1(p0.0, p1.0, p2.0, p3.0, t),
+                catmull1(p0.1, p1.1, p2.1, p3.1, t),
+            ));
+        }
+    }
+    out.push(*points.last().unwrap());
+    out
 }
 
 #[cfg(test)]
@@ -545,6 +660,7 @@ mod tests {
             scenes: Vec::new(),
             root_scene: None,
             morph_pairs: Vec::new(),
+            groups: std::collections::HashMap::new(),
             private_metadata: PrivateMeta::default(),
         }
     }

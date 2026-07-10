@@ -1,0 +1,43 @@
+#import "@preview/candy:0.1.0": *
+
+// Pillars 1-3 verification: track (multi-keyframe), camera (pan/zoom),
+// group (parent-child transform), reveal/typewriter (text animation).
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // --- Pillar 3: text reveal (string mobjects) ---
+  #mobject("title", "Candy")
+  #mobject("sub", "Pillars One Two Three")
+
+  // --- Pillar 2: grouped objects ---
+  #mobject("box-a", rect(width: 2cm, height: 2cm, fill: blue))
+  #mobject("box-b", rect(width: 1.5cm, height: 1.5cm, fill: red))
+
+  // --- Pillar 1: a freely driven object ---
+  #mobject("dot", circle(radius: 0.6cm, fill: green))
+
+  // Typewriter reveal of the title.
+  #typewriter("title", duration: 600, easing: "smooth")
+
+  // Word-by-word reveal of the subtitle.
+  #reveal("sub", by: "word", duration: 600, easing: "linear")
+
+  // Group the two boxes; transform the group as one unit.
+  #group("g", ("box-a", "box-b"))
+  #animate("g", to: (4cm, 1cm), scale: 1.4, rotate: 30, duration: 800, easing: "smoothstep")
+
+  // Multi-keyframe track for the dot: drift right, scale, rotate, fade, return.
+  #track(
+    "dot",
+    (
+      (0, (0cm, 0cm, 1.0, 1.0, 0)),
+      (400, (5cm, 2cm, 1.6, 1.0, 90)),
+      (800, (5cm, -2cm, 1.0, 0.5, 180)),
+      (1200, (-2cm, 0cm, 1.0, 1.0, 360)),
+    ),
+    duration: 1200,
+    easing: "smooth",
+  )
+
+  // Camera pan + zoom across the whole scene.
+  #camera(x: 2cm, y: 1cm, zoom: 1.5, rotate: 5, duration: 600, easing: "smooth")
+  #camera(x: 0cm, y: 0cm, zoom: 1.0, rotate: 0, duration: 600, easing: "smooth")
+]
