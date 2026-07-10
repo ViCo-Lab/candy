@@ -373,7 +373,9 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     // emitted at `start`) for the same target.
                     let start_t = start + 1;
                     let end_t = end;
-                    let small = (s.scale * 0.05).max(1e-3);
+                    // Smooth crossfade: shrink to 85% and fade out/in — avoids
+                    // the overly dramatic "pinhole" effect of scaling to 2%.
+                    let small = (s.scale * 0.85).max(0.15);
                     // Old content: full → tiny + transparent, at `target`'s
                     // current position/rotation.
                     per_item.entry(old.clone()).or_default().push(FrameData {

@@ -10,11 +10,11 @@
   #mobject("title", text(28pt, weight: "bold", fill: blue)[Three Steps])
 
   // Step 1 visible for 60 frames, then Step 2, then Step 3.
-  #play([#text(20pt)[Step 1 of 3: parse the .tyx]], duration: 60)
-  #play([#text(20pt)[Step 2 of 3: schedule & interpolate]], duration: 60)
-  #play([#text(20pt)[Step 3 of 3: render & encode]], duration: 60)
+  #play([#text(20pt)[Step 1 of 3: parse the .tyx]], duration: 1000)
+  #play([#text(20pt)[Step 2 of 3: schedule & interpolate]], duration: 1000)
+  #play([#text(20pt)[Step 3 of 3: render & encode]], duration: 1000)
 
   // A shape that slides in across the same timeline for context.
   #mobject("dot", circle(radius: 0.6cm, fill: red))
-  #animate("dot", to: (10cm, 0cm), duration: 180, easing: "smooth")
+  #animate("dot", to: (10cm, 0cm), duration: 3000, easing: "smooth")
 ]

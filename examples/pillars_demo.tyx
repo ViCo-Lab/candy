@@ -21,13 +21,13 @@
   #reveal("sub", by: "word", duration: 600, easing: "linear")
 
   // Group the two boxes; transform the group as one unit.
-  #group("g", ("box-a", "box-b"))
+  #group("g", members: ("box-a", "box-b"))
   #animate("g", to: (4cm, 1cm), scale: 1.4, rotate: 30, duration: 800, easing: "smoothstep")
 
   // Multi-keyframe track for the dot: drift right, scale, rotate, fade, return.
   #track(
     "dot",
-    (
+    keys: (
       (0, (0cm, 0cm, 1.0, 1.0, 0)),
       (400, (5cm, 2cm, 1.6, 1.0, 90)),
       (800, (5cm, -2cm, 1.0, 0.5, 180)),

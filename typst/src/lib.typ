@@ -31,7 +31,7 @@
 #let mobject(label, body) = body
 
 /// Animate an object to a new placement / scale / rotation / opacity over
-/// `duration` frames.
+/// `duration` milliseconds.
 ///
 /// Absolute transforms:
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
@@ -46,7 +46,7 @@
 /// - `rotate-by`: relative rotation in degrees (e.g. `15` adds 15° to the
 ///   current rotation).
 ///
-/// - `duration`: number of frames the animation spans (default `30`).
+/// - `duration`: number of milliseconds the animation spans (default `500`).
 /// - `easing`: a string naming the rate curve (default `"linear"`). One of:
 ///   `"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
 ///   `"quad-in"` / `"quad-out"` / `"quad-in-out"`,
@@ -68,13 +68,13 @@
   rotate: none,
   rotate-by: none,
   opacity: none,
-  duration: 30,
+  duration: 500,
   easing: "linear",
 ) = none
 
-/// Hold the current frame for `duration` frames (a manual pause marker).
+/// Hold the current frame for `duration` milliseconds (default `500`, a manual pause marker).
 /// Inert under standard Typst.
-#let pause(duration: 15) = none
+#let pause(duration: 500) = none
 
 /// Insert a voice / audio track. Inert under standard Typst (does nothing).
 ///
@@ -91,11 +91,11 @@
   slice: none,
 ) = none
 
-/// Show `body` for `duration` frames as its own animation unit (a block-level
+/// Show `body` for `duration` milliseconds (default `500`) as its own animation unit (a block-level
 /// object, precisely controllable like a mobject).
 ///
 /// Under standard Typst the body is shown in the first frame.
-#let play(body, duration: 30) = body
+#let play(body, duration: 500) = body
 
 // ============================================================================
 // Manim-inspired directives
@@ -121,25 +121,25 @@
 ///
 /// - `target`: the `label` of the object to restore.
 /// - `slot`: the save slot to restore from (default `"default"`).
-/// - `duration`: number of frames (default `30`).
-/// - `easing`: rate curve (default `"linear"`; see `animate` for the list).
+/// - `duration`: number of milliseconds (default `500`).
+/// - `easing`: rate curve (default `"smooth"`; see `animate` for the list).
 ///
 /// Mirrors Manim's `Restore(mobject)`. Inert under standard Typst.
 #let restore(
   target,
   slot: "default",
-  duration: 30,
-  easing: "linear",
+  duration: 500,
+  easing: "smooth",
 ) = none
 
 /// Briefly scale a mobject by `factor` and shift it by `(dx, dy)` cm, then
-/// return it to its original state — all within `duration` frames. A transient
+/// return it to its original state — all within `duration` milliseconds. A transient
 /// "look here" effect.
 ///
 /// - `target`: the `label` of the object to indicate.
 /// - `factor`: scale multiplier at the peak (default `1.1`).
 /// - `dx`, `dy`: offset in cm at the peak (default `0`).
-/// - `duration`: number of frames (default `24`).
+/// - `duration`: number of milliseconds (default `300`).
 /// - `easing`: rate curve for the "out" half (default `"smooth"`).
 ///
 /// Mirrors Manim's `Indicate`. Inert under standard Typst.
@@ -148,7 +148,7 @@
   factor: 1.1,
   dx: 0.0,
   dy: 0.0,
-  duration: 24,
+  duration: 300,
   easing: "smooth",
 ) = none
 
@@ -157,30 +157,30 @@
 ///
 /// - `target`: the `label` of the object to flash.
 /// - `factor`: peak scale multiplier (default `2.0`).
-/// - `duration`: number of frames (default `18`).
+/// - `duration`: number of milliseconds (default `200`).
 /// - `easing`: rate curve (default `"smooth"`).
 ///
 /// Mirrors Manim's `Flash`. Inert under standard Typst.
 #let flash(
   target,
   factor: 2.0,
-  duration: 18,
+  duration: 200,
   easing: "smooth",
 ) = none
 
 /// Oscillate a mobject's rotation by `±degrees` a few times within `duration`
-/// frames, then return to the original rotation.
+/// milliseconds, then return to the original rotation.
 ///
 /// - `target`: the `label` of the object to wiggle.
 /// - `degrees`: peak rotation amplitude (default `15`).
-/// - `duration`: number of frames (default `20`).
+/// - `duration`: number of milliseconds (default `500`).
 /// - `easing`: rate curve (default `"wiggle"`).
 ///
 /// Mirrors Manim's `Wiggle`. Inert under standard Typst.
 #let wiggle(
   target,
   degrees: 15.0,
-  duration: 20,
+  duration: 500,
   easing: "wiggle",
 ) = none
 
@@ -204,7 +204,7 @@
 ///
 /// - `target`: the `label` of the object to recolor.
 /// - `color`: a color name or hex string (e.g. `"red"`, `"#ff0000"`).
-/// - `duration`: number of frames (default `1`, i.e. instantaneous).
+/// - `duration`: number of milliseconds (default `1`, i.e. instantaneous).
 /// - `easing`: rate curve (default `"linear"`).
 ///
 /// Mirrors Manim's `set_color`. Inert under standard Typst.
@@ -253,22 +253,22 @@
 /// - `kind`: transition style — `"cut"` (instant, default), `"fade"` (crossfade),
 ///   `"slide"` (push). Only `"cut"` is fully implemented; others are recorded
 ///   for future versions.
-/// - `duration`: number of frames for the transition (default `6`).
+/// - `duration`: number of milliseconds for the transition (default `100`).
 ///
 /// Inert under standard Typst.
-#let transition(kind: "cut", duration: 6) = none
+#let transition(kind: "cut", duration: 100) = none
 
 /// Zoom-to-region: nest a sub-animation that focuses on a rectangle of the
 /// canvas. The `rect` (in cm, relative to the page origin) is enlarged to fill
-/// the frame over `duration` frames, producing a "camera zoom" effect.
+/// the frame over `duration` milliseconds, producing a "camera zoom" effect.
 ///
 /// - `rect`: `(x, y, w, h)` in cm — the region to zoom into.
-/// - `duration`: number of frames (default `30`).
+/// - `duration`: number of milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`).
 ///
 /// Implemented as a scale + translate on all mobjects; inert under standard
 /// Typst.
-#let zoom-to(rect, duration: 30, easing: "smooth") = none
+#let zoom-to(rect, duration: 500, easing: "smooth") = none
 
 // ============================================================================
 // Manim-inspired composite animations
@@ -281,9 +281,9 @@
 ///
 /// - `target`: the `label` of the object to blink.
 /// - `blinks`: number of on-off cycles (default `3`).
-/// - `duration`: total frames (default `30`, split evenly across blinks).
+/// - `duration`: total milliseconds (default `500`, split evenly across blinks).
 /// - `easing`: rate curve (default `"linear"`).
-#let blink(target, blinks: 3, duration: 30, easing: "linear") = none
+#let blink(target, blinks: 3, duration: 500, easing: "linear") = none
 
 /// Spiral-in: fly in from a scaled-up, rotated, invisible state to the natural
 /// position. Mirrors Manim's `SpiralIn`.
@@ -291,13 +291,13 @@
 /// - `target`: the `label` of the object to spiral in.
 /// - `scale`: initial scale factor (default `3.0` — starts 3× size).
 /// - `rotate`: initial rotation in degrees (default `360` — one full turn).
-/// - `duration`: frames for the spiral-in (default `24`).
+/// - `duration`: milliseconds for the spiral-in (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
 #let spiral-in(
   target,
   scale: 3.0,
   rotate: 360.0,
-  duration: 24,
+  duration: 300,
   easing: "smooth",
 ) = none
 
@@ -306,12 +306,12 @@
 ///
 /// - `target`: the `label` of the object to focus on.
 /// - `factor`: scale-down factor (default `0.5` — shrinks to half size).
-/// - `duration`: frames (default `20`).
+/// - `duration`: milliseconds (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
 #let focus-on(
   target,
   factor: 0.5,
-  duration: 20,
+  duration: 300,
   easing: "smooth",
 ) = none
 
@@ -321,12 +321,12 @@
 ///
 /// - `from`: the `label` of the source object (fades out).
 /// - `to`: the `label` of the target object (fades in).
-/// - `duration`: frames (default `20`).
+/// - `duration`: milliseconds (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
 #let fade-transform(
   from,
   to,
-  duration: 20,
+  duration: 300,
   easing: "smooth",
 ) = none
 
@@ -339,12 +339,12 @@
 ///
 /// - `target`: the `label` of the object to move.
 /// - `path`: an array of `(x, y)` points in cm, e.g. `((0cm, 0cm), (4cm, 2cm), (8cm, 0cm))`.
-/// - `duration`: how long the motion lasts, in **milliseconds** (default `30`).
+/// - `duration`: how long the motion lasts, in milliseconds (default `500`).
 /// - `easing`: rate curve (default `"linear"`).
 #let move-along-path(
   target,
   path,
-  duration: 30,
+  duration: 500,
   easing: "linear",
   mode: "polyline",
   orient: false,
@@ -376,7 +376,8 @@
 /// - `x`, `y`: pan offset in cm from the page center (default `0`).
 /// - `zoom`: zoom factor (default `1.0`; `> 1` zooms in).
 /// - `rotate`: camera tilt in degrees clockwise (default `0`).
-/// - `duration`, `easing`: as usual.
+/// - `duration`: milliseconds (default `1000`).
+///  `easing`: rate curve (default `"linear"`).
 #let camera(
   x: 0,
   y: 0,
@@ -429,12 +430,12 @@
 ///
 /// - `from`: the `label` of the source object.
 /// - `to`: the `label` of the target object.
-/// - `duration`: frames (default `24`).
+/// - `duration`: milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`).
 #let morph(
   from,
   to,
-  duration: 24,
+  duration: 500,
   easing: "smooth",
 ) = none
 
@@ -450,14 +451,14 @@
 ///   `mobject`).
 /// - `to`: the new content (a bare block / element / equation), e.g.
 ///   `circle(radius: 2cm)` or `[$a + b + d = c$]`.
-/// - `duration`: frames (default `24`).
+/// - `duration`: milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`).
 ///
 /// Inert under standard Typst (returns `none`).
 #let transform(
   target,
   to: none,
-  duration: 24,
+  duration: 500,
   easing: "smooth",
 ) = none
 
@@ -507,27 +508,7 @@
 // A `subtitle` overlays arbitrary Typst block content on top of the animation.
 // ============================================================================
 
-/// Show a caption over the animation.
-///
-/// - `body`: any valid Typst block content (e.g. `[Hello]`, `[$E = mc^2$]`,
-///   `align(center)[ ... ]`).
-/// - `duration`: how long the caption stays, in **milliseconds**. `none`
-///   (default) means "persist" — the caption stays until it is replaced by
-///   another `subtitle` in the *same* Typst scope, or until that scope exits
-///   (auto-destroy). A positive number gives an explicit lifetime.
-/// - `position`: anchor on the page. One of `"bottom"` (default), `"top"`,
-///   `"center"`, `"bottom-left"`, `"bottom-right"`, `"top-left"`,
-///   `"top-right"`, or a tuple `(x, y)` in cm for an absolute position.
-/// - `easing`: rate curve used for the caption's own fade (default
-///   `"linear"`). Custom modes `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are
-///   accepted.
-///
-/// Only one subtitle may be visible per Typst scope at a time; a later one
-/// replaces an earlier one. A subtitle in a parent scope is temporarily hidden
-/// while a child scope shows its own (shadowing). Under standard Typst the
-/// caption is auto-positioned (via `place`) at the requested anchor so the
-/// first frame renders correctly; candy's pipeline reads the same call from
-/// the AST and overlays it on every frame with the same anchoring.
+
 #let _subtitle_anchor(position) = {
   let m = 1cm
   if type(position) == array {
@@ -551,7 +532,27 @@
     (bottom + center, 0cm, -m)
   }
 }
-
+/// Show a caption over the animation.
+///
+/// - `body`: any valid Typst block content (e.g. `[Hello]`, `[$E = mc^2$]`,
+///   `align(center)[ ... ]`).
+/// - `duration`: how long the caption stays, in **milliseconds**. `none`
+///   (default) means "persist" — the caption stays until it is replaced by
+///   another `subtitle` in the *same* Typst scope, or until that scope exits
+///   (auto-destroy). A positive number gives an explicit lifetime.
+/// - `position`: anchor on the page. One of `"bottom"` (default), `"top"`,
+///   `"center"`, `"bottom-left"`, `"bottom-right"`, `"top-left"`,
+///   `"top-right"`, or a tuple `(x, y)` in cm for an absolute position.
+/// - `easing`: rate curve used for the caption's own fade (default
+///   `"linear"`). Custom modes `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are
+///   accepted.
+///
+/// Only one subtitle may be visible per Typst scope at a time; a later one
+/// replaces an earlier one. A subtitle in a parent scope is temporarily hidden
+/// while a child scope shows its own (shadowing). Under standard Typst the
+/// caption is auto-positioned (via `place`) at the requested anchor so the
+/// first frame renders correctly; candy's pipeline reads the same call from
+/// the AST and overlays it on every frame with the same anchoring.
 #let subtitle(
   body,
   duration: none,

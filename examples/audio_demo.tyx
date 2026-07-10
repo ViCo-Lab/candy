@@ -12,9 +12,9 @@
   #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
 
   #mobject("title", text(26pt, weight: "bold", fill: blue)[Narration sync])
-  #animate("title", opacity: 0.4, duration: 120, easing: "smooth")
+  #animate("title", opacity: 0.4, duration: 1000, easing: "smooth")
 
   #mobject("wave", rect(width: 2cm, height: 2cm, fill: green))
-  #animate("wave", to: (8cm, 2cm), duration: 120, easing: "cubic-in-out")
-  #animate("wave", scale: 1.4, duration: 120, easing: "smooth")
+  #animate("wave", to: (8cm, 2cm), duration: 1000, easing: "cubic-in-out")
+  #animate("wave", scale: 1.4, duration: 1000, easing: "smooth")
 ]

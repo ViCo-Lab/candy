@@ -604,7 +604,7 @@ fn process_animate(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(30.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
 
     let easing = match named.get("easing") {
@@ -750,7 +750,7 @@ fn process_play(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(30.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
 
     let label = Label(format!("__block_{}", ctx.block_counter));
@@ -837,7 +837,7 @@ fn process_save_state(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Par
     ctx.cursor += 1;
 }
 
-/// `restore(target, slot: "name", duration: 30, easing: "linear")` —
+/// `restore(target, slot: "name", duration: 500, easing: "smooth")` —
 /// interpolate back to a previously saved state.
 fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
@@ -853,7 +853,7 @@ fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseC
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(30.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
@@ -867,7 +867,7 @@ fn process_restore(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseC
     ctx.cursor += duration;
 }
 
-/// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 24, easing: "smooth")`
+/// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 300, easing: "smooth")`
 /// — briefly scale + shift, then return to original.
 fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
@@ -876,7 +876,7 @@ fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(800.0)
+        .unwrap_or(300.0)
         .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
@@ -895,7 +895,7 @@ fn process_indicate(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
     ctx.cursor += duration;
 }
 
-/// `flash(target, factor: 2.0, duration: 18, easing: "smooth")` —
+/// `flash(target, factor: 2.0, duration: 200, easing: "smooth")` —
 /// briefly enlarge + fade, then return to original.
 fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
@@ -904,7 +904,7 @@ fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(600.0)
+        .unwrap_or(200.0)
         .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
     let easing = resolve_easing(named, &label);
@@ -919,7 +919,7 @@ fn process_flash(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     ctx.cursor += duration;
 }
 
-/// `wiggle(target, degrees: 15, duration: 20, easing: "wiggle")` —
+/// `wiggle(target, degrees: 15, duration: 500, easing: "wiggle")` —
 /// oscillate rotation, then return to original.
 fn process_wiggle(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
@@ -928,9 +928,9 @@ fn process_wiggle(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCt
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(667.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
-    let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(500.0);
+    let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(15.0);
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
         duration_ms: duration,
@@ -961,7 +961,7 @@ fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
     ctx.cursor += 1;
 }
 
-/// `set_color(target, color: "red", duration: 1, easing: "linear")` —
+/// `set_color(target, color: "black", duration: 1, easing: "linear")` —
 /// record a color change (tracked, renderer no-op for now).
 fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
@@ -977,7 +977,7 @@ fn process_set_color(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(33.0)
+        .unwrap_or(1.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
@@ -1007,7 +1007,7 @@ fn process_blink(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(1000.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
     let per_blink = (duration / (blinks * 2)).max(1);
     let easing = resolve_easing(named, &label);
@@ -1045,7 +1045,7 @@ fn process_spiral_in(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(800.0)
+        .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     // Set initial state: scaled up, rotated, invisible.
@@ -1090,7 +1090,7 @@ fn process_spiral_in(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Pars
     ctx.cursor += 1 + duration;
 }
 
-/// `focus_on(target, factor: 0.5, duration: 20, easing: "smooth")` —
+/// `focus_on(target, factor: 0.5, duration: 300, easing: "smooth")` —
 /// shrink a "spotlight" onto the target. Implemented as a scale-down + fade
 /// on the target. Mirrors Manim's `FocusOn`.
 fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx) {
@@ -1101,7 +1101,7 @@ fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(667.0)
+        .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
     ctx.slides.push(Slide {
@@ -1122,7 +1122,7 @@ fn process_focus_on(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut Parse
     ctx.cursor += duration;
 }
 
-/// `fade_transform(from: "old", to: "new", duration: 20, easing: "smooth")`
+/// `fade_transform(from: "old", to: "new", duration: 300, easing: "smooth")`
 /// — crossfade two mobjects: fade out `from` while fading in `to`. Both
 /// must be registered via `mobject`. Mirrors Manim's `FadeTransform` (simple
 /// crossfade variant).
@@ -1141,7 +1141,7 @@ fn process_fade_transform(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mu
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(667.0)
+        .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from);
     // Fade out `from` and fade in `to` in the same slide (parallel).
@@ -1158,7 +1158,7 @@ fn process_fade_transform(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mu
     ctx.cursor += duration;
 }
 
-/// `move_along_path(target, path: ((x1,y1), (x2,y2), ...), duration: 30, easing: "linear")`
+/// `move_along_path(target, path, duration: 500, easing: "linear", mode: "polyline", orient: false)`
 /// — move the target along a polyline through the given points (cm, absolute).
 /// Mirrors Manim's `MoveAlongPath`.
 fn process_move_along_path(
@@ -1174,7 +1174,7 @@ fn process_move_along_path(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(30.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
 
@@ -1197,13 +1197,30 @@ fn process_move_along_path(
     if points.is_empty() {
         return;
     }
+
+    // Respect the `mode:` and `orient:` named args from the Typst API.
+    let mode = match named.get("mode") {
+        Some(Expr::Str(s)) => {
+            if s.get() == "bezier" {
+                PathMode::Bezier
+            } else {
+                PathMode::Polyline
+            }
+        }
+        _ => PathMode::Polyline,
+    };
+    let orient = named.get("orient").and_then(|e| match e {
+        Expr::Bool(b) => Some(b.get()),
+        _ => None,
+    }).unwrap_or(false);
+
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::MoveAlongPath {
             target: label,
             points,
-            mode: PathMode::Polyline,
-            orient: false,
+            mode,
+            orient,
             easing: easing.clone(),
         }],
     });
@@ -1515,7 +1532,7 @@ fn process_morph(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(800.0)
+        .unwrap_or(24.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from);
 
@@ -1595,7 +1612,7 @@ fn process_transform(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(800.0)
+        .unwrap_or(24.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label);
 

@@ -18,6 +18,6 @@
     draw.circle((0, 0), radius: 1cm, fill: red)
   }))
 
-  #animate("c1", to: (6cm, 2cm), duration: 30, easing: "smooth")
-  #animate("c2", to: (2cm, 4cm), duration: 30, easing: "smooth")
+  #animate("c1", to: (6cm, 2cm), duration: 1000, easing: "smooth")
+  #animate("c2", to: (2cm, 4cm), duration: 1000, easing: "smooth")
 ]

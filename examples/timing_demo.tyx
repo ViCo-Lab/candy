@@ -1,36 +1,179 @@
 #import "@preview/candy:0.1.0": *
 
-// Demonstrates *timing / sequential* animation: every action advances the
-// timeline in order, `#pause` holds a beat, and `#play` reveals content as its
-// own animation unit. The full clip is one implicit timeline (one page).
-//
-// Run:  candy build examples/timing_demo.tyx
+// ──────────────────────────────────────────────
+//  Candy Timing Animation Showcase
+//  Covers: animate, play beats, pause, morph, transform,
+//          move-along-path, counter lifecycle, save/restore,
+//          camera, group, track, fade, scale, rotate,
+//          indicate, flash, wiggle, reveal, typewriter
+// ──────────────────────────────────────────────
 
-#scene(width: 16cm, height: 9cm)[
-  #subtitle([Timing: each action advances the timeline in sequence], position: "bottom")
-  // Step 1: a dot appears (frame 0) and slides right over 1000ms.
-  #mobject("dot", circle(radius: 0.8cm, fill: blue))
-  #animate("dot", to: (5cm, 0cm), duration: 1000, easing: "smooth")
+// ─── Scene 1: Basic Sequential Animation (3s) ──
+#scene[
+  // Objects appear on screen
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #mobject("b", rect(width: 2cm, height: 1cm, fill: red))
 
-  // Hold a beat so the viewer registers the new position.
-  #pause(duration: 600)
+  // Fade in + move
+  #animate("a", to: (4cm, 0cm), duration: 800, easing: "smooth")
+  #pause(200)
+  #animate("b", to: (-4cm, 0cm), duration: 600, easing: "linear")
+  #pause(300)
 
-  // Step 2: a box grows in on the left, sequenced *after* the dot settles.
-  #mobject("box", square(size: 2cm, fill: orange))
-  #animate("box", scale: 1.5, duration: 800, easing: "ease-out")
-  #animate("box", rotate: 45, duration: 800, easing: "ease-in-out")
+  // Scale
+  #animate("a", scale: 2.0, duration: 500, easing: "smooth")
+  // Rotate with explicit deg unit
+  #animate("a", rotate: 90deg, duration: 500, easing: "smooth")
+]
 
-  // Step 3: reveal captions beat-by-beat via `play` (each its own unit).
-  #play([#text(28pt, weight: "bold")[Step 1 — move]], duration: 700)
-  #play([#text(28pt, weight: "bold")[Step 2 — grow + rotate]], duration: 700)
+// ─── Scene 2: Morph + Transform (2s) ──────────
+#scene[
+  #mobject("c", circle(radius: 1.5cm, fill: green))
+  #mobject("d", rect(width: 3cm, height: 1.5cm, fill: purple))
 
-  // Step 4: an object travels along a polyline (absolute cm points).
-  #mobject("tri", polygon((0cm, 0cm), (1cm, 2cm), (2cm, 0cm), fill: green))
-  #move-along-path("tri", ((0cm, -2cm), (4cm, -2cm), (8cm, 0cm)), duration: 1500, easing: "linear")
+  // Shape morph: circle → rectangle (real outline interpolation)
+  #morph("c", "d", duration: 1200, easing: "smooth")
+  #pause(400)
 
-  // Step 5: a synchronized caption + easing counter (count 0→… over 2000ms).
-  #let r = ecounter("r", seed: 0, step: 1, duration: 2000)
-  #mobject("num", text(24pt)[Count: #str(ecval(r))])
-  #animate("num", to: (0cm, 3cm), duration: 2000, easing: "smooth")
+  // Content transform: rectangle → formula (crossfade + scale)
+  #transform("d", to: [$a^2 + b^2 = c^2$], duration: 800, easing: "smooth")
+  #pause(400)
+]
 
+// ─── Scene 3: Move Along Path (2.5s) ──────────
+#scene[
+  // Use polygon instead of non-standard triangle()
+  #mobject("e", polygon((0cm, 0cm), (1cm, 1cm), (2cm, 0cm), fill: orange))
+
+  // Move along a smooth bezier path, oriented to face direction of travel
+  #move-along-path(
+    "e",
+    path: ((-6cm, -2cm), (0cm, 3cm), (6cm, -2cm), (0cm, 0cm)),
+    mode: "bezier",
+    orient: true,
+    duration: 2500,
+    easing: "smooth"
+  )
+]
+
+// ─── Scene 4: Counter Lifecycle (3s) ───────────
+#scene[
+  // Declare counter r with seed 0; duration controls how long each increment takes
+  #ecounter("r", seed: 0, step: 1, duration: 500)
+
+  // Display the current counter value
+  #mobject("count-display", text(size: 24pt)[Count: ecval(r)])
+
+  // Pause the counter from incrementing
+  #pause(500)
+
+  // Resume the counter (it will increment every 500ms)
+  #counter_resume("r")
+  #pause(3000)
+
+  // Destroy the counter (stops it permanently)
+  #counter_destroy("r")
+]
+
+// ─── Scene 5: SaveState / Restore (2s) ─────────
+#scene[
+  #mobject("f", circle(radius: 1cm, fill: teal))
+
+  // Snapshot current position
+  #save_state("f", slot: "start")
+
+  // Move far away and scale up
+  #animate("f", to: (5cm, 0cm), duration: 600, easing: "smooth")
+  #animate("f", scale: 2.0, duration: 400, easing: "smooth")
+  #pause(300)
+
+  // Restore to the saved state
+  #restore("f", slot: "start", duration: 500, easing: "smooth")
+]
+
+// ─── Scene 6: Camera Global Transform (2s) ─────
+#scene[
+  // Use table() instead of non-standard grid()
+  #mobject("g", table(
+    columns: 3,
+    [Cell 1], [Cell 2], [Cell 3],
+    [Cell 4], [Cell 5], [Cell 6],
+  ))
+
+  // Camera pan + zoom + tilt (x/y are offsets in cm from page center)
+  #camera(x: 2, y: 1, zoom: 1.5, rotate: 5deg, duration: 2000, easing: "smooth")
+]
+
+// ─── Scene 7: Group Animation (2s) ─────────────
+#scene[
+  #mobject("g1", circle(radius: 0.5cm, fill: pink))
+  #mobject("g2", rect(width: 1cm, height: 1cm, fill: yellow))
+  #mobject("g3", polygon((0cm, 0cm), (0.8cm, 1cm), (1.6cm, 0cm), fill: lime))
+
+  // Group three objects under one label
+  #group("triangle-group", members: ("g1", "g2", "g3"))
+
+  // Animate the whole group together
+  #animate("triangle-group", to: (0cm, 2cm), duration: 800, easing: "smooth")
+  #animate("triangle-group", rotate: 180deg, duration: 800, easing: "smooth")
+  #pause(400)
+
+  // Animate individual members (set opacity instead of non-existent fade-to-opacity)
+  #animate("g1", opacity: 0.5, duration: 400)
+  #animate("g2", opacity: 0.5, duration: 400)
+  #animate("g3", opacity: 0.5, duration: 400)
+]
+
+// ─── Scene 8: Track Multi-Property Animation (2s) ──
+#scene[
+  // Use polygon instead of non-standard star()
+  #mobject("h", polygon((0cm, -1cm), (0.3cm, -0.3cm), (1cm, -0.3cm), (0.5cm, 0.2cm), (0.7cm, 1cm), (0cm, 0.5cm), (-0.7cm, 1cm), (-0.5cm, 0.2cm), (-1cm, -0.3cm), (-0.3cm, -0.3cm), fill: gold))
+
+  // Simultaneous movement, scaling, rotation, and opacity changes
+  // Keyframe format: (t_ms, x_cm, y_cm, scale, opacity, rotation_deg)
+  #track(
+    "h",
+    keys: (
+      (0, -5cm, -2cm, 0.5, 0.0, 0deg),
+      (500, 0cm, 0cm, 1.5, 1.0, 0deg),
+      (1000, 5cm, -2cm, 1.0, 0.8, 0deg),
+      (1500, 0cm, 2cm, 1.0, 1.0, 0deg),
+      (2000, 0cm, 0cm, 1.0, 1.0, 0deg),
+    ),
+    duration: 2000,
+    easing: "smooth"
+  )
+]
+
+// ─── Scene 9: Indication / Flash / Wiggle (2s) ──
+#scene[
+  #mobject("i", circle(radius: 1cm, fill: magenta))
+
+  // Indicate: brief scale-up + retcm, dy: 0cm
+  #indicate("i", factor: 1.3, dx: 0, dy: 0, duration: 400, easing: "smooth")
+  #pause(300)
+
+  // Flash: brief enlargement + fade
+  #flash("i", factor: 2.0, duration: 300, easing: "smooth")
+  #pause(300)
+
+  // Wiggle: oscillate rotation ±15°
+  #wiggle("i", degrees: 15, duration: 500, easing: "wiggle")
+]
+
+// ─── Scene 10: Play Beats + Reveal (2s) ────────
+#scene[
+  // Store a string mobject for character/word reveal
+  #mobject("text-body", "Hello, Candy!")
+
+  // Show a play block as its own animation unit
+  #play([#text(size: 20pt, weight: "bold")[Play Block]], duration: 700)
+  #pause(300)
+
+  // Progressive character-by-character reveal
+  #reveal("text-body", by: "char", duration: 1500, easing: "smooth")
+  #pause(500)
+
+  // Typewriter effect (alias for reveal by char)
+  #typewriter("text-body", duration: 1500, easing: "smooth")
 ]
