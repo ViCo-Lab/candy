@@ -38,23 +38,20 @@ const CANDY: &[&str] = &[
     "audio",
     "play",
     // Manim-inspired state / indication / visibility directives.
-    "save_state",
+    "save-state",
     "restore",
     "indicate",
     "flash",
     "wiggle",
     "appear",
     "disappear",
-    "set_color",
+    "set-color",
     // Manim-inspired composite animations.
     "blink",
-    "spiral_in",
-    "focus_on",
-    "fade_transform",
-    // `#move-along-path` is exported by the Typst package with hyphens (see
-    // `typst/src/lib.typ`); the underscore alias is kept for backward-compat.
+    "spiral-in",
+    "focus-on",
+    "fade-transform",
     "move-along-path",
-    "move_along_path",
     "morph",
     // Manim-style single-object content transform (the headline `Transform` /
     // `ReplacementTransform`): morph a target mobject into NEW inline content
@@ -82,9 +79,9 @@ const CANDY: &[&str] = &[
     // acts on reads — only definitions and lifecycle events matter).
     "ecounter",
     "ecval",
-    "counter_pause",
-    "counter_resume",
-    "counter_destroy",
+    "counter-pause",
+    "counter-resume",
+    "counter-destroy",
 ];
 
 /// Parse `.tyx` file into a `Scene` AST.
@@ -468,20 +465,20 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "audio" => process_audio(&pos, &named, node, raw, ctx),
         "play" => process_play(&pos, &named, node, raw, ctx),
         // Manim-inspired directives.
-        "save_state" => process_save_state(&pos, &named, ctx),
+        "save-state" => process_save_state(&pos, &named, ctx),
         "restore" => process_restore(&pos, &named, ctx),
         "indicate" => process_indicate(&pos, &named, ctx),
         "flash" => process_flash(&pos, &named, ctx),
         "wiggle" => process_wiggle(&pos, &named, ctx),
         "appear" => process_appear_disappear(&pos, true, ctx),
         "disappear" => process_appear_disappear(&pos, false, ctx),
-        "set_color" => process_set_color(&pos, &named, ctx),
+        "set-color" => process_set_color(&pos, &named, ctx),
         // Manim-inspired composite animations.
         "blink" => process_blink(&pos, &named, ctx),
-        "spiral_in" => process_spiral_in(&pos, &named, ctx),
-        "focus_on" => process_focus_on(&pos, &named, ctx),
-        "fade_transform" => process_fade_transform(&pos, &named, ctx),
-        "move-along-path" | "move_along_path" => process_move_along_path(&pos, &named, node, raw, ctx),
+        "spiral-in" => process_spiral_in(&pos, &named, ctx),
+        "focus-on" => process_focus_on(&pos, &named, ctx),
+        "fade-transform" => process_fade_transform(&pos, &named, ctx),
+        "move-along-path" => process_move_along_path(&pos, &named, node, raw, ctx),
         "morph" => process_morph(&pos, &named, ctx),
         "transform" => process_transform(&pos, &named, node, raw, ctx),
         // Multi-keyframe track + camera + grouping + text reveal.
@@ -493,16 +490,16 @@ fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut Par
         "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
         "ecounter" => process_ecounter(&pos, &named, ctx),
         "ecval" => { /* read; value substituted per-frame by the renderer */ }
-        "counter_pause" => {
+        "counter-pause" => {
             process_counter_event(&pos, &named, ctx, crate::core::ast::CounterEventKind::Pause)
         }
-        "counter_resume" => process_counter_event(
+        "counter-resume" => process_counter_event(
             &pos,
             &named,
             ctx,
             crate::core::ast::CounterEventKind::Resume,
         ),
-        "counter_destroy" => process_counter_event(
+        "counter-destroy" => process_counter_event(
             &pos,
             &named,
             ctx,
@@ -1181,9 +1178,7 @@ fn process_move_along_path(
     // The path is the 2nd positional arg per the Typst signature
     // (`#move-along-path(target, path, ...)`), but we also accept a named
     // `path:` for flexibility. Either way it's an array of `(x, y)` tuples (cm).
-    let path_e: Option<&Expr> = named
-        .get("path")
-        .or_else(|| pos.get(1));
+    let path_e: Option<&Expr> = named.get("path").or_else(|| pos.get(1));
     let points: Vec<(f64, f64)> = match path_e {
         Some(Expr::Array(arr)) => arr
             .items()
@@ -1209,10 +1204,13 @@ fn process_move_along_path(
         }
         _ => PathMode::Polyline,
     };
-    let orient = named.get("orient").and_then(|e| match e {
-        Expr::Bool(b) => Some(b.get()),
-        _ => None,
-    }).unwrap_or(false);
+    let orient = named
+        .get("orient")
+        .and_then(|e| match e {
+            Expr::Bool(b) => Some(b.get()),
+            _ => None,
+        })
+        .unwrap_or(false);
 
     ctx.slides.push(Slide {
         duration_ms: duration,
@@ -1285,7 +1283,11 @@ fn process_camera(_pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseC
     };
     let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
     let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
-    let zoom = named.get("zoom").and_then(expr_to_f64).unwrap_or(1.0).max(1e-3);
+    let zoom = named
+        .get("zoom")
+        .and_then(expr_to_f64)
+        .unwrap_or(1.0)
+        .max(1e-3);
     let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(0.0);
 
     let cam = Label("__camera__".into());
@@ -1344,12 +1346,7 @@ fn process_group(pos: &[Expr], named: &HashMap<String, Expr>, ctx: &mut ParseCtx
 /// mobject (e.g. `"Hello"`) by swapping its body to longer and longer prefixes
 /// over `duration`. Non-string bodies fall back to a plain FadeIn with a warning
 /// (char/word reveal only makes sense for text).
-fn process_reveal(
-    pos: &[Expr],
-    named: &HashMap<String, Expr>,
-    sym: &str,
-    ctx: &mut ParseCtx,
-) {
+fn process_reveal(pos: &[Expr], named: &HashMap<String, Expr>, sym: &str, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, named) else {
         return;
     };
@@ -1364,7 +1361,7 @@ fn process_reveal(
             if sym == "typewriter" {
                 "char".to_string()
             } else {
-                "char".to_string()
+                "word".to_string()
             }
         }
     };
@@ -1400,7 +1397,7 @@ fn process_reveal(
     let start = ctx.cursor;
 
     let tl = ctx.content_timeline.entry(label.clone()).or_default();
-    // Hide until the reveal starts (use `none` so the body compiles to nothing).
+    // Hide at the reveal start (use `none` so the body compiles to nothing).
     tl.push((start, "none".to_string()));
     for k in 1..=n {
         let prefix: String = if by == "word" {
@@ -1412,6 +1409,23 @@ fn process_reveal(
         tl.push((at, format!("\"{prefix}\"")));
     }
     tl.push((start + duration, format!("\"{inner}\"")));
+
+    // A `reveal`/`typewriter` is supposed to *introduce* the text from nothing.
+    // By default `content_for` falls back to the mobject's original (full) body
+    // for any frame *before* the first timeline entry, so the complete string
+    // would flash on screen and only then get "revealed" (full → partial →
+    // full) — which looks broken. Hide the target from the very start of the
+    // timeline unless something already controls its content or visibility
+    // earlier (a prior `reveal`/`transform` on the same label, or any earlier
+    // action such as `appear`/`animate` targeting it).
+    let controlled_earlier = tl.iter().any(|(t, _)| *t < start);
+    let appeared_earlier = ctx
+        .slides
+        .iter()
+        .any(|s| s.actions.iter().any(|a| a.target() == &label));
+    if !controlled_earlier && !appeared_earlier && start > 0 {
+        tl.insert(0, (0, "none".to_string()));
+    }
 
     ctx.slides.push(Slide {
         duration_ms: duration,
@@ -1446,12 +1460,6 @@ fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
 /// a [`TrackKey`]. `x`/`y` are unit-aware centimeters; `scale`/`opacity`/
 /// `rotation` are unitless numbers.
 fn track_key_from_expr(e: &Expr) -> Option<TrackKey> {
-    let tag = match e {
-        Expr::Array(_) => "Array",
-        Expr::Parenthesized(_) => "Paren",
-        _ => "Other",
-    };
-    eprintln!("DBG kf variant: {}", tag);
     // A parenthesized tuple `(a, b, ...)` surfaces as `Expr::Parenthesized`
     // wrapping an `Expr::Array` in typst_syntax, so unwrap either form.
     let arr = match as_array(e) {

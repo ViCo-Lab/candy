@@ -403,11 +403,11 @@
 /// `by: "word"` per word. Non-string bodies fall back to a plain fade-in.
 ///
 /// - `target`: the `label` of the (string) object to reveal.
-/// - `by`: `"char"` (default) or `"word"`.
+/// - `by`: `"char"` or `"word"` (default).
 /// - `duration`, `easing`: as usual.
 #let reveal(
   target,
-  by: "char",
+  by: "word",
   duration: 1000,
   easing: "linear",
 ) = none

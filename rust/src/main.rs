@@ -250,7 +250,7 @@ fn main() -> Result<(), CandyError> {
                 if !keep_intermediates {
                     cleanup_intermediate(&intermediate_dir);
                 }
-                println!("wrote: {}", output.display());
+                println!("built: {}", output.display());
             }
         }
     }

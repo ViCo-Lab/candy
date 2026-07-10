@@ -16,9 +16,9 @@
 
   // Fade in + move
   #animate("a", to: (4cm, 0cm), duration: 800, easing: "smooth")
-  #pause(200)
+  #pause(duration: 200)
   #animate("b", to: (-4cm, 0cm), duration: 600, easing: "linear")
-  #pause(300)
+  #pause(duration: 300)
 
   // Scale
   #animate("a", scale: 2.0, duration: 500, easing: "smooth")
@@ -33,11 +33,11 @@
 
   // Shape morph: circle → rectangle (real outline interpolation)
   #morph("c", "d", duration: 1200, easing: "smooth")
-  #pause(400)
+  #pause(duration: 400)
 
   // Content transform: rectangle → formula (crossfade + scale)
   #transform("d", to: [$a^2 + b^2 = c^2$], duration: 800, easing: "smooth")
-  #pause(400)
+  #pause(duration: 400)
 ]
 
 // ─── Scene 3: Move Along Path (2.5s) ──────────
@@ -48,11 +48,11 @@
   // Move along a smooth bezier path, oriented to face direction of travel
   #move-along-path(
     "e",
-    path: ((-6cm, -2cm), (0cm, 3cm), (6cm, -2cm), (0cm, 0cm)),
+    ((-6cm, -2cm), (0cm, 3cm), (6cm, -2cm), (0cm, 0cm)),
     mode: "bezier",
     orient: true,
     duration: 2500,
-    easing: "smooth"
+    easing: "smooth",
   )
 ]
 
@@ -65,11 +65,11 @@
   #mobject("count-display", text(size: 24pt)[Count: ecval(r)])
 
   // Pause the counter from incrementing
-  #pause(500)
+  #pause(duration: 500)
 
   // Resume the counter (it will increment every 500ms)
   #counter_resume("r")
-  #pause(3000)
+  #pause(duration: 3000)
 
   // Destroy the counter (stops it permanently)
   #counter_destroy("r")
@@ -85,7 +85,7 @@
   // Move far away and scale up
   #animate("f", to: (5cm, 0cm), duration: 600, easing: "smooth")
   #animate("f", scale: 2.0, duration: 400, easing: "smooth")
-  #pause(300)
+  #pause(duration: 300)
 
   // Restore to the saved state
   #restore("f", slot: "start", duration: 500, easing: "smooth")
@@ -106,7 +106,7 @@
 
 // ─── Scene 7: Group Animation (2s) ─────────────
 #scene[
-  #mobject("g1", circle(radius: 0.5cm, fill: pink))
+  #mobject("g1", circle(radius: 0.5cm, fill: red))
   #mobject("g2", rect(width: 1cm, height: 1cm, fill: yellow))
   #mobject("g3", polygon((0cm, 0cm), (0.8cm, 1cm), (1.6cm, 0cm), fill: lime))
 
@@ -116,7 +116,7 @@
   // Animate the whole group together
   #animate("triangle-group", to: (0cm, 2cm), duration: 800, easing: "smooth")
   #animate("triangle-group", rotate: 180deg, duration: 800, easing: "smooth")
-  #pause(400)
+  #pause(duration: 400)
 
   // Animate individual members (set opacity instead of non-existent fade-to-opacity)
   #animate("g1", opacity: 0.5, duration: 400)
@@ -127,7 +127,19 @@
 // ─── Scene 8: Track Multi-Property Animation (2s) ──
 #scene[
   // Use polygon instead of non-standard star()
-  #mobject("h", polygon((0cm, -1cm), (0.3cm, -0.3cm), (1cm, -0.3cm), (0.5cm, 0.2cm), (0.7cm, 1cm), (0cm, 0.5cm), (-0.7cm, 1cm), (-0.5cm, 0.2cm), (-1cm, -0.3cm), (-0.3cm, -0.3cm), fill: gold))
+  #mobject("h", polygon(
+    (0cm, -1cm),
+    (0.3cm, -0.3cm),
+    (1cm, -0.3cm),
+    (0.5cm, 0.2cm),
+    (0.7cm, 1cm),
+    (0cm, 0.5cm),
+    (-0.7cm, 1cm),
+    (-0.5cm, 0.2cm),
+    (-1cm, -0.3cm),
+    (-0.3cm, -0.3cm),
+    fill: yellow,
+  ))
 
   // Simultaneous movement, scaling, rotation, and opacity changes
   // Keyframe format: (t_ms, x_cm, y_cm, scale, opacity, rotation_deg)
@@ -141,21 +153,21 @@
       (2000, 0cm, 0cm, 1.0, 1.0, 0deg),
     ),
     duration: 2000,
-    easing: "smooth"
+    easing: "smooth",
   )
 ]
 
 // ─── Scene 9: Indication / Flash / Wiggle (2s) ──
 #scene[
-  #mobject("i", circle(radius: 1cm, fill: magenta))
+  #mobject("i", circle(radius: 1cm, fill: purple))
 
   // Indicate: brief scale-up + retcm, dy: 0cm
   #indicate("i", factor: 1.3, dx: 0, dy: 0, duration: 400, easing: "smooth")
-  #pause(300)
+  #pause(duration: 300)
 
   // Flash: brief enlargement + fade
   #flash("i", factor: 2.0, duration: 300, easing: "smooth")
-  #pause(300)
+  #pause(duration: 300)
 
   // Wiggle: oscillate rotation ±15°
   #wiggle("i", degrees: 15, duration: 500, easing: "wiggle")
@@ -168,11 +180,11 @@
 
   // Show a play block as its own animation unit
   #play([#text(size: 20pt, weight: "bold")[Play Block]], duration: 700)
-  #pause(300)
+  #pause(duration: 300)
 
   // Progressive character-by-character reveal
   #reveal("text-body", by: "char", duration: 1500, easing: "smooth")
-  #pause(500)
+  #pause(duration: 500)
 
   // Typewriter effect (alias for reveal by char)
   #typewriter("text-body", duration: 1500, easing: "smooth")
