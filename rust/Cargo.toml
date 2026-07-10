@@ -35,14 +35,26 @@ typst-utils = "0.15"
 # typst-kit provides the same font discovery and package resolution that the
 # official `typst` CLI uses, so candy's in-process World behaves identically to
 # `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
-# `system-downloader` enables network fetch of @preview packages at render
-# time (so `#import "@preview/cetz"` works without a prior `typst compile`).
+# NOTE: typst-kit's own `system-downloader` feature is intentionally NOT enabled
+# here. It pulls in `ureq` + `native-tls` + `openssl-sys`, which links the
+# *system* OpenSSL and breaks cross-compilation (no target-arch `libssl-dev` in
+# the cross container) and requires an OpenSSL dev package + perl on every host.
+# Instead, candy supplies its own `Downloader` (see `src/renderer/typst.rs`)
+# backed by `ureq` with the pure-Rust `rustls` TLS backend, so @preview fetch
+# needs no OpenSSL, no perl and no native library on any platform (host or
+# cross). `system-files` is what actually wires package resolution into the
+# World; the downloader implementation is candy's own.
 typst-kit = { version = "0.15", features = [
     "embedded-fonts",
     "scan-fonts",
     "system-files",
-    "system-downloader",
 ] }
+
+# HTTP client for candy's @preview package downloader. The `tls` feature uses
+# the pure-Rust `rustls` + `webpki-roots` (bundled CA roots) backend — no
+# OpenSSL, no `native-tls`, no system cert store, no perl. This replaces
+# typst-kit's `native-tls`-based downloader.
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 
 # Mature keyframe / easing library. candy's `Easing` enum delegates its math
 # to `keyframe::functions::*` so we get well-tested implementations of the

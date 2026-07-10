@@ -625,7 +625,16 @@ pub fn mux_matroska(
     segment.extend_from_slice(&info_el);
     segment.extend_from_slice(&tracks_el);
     segment.extend_from_slice(&cluster_bytes);
-    let segment_el = ebml_elem(&[0x18, 0x53, 0x80, 0x67], &segment);
+    // Segment size: candy builds the whole file in memory, so the exact size is
+    // known. A known-size vint is fully valid EBML and is what `mkvmerge`
+    // emits. (ffmpeg's "unknown size" form is just an 8-byte vint of the max
+    // value; both are accepted by strict parsers as long as the vint is
+    // encoded with the single-marker-bit rule that `ebml_vint` now uses.)
+    let seg_size = segment.len() as u64;
+    let mut segment_el = Vec::new();
+    segment_el.extend_from_slice(&[0x18, 0x53, 0x80, 0x67]); // Segment ID
+    segment_el.extend_from_slice(&ebml_vint(seg_size)); // known exact size
+    segment_el.extend_from_slice(&segment);
 
     // EBML header.
     let mut ebml = Vec::new();
@@ -701,41 +710,36 @@ fn simple_block(track: u64, rel_timecode: i16, keyframe: bool, data: &[u8]) -> V
     b
 }
 
-/// Encode an integer as an EBML vint (with leading marker bits).
+/// Encode an unsigned integer as an EBML vint.
 ///
-/// An `L`-byte vint marks its length by setting the top `L` bits of the first
-/// byte to `1` (e.g. `L=1` → `0x80`, `L=2` → `0xC0`, `L=3` → `0xE0`). The
-/// remaining `(8-L)` bits of the first byte hold the most-significant value
-/// digits, and each subsequent byte holds 7 value bits. The top value digit
-/// must fit in exactly `(8-L)` bits: if it spilled into a marker bit the byte
-/// would gain an extra leading `1` and be misread as a *longer* vint. For
-/// example, a 1-byte vint for `73` must be `0xC0 0x49` — never `0x80 | 73 =
-/// 0xC9`, because `0xC9` has two leading `1`s and a parser reads it as a
-/// 2-byte vint (value 2370). `L` is chosen minimally so the encoding is
-/// unambiguous.
+/// An `L`-byte vint carries `7 * L` data bits; its top `L` bits are a fixed
+/// length marker (`1` followed by `L-1` zero bits, i.e. `0x80 >> (L-1)`) and
+/// the remaining bits hold the value, 8 bits per subsequent byte (the first
+/// byte's high `8-L` data bits are zero because `v < 2^(7L)`). This matches
+/// ffmpeg's `ebml_read_num`, which derives `L` from the leading-zero count of
+/// the first byte, clears that single marker bit, then shifts each following
+/// byte in with `<< 8`. The data bytes must be emitted most-significant first
+/// (ascending `i`); emitting them in reverse corrupts every `L >= 3` vint —
+/// which was the original playback bug (the Segment / large Cluster sizes then
+/// decoded to the wrong length and the whole file mis-framed).
+///
+/// A single-byte vint of value 127 would encode as `0xFF`, which EBML reserves
+/// for "unknown length"; that one value is bumped to two bytes.
 fn ebml_vint(v: u64) -> Vec<u8> {
-    // Choose `len` (number of bytes) minimally so that the top value digit fits
-    // in the `(8 - len)` bits available in the first byte. A 1-byte vint (len 1)
-    // can therefore hold [0, 63], a 2-byte vint [64, 4095], a 3-byte [4096,
-    // 262143], and so on.
+    // Minimal length whose 7*L data-bit capacity holds `v`.
     let mut len = 1usize;
-    while len < 8 {
-        let top = (v >> (7 * (len - 1))) as u64;
-        let top_cap = 1u64 << (7 - len); // max top digit for this length
-        if top < top_cap {
-            break;
-        }
+    while len < 8 && v >= (1u64 << (7 * len)) {
         len += 1;
     }
-    let marker = 0xFFu8 << (8 - len); // top `len` bits set (0x80 / 0xC0 / 0xE0 / …)
-    let top_shift = 7 * (len - 1);
-    let top_mask = if len < 8 { (1u64 << (7 - len)) - 1 } else { 0 };
-    let top_bits = (v >> top_shift) & top_mask;
-    let mut out: Vec<u8> = Vec::with_capacity(len);
-    for i in (1..len).rev() {
-        out.push(((v >> (7 * (i - 1))) & 0x7F) as u8);
+    if len == 1 && v == 127 {
+        len = 2; // avoid the reserved single-byte 0xFF
     }
-    out.insert(0, (top_bits as u8) | marker);
+    let marker = 0x80u8 >> (len - 1);
+    let mut out = Vec::with_capacity(len);
+    out.push(marker | ((v >> (8 * (len - 1))) as u8));
+    for i in 1..len {
+        out.push(((v >> (8 * (len - 1 - i))) & 0xFF) as u8);
+    }
     out
 }
 

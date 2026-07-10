@@ -211,36 +211,6 @@ fn polygon_length(ring: &[Point]) -> f64 {
     len
 }
 
-/// Centroid of a ring (area-weighted). Falls back to the midpoint of the
-/// first and last points for degenerate (zero-area) rings.
-fn polygon_centroid(ring: &[Point]) -> Point {
-    if ring.is_empty() {
-        return [0.0, 0.0];
-    }
-    if ring.len() < 3 {
-        return [
-            (ring[0][0] + ring[ring.len() - 1][0]) / 2.0,
-            (ring[0][1] + ring[ring.len() - 1][1]) / 2.0,
-        ];
-    }
-    let area = polygon_area(ring);
-    if area.abs() < 1e-12 {
-        return [
-            (ring[0][0] + ring[ring.len() - 1][0]) / 2.0,
-            (ring[0][1] + ring[ring.len() - 1][1]) / 2.0,
-        ];
-    }
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    for i in 0..ring.len() {
-        let j = (i + 1) % ring.len();
-        let cross = ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
-        cx += (ring[i][0] + ring[j][0]) * cross;
-        cy += (ring[i][1] + ring[j][1]) * cross;
-    }
-    [cx / (6.0 * area), cy / (6.0 * area)]
-}
-
 // ─── Normalization (normalize.js) ───────────────────────────────────────────
 
 /// Normalize a ring: open it (drop trailing duplicate), enforce clockwise

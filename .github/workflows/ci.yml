@@ -10,6 +10,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Standard release build across every Rust Tier 1 (with host tools) target.
+  # Source of truth: https://doc.rust-lang.org/rustc/platform-support.html
+  # (aarch64/armv7/i686 Linux use `cross`; the rest build natively on their
+  # host runner). macOS/Windows targets don't use OpenSSL, and the Linux
+  # targets were switched to a pure-Rust TLS downloader, so no system OpenSSL
+  # is required anywhere.
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -17,30 +23,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux (x86_64 native; the rest cross-compiled)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            cross: true
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          # Windows (all native on windows-latest)
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+          - target: x86_64-pc-windows-gnu
+            os: windows-latest
+            cross: false
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+          # macOS (both arches native on macos-latest)
           - target: x86_64-apple-darwin
             os: macos-latest
             cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            cross: false
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            cross: false
-          - target: i686-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
-            cross: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -73,6 +88,67 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: candy-${{ matrix.target }}
+          path: ${{ steps.binpath.outputs.bin }}
+          if-no-files-found: warn
+
+  # GPU build: same sources but compiled with `--features gpu` (vello + wgpu
+  # hardware-accelerated rasterization). Only host (non-cross) Tier 1 targets
+  # are built here because wgpu needs the native graphics stack and a GPU at
+  # runtime, which the `cross` containers don't provide. Linux needs the wgpu
+  # system dev libraries installed first.
+  build-gpu:
+    name: Build GPU-enabled ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-pc-windows-gnu
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # wgpu's Linux backend links the system Vulkan/X11/Wayland libraries.
+      - if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes \
+            pkg-config libx11-dev libxkbcommon-dev libwayland-dev \
+            libxrandr-dev libxext-dev libxcursor-dev libxi-dev libvulkan-dev
+        shell: bash
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: gpu-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: gpu-${{ matrix.target }}-cargo-
+      - run: cargo build --release --features gpu --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+        shell: bash
+      - id: binpath
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            echo "bin=rust/target/${{ matrix.target }}/release/candy.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "bin=rust/target/${{ matrix.target }}/release/candy" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candy-gpu-${{ matrix.target }}
           path: ${{ steps.binpath.outputs.bin }}
           if-no-files-found: warn
 
