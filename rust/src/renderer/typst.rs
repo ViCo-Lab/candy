@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use typst::{Library, LibraryExt, World};
 use typst_kit::files::{FileStore, FsRoot, SystemFiles};
@@ -220,6 +220,18 @@ pub struct Renderer {
     /// render both bodies to SVG, extract + align their outline rings). Each
     /// frame then just samples the plan — this is the performance-first design.
     morph_cache: HashMap<(Label, Label), MorphPlan>,
+    /// Cache of compiled Typst documents keyed by their exact source string.
+    /// Intermediate frames that produce an identical source (e.g. paused or
+    /// otherwise static objects) reuse the prior compile instead of re-running
+    /// the full Typst pipeline — the core performance win. Bodies that
+    /// genuinely change per frame (morph polygons, `ecval` counter text,
+    /// `transform` content swaps) have a distinct source each frame and still
+    /// recompile, but are themselves memoized, so a counter that repeats a
+    /// value reuses its compile too.
+    ///
+    /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
+    /// parallel frame-render loop.
+    body_cache: Mutex<HashMap<String, Arc<PagedDocument>>>,
 }
 
 impl Renderer {
@@ -245,6 +257,7 @@ impl Renderer {
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
             morph_cache: HashMap::new(),
+            body_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -259,6 +272,39 @@ impl Renderer {
         warned
             .output
             .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
+    }
+
+    /// Compile a Typst source, memoized by the exact source string.
+    ///
+    /// This is the unified compile entry point for every object render path
+    /// (`render_object_svg`, `render_object_pixels`, `render_frame`). It is
+    /// behavior-preserving: identical source → identical document. The win is
+    /// that frames sharing a source (static / paused objects, or a counter
+    /// value that repeats) skip a redundant Typst compile. Bodies that change
+    /// per frame — morph polygons, `ecval` counter text, `transform` content
+    /// swaps — naturally produce a different source each time and recompile,
+    /// exactly as before.
+    fn compile_cached(&self, src: &str) -> Result<Arc<PagedDocument>, CandyError> {
+        if let Some(doc) = self.body_cache.lock().unwrap().get(src) {
+            return Ok(doc.clone());
+        }
+        let doc = Arc::new(self.compile(src)?);
+        self.body_cache
+            .lock()
+            .unwrap()
+            .insert(src.to_string(), doc.clone());
+        Ok(doc)
+    }
+
+    /// Resolve the Typst body for `label` at frame time `time_ms`, choosing the
+    /// SAME source for every render path (SVG, pixels, isolated). During an
+    /// active `#morph` window the morphed polygon wins; otherwise the label's
+    /// (possibly `transform`-swapped, `ecval`-substituted) body is used. This
+    /// is the single source of truth that keeps the three render modes unified
+    /// — previously the isolated `render_frame` path skipped the morph branch.
+    fn resolve_body(&self, label: &Label, time_ms: u32) -> String {
+        self.morph_body_for(label, time_ms)
+            .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
 
     /// Compute (once) the natural layout of every mobject by tagging each body
@@ -409,9 +455,7 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self
-            .morph_body_for(label, time_ms)
-            .unwrap_or_else(|| content_for(&self.scene, label, time_ms));
+        let body = self.resolve_body(label, time_ms);
         let preamble = imports_preamble(&self.scene);
         let placed = place_source(
             page_w,
@@ -424,7 +468,7 @@ impl Renderer {
             &preamble,
         );
 
-        let doc = self.compile(&placed)?;
+        let doc = self.compile_cached(&placed)?;
         let page = doc
             .pages()
             .first()
@@ -694,9 +738,7 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self
-            .morph_body_for(label, time_ms)
-            .unwrap_or_else(|| content_for(&self.scene, label, time_ms));
+        let body = self.resolve_body(label, time_ms);
         let preamble = imports_preamble(&self.scene);
 
         let src = place_source(
@@ -710,7 +752,7 @@ impl Renderer {
             &preamble,
         );
 
-        let doc = self.compile(&src)?;
+        let doc = self.compile_cached(&src)?;
         let page = doc
             .pages()
             .first()
@@ -726,7 +768,7 @@ impl Renderer {
             return Err(CandyError::LabelNotFound(frame.target.clone()));
         }
         self.ensure_natural()?;
-        let doc = self.compile(&self.object_source(frame, frame.time_ms))?;
+        let doc = self.compile_cached(&self.object_source(frame, frame.time_ms))?;
         let page = doc
             .pages()
             .first()
@@ -742,7 +784,7 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = content_for(&self.scene, &st.target, time_ms);
+        let body = self.resolve_body(&st.target, time_ms);
         let preamble = imports_preamble(&self.scene);
         place_source(
             self.page_w,
