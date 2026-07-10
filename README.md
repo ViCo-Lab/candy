@@ -222,6 +222,17 @@ Known v0.1 limitations:
   for a fully offline build (packages must then be pre-cached via
   `typst compile`).
 
+## Documentation
+
+- [`typst/README.md`](typst/README.md) — the user-facing Typst DSL reference (every
+  directive, easing, and counter, with worked examples).
+- [`rust/README.md`](rust/README.md) — the Rust backend developer reference (pipeline,
+  modules, public API, codecs, error model).
+- [`rust/docs/architecture.md`](rust/docs/architecture.md) — architecture & design notes.
+
+See [`examples/`](examples) for runnable `.tyx` X-sheets (the
+[Typst doc](typst/README.md#worked-examples) lists what each one demonstrates).
+
 ## License
 
 [MIT License](LICENSE)

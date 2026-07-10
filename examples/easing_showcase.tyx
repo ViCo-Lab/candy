@@ -1,0 +1,35 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates every named easing curve plus the custom `expr:` and `bezier:`
+// easings. Each dot slides the same distance with a different rate curve so the
+// differences are visible side by side.
+//
+// Run:  candy build examples/easing_showcase.tyx
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // A row of dots, each labeled, starting at the left edge.
+  #mobject("linear", circle(radius: 0.5cm, fill: red))
+  #mobject("smooth", circle(radius: 0.5cm, fill: orange))
+  #mobject("cubic", circle(radius: 0.5cm, fill: yellow))
+  #mobject("sin", circle(radius: 0.5cm, fill: green))
+  #mobject("back", circle(radius: 0.5cm, fill: teal))
+  #mobject("expr", circle(radius: 0.5cm, fill: blue))
+  #mobject("bezier", circle(radius: 0.5cm, fill: purple))
+
+  // Stack them vertically, then slide each right with its own easing.
+  #animate("linear", to: (0cm, 0.5cm), duration: 1)
+  #animate("smooth", to: (0cm, 1.8cm), duration: 1)
+  #animate("cubic", to: (0cm, 3.1cm), duration: 1)
+  #animate("sin", to: (0cm, 4.4cm), duration: 1)
+  #animate("back", to: (0cm, 5.7cm), duration: 1)
+  #animate("expr", to: (0cm, 7.0cm), duration: 1)
+  #animate("bezier", to: (0cm, 8.3cm), duration: 1)
+
+  #animate("linear", to: (12cm, 0.5cm), duration: 1200, easing: "linear")
+  #animate("smooth", to: (12cm, 1.8cm), duration: 1200, easing: "smooth")
+  #animate("cubic", to: (12cm, 3.1cm), duration: 1200, easing: "cubic-in-out")
+  #animate("sin", to: (12cm, 4.4cm), duration: 1200, easing: "sin")
+  #animate("back", to: (12cm, 5.7cm), duration: 1200, easing: "there-and-back")
+  #animate("expr", to: (12cm, 7.0cm), duration: 1200, easing: "expr: 1 - (1 - t)^3")
+  #animate("bezier", to: (12cm, 8.3cm), duration: 1200, easing: "bezier:0.25,0.1,0.25,1.0")
+]

@@ -1,0 +1,20 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates `#play` — show a block of content for a fixed number of frames as
+// its own animation unit (precisely controllable like a mobject). Useful for
+// beat-by-beat reveals of text / equations.
+//
+// Run:  candy build examples/play_demo.tyx
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("title", text(28pt, weight: "bold", fill: blue)[Three Steps])
+
+  // Step 1 visible for 60 frames, then Step 2, then Step 3.
+  #play([#text(20pt)[Step 1 of 3: parse the .tyx]], duration: 60)
+  #play([#text(20pt)[Step 2 of 3: schedule & interpolate]], duration: 60)
+  #play([#text(20pt)[Step 3 of 3: render & encode]], duration: 60)
+
+  // A shape that slides in across the same timeline for context.
+  #mobject("dot", circle(radius: 0.6cm, fill: red))
+  #animate("dot", to: (10cm, 0cm), duration: 180, easing: "smooth")
+]

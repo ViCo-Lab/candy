@@ -1,0 +1,20 @@
+#import "@preview/candy:0.1.0": *
+
+// Demonstrates `#audio` — attach a voice / audio track to the animation. The
+// audio file is referenced by path; place `voice.opus` (or `.aac` for MP4) next
+// to the .tyx, or pass an absolute path. Visuals animate in sync with the track.
+//
+// Run:  candy build examples/audio_demo.tyx --format mkv --codec av1
+//       (Opus/.ogg audio goes into WebM/MKV; use .aac + MP4 for AAC.)
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // Non-blocking voice track at 90% volume; the timeline keeps animating.
+  #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
+
+  #mobject("title", text(26pt, weight: "bold", fill: blue)[Narration sync])
+  #animate("title", opacity: 0.4, duration: 120, easing: "smooth")
+
+  #mobject("wave", rect(width: 2cm, height: 2cm, fill: green))
+  #animate("wave", to: (8cm, 2cm), duration: 120, easing: "cubic-in-out")
+  #animate("wave", scale: 1.4, duration: 120, easing: "smooth")
+]

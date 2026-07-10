@@ -1,9 +1,16 @@
 [package]
-name = "candy"
+# Published to crates.io as `candy-animation` (the name `candy` is taken),
+# but the library crate and binary both keep the id `candy` (see [lib]/[[bin]]
+# below) so existing `use candy::...` imports and the `candy` CLI are unchanged.
+name = "candy-animation"
 version = "0.1.0"
 edition = "2024"
-description = "Code-oriented Animation Engine Designed for Typst — Rust rendering & encoding backend"
+description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/ViCo-Lab/candy"
+keywords = ["animation", "typst", "graphics", "manim", "video"]
+categories = ["graphics", "multimedia::video", "command-line-utilities"]
 
 [package.metadata.candy]
 codename = "Ribose"
@@ -80,8 +87,15 @@ openh264 = "0.9.7"
 # Disabled by default — enable with `--features gpu`. When active, the
 # `--gpu` CLI flag rasterizes SVG frames on the GPU instead of via
 # `typst-render` (CPU). Falls back to CPU automatically if no GPU device.
-vello = { version = "0.9.0", optional = true }
-wgpu = { version = "30.0.0", optional = true }
+#
+# Version pinning is critical here: `vello_svg` 0.9.x depends on `vello`
+# ^0.7, and `vello` 0.7's GPU `Renderer` is gated behind vello's own `wgpu`
+# feature — so we must match `vello` 0.7 (NOT 0.8/0.9) and enable that
+# feature. `vello` 0.7 in turn requires `wgpu` ^27. Mixing a newer `vello`
+# or `wgpu` with `vello_svg` produces incompatible `Scene`/`Renderer` types
+# from two different crate versions and fails to compile.
+vello = { version = "0.7", features = ["wgpu"], optional = true }
+wgpu = { version = "27", optional = true }
 vello_svg = { version = "0.9", optional = true }
 # Lightweight blocking executor for wgpu's async device-creation API.
 pollster = { version = "1.0.0", optional = true }

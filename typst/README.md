@@ -1,0 +1,457 @@
+# Candy Typst API — `@preview/candy`
+
+This document is the user-facing reference for **Candy's Typst DSL**. Candy turns
+`.tyx` X-sheets (standard Typst extended with candy directives) into self-contained
+videos (MP4 / MKV / WebM) or SVG drafts.
+
+> A `.tyx` file is **valid, standard Typst**. Compiling it with `typst compile`
+> renders the *first frame* of the animation (every object at its natural placement,
+> every `play` block visible, and `animate` / `pause` / `audio` inert). The Candy
+> Rust pipeline reads the **same directives from the source AST** and produces the
+> full clip. So a single `.tyx` is simultaneously a normal Typst document *and* a
+> Candy animation script.
+
+```typst
+#import "@preview/candy:0.1.0": *
+
+#mobject("dot", circle(radius: 1cm, fill: blue))
+#animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+#pause(duration: 500)
+```
+
+---
+
+## Table of contents
+
+- [Getting started](#getting-started)
+- [Core concepts](#core-concepts)
+  - [Timing model](#timing-model)
+  - [Scene / canvas](#scene--canvas)
+  - [Mobjects & actions](#mobjects--actions)
+- [Directives reference](#directives-reference)
+  - [Core](#core-directives)
+  - [Manim-inspired](#manim-inspired-directives)
+  - [Composite animations](#composite-animations)
+  - [Subtitles](#subtitles)
+  - [Easing counters](#easing-counters)
+  - [Helpers & constants](#helpers--constants)
+- [Easing reference](#easing-reference)
+- [Counters & `ecval`](#counters--ecval)
+- [Worked examples](#worked-examples)
+
+---
+
+## Getting started
+
+```sh
+# Default: H.264 in an MP4 container → dist/<stem>.mp4
+candy build examples/dot_move.tyx
+
+# AV1 in WebM
+candy build examples/dot_move.tyx --format webm --codec av1
+
+# SVG draft (one file per frame under .candy/<stem>/)
+candy build examples/dot_move.tyx --format svg
+```
+
+Every directive is *inert under standard Typst* (it either returns `body` or `none`),
+so you can iterate on layout with `typst compile` and render the animation with
+`candy build`.
+
+---
+
+## Core concepts
+
+### Timing model
+
+- Candy uses a **millisecond** timeline internally. The `--fps` CLI flag only sets
+  the output frame rate; a 1000 ms slide at 30 fps yields ~30 frames, at 60 fps ~60
+  frames — the wall-clock duration is unchanged.
+- `#animate` / `#pause` / `#play` durations are expressed in **frames** in the DSL,
+  but the scheduler converts the timeline to milliseconds. In practice, think of
+  `duration:` as "how long the action lasts" — at 30 fps, `duration: 30` ≈ 1 second.
+- `#subtitle` and `#ecounter` lifetimes are expressed in **milliseconds** directly.
+
+### Scene / canvas
+
+```typst
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // all mobjects & actions here
+]
+```
+
+`scene` wraps the body in a `page()` call so each scene renders as an independent
+page. The renderer uses the scene's page size as the canvas for every frame in that
+scene. Without `#scene`, candy defaults to 16 cm × 9 cm.
+
+### Mobjects & actions
+
+A **mobject** is an animatable object: a bare Typst block/element (`circle(...)`,
+`text(...)`, `[$E = mc^2$]`, an imported `canvas(...)`, etc.). Its *placement is
+automatic* — taken from where the body lands in the document flow. You never pass an
+`at:` coordinate; instead you animate it *relative to* that home position.
+
+An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `label`
+string and changes a transform (position / scale / rotation / opacity) over `duration`
+frames. Multiple actions on different targets run in parallel.
+
+---
+
+## Directives reference
+
+### Core directives
+
+#### `#mobject(label, body)` {#mobject}
+
+Register an animatable object. `label` is a unique string id; `body` is a bare block
+or element (never a string). Under standard Typst this simply renders `body` at its
+natural position.
+
+```typst
+#mobject("dot", circle(radius: 1cm, fill: blue))
+```
+
+#### `#animate(target, ..)` {#animate}
+
+Animate `target` over `duration` frames (default `30`). Supports absolute and
+relative transforms in any combination; each produces a parallel action.
+
+| Argument | Meaning |
+|---|---|
+| `to: (x, y)` | absolute target point in lengths, e.g. `(4cm, 0pt)` |
+| `dx:` / `dy:` | relative offset in cm (Manim-style `shift`), e.g. `dx: 2cm` |
+| `scale:` | absolute scale factor (e.g. `1.5`) |
+| `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
+| `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
+| `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
+| `opacity:` | target opacity in `[0, 1]` |
+| `duration:` | frames spanned (default `30`) |
+| `easing:` | rate curve (default `"linear"`; see [Easing](#easing-reference)) |
+
+```typst
+#animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+#animate("box", scale: 1.5, duration: 800, easing: "smooth")
+#animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600)
+```
+
+#### `#pause(duration: 15)` {#pause}
+
+Hold the current frame for `duration` frames. Inert under standard Typst.
+
+#### `#play(body, duration: 30)` {#play}
+
+Show `body` for `duration` frames as its own animation unit (block-level, controllable
+like a mobject). Under standard Typst the body is shown in the first frame.
+
+```typst
+#play([
+  #text(28pt, weight: "bold")[Step 1 of 3]
+], duration: 60)
+#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 60)
+```
+
+#### `#audio(path, blocking: false, loop: false, volume: 1.0, slice: none)` {#audio}
+
+Insert a voice / audio track. Inert under standard Typst.
+
+| Argument | Meaning |
+|---|---|
+| `path` | audio file (`.opus`/`.ogg` for WebM/MKV, `.aac` for MP4) |
+| `blocking:` | if `true`, the timeline waits for the clip to finish |
+| `loop:` | repeat the clip |
+| `volume:` | gain in `[0, 1]` |
+| `slice:` | optional `(start, end)` seconds sub-range of the clip |
+
+```typst
+#audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
+```
+
+#### `#video(path, width: 8cm, height: 5cm)` {#video}
+
+Insert a **video reference** as a placeholder mobject. Typst cannot embed video, so
+candy renders a labeled placeholder box (rounded rect + ▶ icon + filename). The
+placeholder behaves like any other mobject body (can be animated). To show the real
+first frame, extract it with ffmpeg and use `#mobject("vid", image(...))` instead.
+
+```typst
+#mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
+#animate("clip", scale: 1.2, duration: 500, easing: "smooth")
+```
+
+---
+
+### Manim-inspired directives
+
+These port concepts from Manim Community Edition. Each is inert under standard Typst.
+
+#### `#save_state(target, slot: "default")` {#save_state}
+
+Snapshot a mobject's current transform (x / y / scale / rotation / opacity) into a
+named slot. Mirrors `mobject.save_state()`.
+
+#### `#restore(target, slot: "default", duration: 30, easing: "linear")` {#restore}
+
+Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
+
+```typst
+#save_state("dot", slot: "home")
+#animate("dot", to: (3cm, 2cm), duration: 800)
+#restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
+```
+
+#### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 24, easing: "smooth")` {#indicate}
+
+Briefly scale + shift a mobject, then return — a transient "look here" effect.
+Mirrors `Indicate`.
+
+#### `#flash(target, factor: 2.0, duration: 18, easing: "smooth")` {#flash}
+
+Briefly scale up and fade toward transparent, then restore — a "flash" attention
+effect. Mirrors `Flash`.
+
+#### `#wiggle(target, degrees: 15.0, duration: 20, easing: "wiggle")` {#wiggle}
+
+Oscillate rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
+
+#### `#appear(target)` / `#disappear(target)` {#appear}
+
+Make a mobject visible instantly (`opacity: 1.0`) or invisible instantly
+(`opacity: 0.0`), with no interpolation. Useful for appear/disappear-without-fading
+effects.
+
+#### `#set_color(target, color: "black", duration: 1, easing: "linear")` {#set_color}
+
+Record a color change for a mobject. The color is tracked in the timeline, but the
+current renderer treats it as a no-op (Typst bodies are opaque strings). Future
+versions with structured mobjects will apply it. Mirrors `set_color`.
+
+```typst
+#set_color("dot", color: "red", duration: 30, easing: "smooth")
+```
+
+#### `#transition(kind: "cut", duration: 6)` {#transition}
+
+Mark a slide transition ("cut" between scenes). `kind`: `"cut"` (instant, default),
+`"fade"` (crossfade), `"slide"` (push). Only `"cut"` is fully implemented; the others
+are recorded for future versions. Inert under standard Typst.
+
+#### `#zoom-to(rect, duration: 30, easing: "smooth")` {#zoom-to}
+
+Zoom-to-region: enlarge a rectangle of the canvas to fill the frame over `duration`
+frames, producing a "camera zoom". `rect` is `(x, y, w, h)` in cm, relative to the
+page origin. Implemented as a scale + translate on all mobjects.
+
+```typst
+#zoom-to((4, 3, 6, 4), duration: 1000, easing: "smooth")
+```
+
+---
+
+### Composite animations
+
+#### `#blink(target, blinks: 3, duration: 30, easing: "linear")` {#blink}
+
+Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
+
+#### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 24, easing: "smooth")` {#spiral-in}
+
+Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
+`SpiralIn`.
+
+#### `#focus-on(target, factor: 0.5, duration: 20, easing: "smooth")` {#focus-on}
+
+Shrink a "spotlight" onto the target (scale down + dim). Mirrors `FocusOn`.
+
+#### `#fade-transform(from, to, duration: 20, easing: "smooth")` {#fade-transform}
+
+Crossfade two pre-registered mobjects: fade out `from` while fading in `to`. Mirrors
+`FadeTransform` (simple crossfade variant).
+
+#### `#move-along-path(target, path, duration: 30, easing: "linear")` {#move-along-path}
+
+Move `target` along a polyline through `path` (array of `(x, y)` points in cm,
+absolute). The scheduler generates a keyframe at each point, distributed across
+`duration`. Mirrors `MoveAlongPath` (linear paths; arcs/beziers approximated as
+polylines).
+
+```typst
+#move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 40, easing: "smooth")
+```
+
+#### `#morph(from, to, duration: 24, easing: "smooth")` {#morph}
+
+Morph one mobject into another by crossfading + scaling. Both must be registered via
+`mobject`. This is the **simplified** Morph — true point-by-point morphing (Manim's
+`Transform`) requires structured mobjects, which candy's opaque-content model does not
+support; the crossfade + scale variant is a reasonable approximation.
+
+#### `#transform(target, to: none, duration: 24, easing: "smooth")` {#transform}
+
+Morph a **single** mobject's content into new inline content — candy's Manim-style
+`Transform` / `ReplacementTransform`. `target`'s current body is smoothly replaced by
+`to` (a Typst body — a shape or a formula such as `[$a + b + d = c$]`), and the
+**original `target` label keeps the new content**, so you can keep animating it
+afterwards.
+
+```typst
+#mobject("eq", [$a + b = c$])
+#transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
+```
+
+---
+
+### Subtitles
+
+#### `#subtitle(body, duration: none, position: "bottom", easing: "linear")` {#subtitle}
+
+Overlay `body` (any Typst block content) on top of the animation.
+
+- `duration:` lifetime in **milliseconds**. `none` (default) means *persist* — the
+  caption stays until replaced by another `subtitle` in the same Typst scope, or until
+  that scope exits (auto-destroy). A positive number gives an explicit lifetime.
+- `position:` anchor — `"bottom"` (default), `"top"`, `"center"`, `"bottom-left"`,
+  `"bottom-right"`, `"top-left"`, `"top-right"`, or a tuple `(x, y)` in cm for an
+  absolute position.
+- `easing:` rate curve for the caption's own fade (default `"linear"`). Custom modes
+  `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are accepted.
+
+Only one subtitle may be visible per Typst scope at a time; a later one replaces an
+earlier one. A subtitle in a parent scope is temporarily hidden while a child scope
+shows its own (shadowing).
+
+```typst
+#subtitle([Long-lived caption], position: "bottom")
+#[
+  #subtitle([Child scope caption], position: "top", duration: 800)
+  #pause(duration: 800)
+]
+```
+
+---
+
+### Easing counters
+
+A key-value store of animatable integers, referenced from mobject / subtitle bodies via
+`ecval(name)`. Standard Typst sees the integer seed; the candy pipeline steps the value
+over time, shaped by the counter's easing.
+
+#### `#ecounter(name, seed: 0, step: 1, duration: none, easing: "linear")` {#ecounter}
+
+Register an integer counter. Returns `seed` under standard Typst (so binding it captures
+the initial value). With no `duration`, the counter steps once per millisecond; a
+positive `duration` ramps `seed → seed + step·duration` over that window, shaped by
+`easing`.
+
+#### `#ecval(value, default: 0)` {#ecval}
+
+Read the current value of an easing counter. Inside candy's pipeline it is substituted
+with the live, eased integer and may be used directly as a Typst parameter
+(`rect(width: ecval(n) * 1cm)`). Under standard Typst it returns its argument unchanged
+when it is already a number, so bind the `ecounter` result (`#let n = ecounter("n")`) and
+pass `n`.
+
+#### `#counter_pause(name)` / `#counter_resume(name)` / `#counter_destroy(name)` {#counter-control}
+
+Pause / resume / freeze a counter. Inert under standard Typst.
+
+```typst
+#let r = ecounter("r", seed: 40, step: 1)
+#mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
+#pause(duration: 600)
+#counter_pause("r")
+#pause(duration: 600)
+#counter_resume("r")
+#counter_destroy("r")
+```
+
+---
+
+### Helpers & constants
+
+Direction vectors (cm): `dir-left` `dir-right` `dir-up` `dir-down` `dir-origin`
+`dir-up-left` `dir-up-right` `dir-down-left` `dir-down-right`.
+
+Scale factors: `grow` (1.5) `shrink` (0.5) `original` (1.0).
+
+Turns (degrees): `quarter-turn` (90) `half-turn` (180) `full-turn` (360).
+
+Opacity presets: `visible` (1.0) `half-visible` (0.5) `invisible` (0.0).
+
+```typst
+#animate("dot", dx: dir-right.at(0) * 1cm, dy: dir-up.at(1) * 1cm, duration: 500)
+#animate("dot", scale-by: grow, duration: 500)
+```
+
+---
+
+## Easing reference
+
+`easing:` accepts a named curve or a custom spec:
+
+**Named curves** (unknown names fall back to `linear` with a warning):
+
+`"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
+`"quad-in"` / `"quad-out"` / `"quad-in-out"`,
+`"cubic-in"` / `"cubic-out"` / `"cubic-in-out"` (aliases `"ease-in"`, `"ease-out"`,
+`"ease-in-out"`),
+`"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
+
+**Custom specs** (accepted by `#animate`, `#subtitle`, `#ecounter`, …):
+
+- `expr:<math>` — a mathematical expression in `t` ∈ [0, 1], e.g.
+  `"expr: 1 - (1 - t)^3"`.
+- `bezier:x1,y1,x2,y2` — a cubic Bézier control-point spec (CSS-style easing curve),
+  e.g. `"bezier:0.25,0.1,0.25,1.0"`.
+
+```typst
+#animate("sq", to: (10cm, 0cm), duration: 2000, easing: "expr: 1 - (1 - t)^3")
+#animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
+```
+
+---
+
+## Counters & `ecval`
+
+The easing-counter module lets you drive Typst parameters (widths, radii, text content)
+with live, animatable integers. The substitution happens in the Rust renderer, so the
+same `.tyx` compiles under plain `typst compile` with the `seed` value.
+
+```typst
+#scene(width: 16cm, height: 9cm)[
+  #let r = ecounter("r", seed: 40, step: 1)
+  #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
+  #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
+  #subtitle([r = #str(ecval(r))], position: "bottom")
+  #counter_pause("r")
+  #pause(duration: 600)
+  #counter_resume("r")
+]
+```
+
+---
+
+## Worked examples
+
+| File | Demonstrates |
+|---|---|
+| `examples/dot_move.tyx` | `mobject` + `animate` + `pause` (the simplest clip) |
+| `examples/box_anim.tyx` | absolute `to:` + absolute `scale:` |
+| `examples/rotate_fade.tyx` | `rotate:` + `opacity:` + `there-and-back` easing |
+| `examples/transform_demo.tyx` | `#transform` on shapes **and** formulas (keeps the label) |
+| `examples/manim_features.tyx` | `save_state`/`restore`, `wiggle`, `flash`, `indicate`, `appear`/`disappear` |
+| `examples/composite_demo.tyx` | `blink`, `spiral-in`, `fade-transform`, `focus-on` |
+| `examples/full_demo.tyx` | `move-along-path` + `morph` + `indicate` |
+| `examples/modules_demo.tyx` | `ecounter`/`ecval`, custom `expr:`/`bezier:` easing, `subtitle`, counter control |
+| `examples/preview_demo.tyx` | external `@preview` package (`cetz`) resolved in-process |
+| `examples/custom_page.tyx` | custom page size via `#set page` |
+| `examples/play_demo.tyx` | `#play` beat-by-beat reveal |
+| `examples/audio_demo.tyx` | `#audio` + visual sync |
+| `examples/video_placeholder_demo.tyx` | `#video` placeholder box |
+| `examples/zoom_transition_demo.tyx` | `#zoom-to` + `#transition` + `#set_color` |
+| `examples/easing_showcase.tyx` | all named easings + custom `expr:`/`bezier:` |
+
+See each file in `examples/` for the full, runnable source. Build any of them with:
+
+```sh
+candy build examples/<name>.tyx
+```
