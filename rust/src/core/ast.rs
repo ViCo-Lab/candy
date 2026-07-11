@@ -792,6 +792,13 @@ pub struct SceneInfo {
     /// then the root, then the 16:9 default.
     #[serde(default)]
     pub page_size: Option<(f64, f64)>,
+    /// Background fill for this scene, as the raw Typst color expression
+    /// captured from `#scene(bg: …)` (e.g. `white`, `rgb("#05060f")`). `None`
+    /// ⇒ inherit from the parent scene, then the root, then opaque white.
+    /// The renderer resolves this to an actual color (SVG/video) so the
+    /// configured background actually shows up in the output frames.
+    #[serde(default)]
+    pub bg: Option<String>,
     /// Scene timeline interval (ms). The root spans `[0, total]`.
     pub start_ms: u32,
     pub end_ms: u32,

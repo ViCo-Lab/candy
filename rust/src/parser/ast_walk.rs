@@ -65,6 +65,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         page_size: ctx
             .page_size_cm
             .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        bg: None,
         start_ms: 0,
         end_ms: 0,
         owns_labels: Vec::new(),
@@ -126,7 +127,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
 pub(crate) struct ParseCtx {
     /// local name -> original Candy symbol (resolved through imports).
     pub(crate) symbol_map: HashMap<String, String>,
-    /// Candy module alias names (`candy`, `c`, …) bound by a bare
+    /// Candy module alias names (`candy`, `c`, ...) bound by a bare
     /// `#import "candy"` / `#import "candy" as X`. Enables `candy.mobject(...)`
     /// field-access detection while keeping ordinary method calls out.
     pub(crate) candy_aliases: HashSet<String>,
@@ -160,9 +161,9 @@ pub(crate) struct ParseCtx {
     pub(crate) next_scope_id: usize,
     pub(crate) scope_starts: HashMap<usize, u32>,
     pub(crate) scope_symbol_stack: Vec<HashMap<String, String>>,
-    /// Subtitle overlays (字幕模块).
+    /// Subtitle overlays.
     pub(crate) subtitles: Vec<Subtitle>,
-    /// Easing counters (缓动计数器模块).
+    /// Easing counters.
     pub(crate) counters: Vec<CounterDef>,
     pub(crate) counter_events: Vec<CounterEvent>,
     /// Lexical scope intervals (finalized on scope exit / at end of parse).
@@ -242,6 +243,10 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             // direct named args, so a nested scene's size doesn't leak up).
             let mut w_cm: Option<f64> = None;
             let mut h_cm: Option<f64> = None;
+            // Raw source of the `bg` argument expression (e.g. `rgb("#05060f")`),
+            // if present. Captured as source text because the background is
+            // resolved later (by the renderer, against the real Typst library).
+            let mut bg_src: Option<String> = None;
             for a in call.args().items() {
                 if let ast::Arg::Named(n) = a {
                     if let Some(cm) = collect_named_lengths_here(n.expr()) {
@@ -249,6 +254,33 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                             "width" => w_cm = Some(cm),
                             "height" => h_cm = Some(cm),
                             _ => {}
+                        }
+                    } else if n.name().as_str() == "bg" {
+                        // Recover the expression's source text from the
+                        // FuncCall's LinkedNode children (the AST `Named` node
+                        // only exposes the `Expr`, not its source range).
+                        if let Some(args_node) =
+                            node.children().find_map(|c| c.get().cast::<ast::Args>().map(|_| c))
+                        {
+                            bg_src = args_node.children().find_map(|arg| {
+                                arg.get().cast::<ast::Named>().and_then(|nn| {
+                                    if nn.name().as_str() == "bg" {
+                                        let name = nn.name().as_str();
+                                        // Take the value expression, not the
+                                        // `bg` name itself (an `Ident` also
+                                        // casts to `Expr`, so skip the child
+                                        // whose source text equals the name).
+                                        arg.children()
+                                            .filter_map(|c| {
+                                                c.get().cast::<Expr>().map(|_| c)
+                                            })
+                                            .find(|c| raw[c.range()].trim() != name)
+                                            .map(|c| raw[c.range()].to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
                         }
                     }
                 }
@@ -263,6 +295,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 parent: Some(parent),
                 scope,
                 page_size,
+                bg: bg_src,
                 start_ms: start,
                 end_ms: start,
                 owns_labels: Vec::new(),

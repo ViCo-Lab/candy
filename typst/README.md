@@ -1,4 +1,6 @@
-# Candy Typst API — `@preview/candy`
+# Candy
+
+## Code-oriented Animation eNgine Designed for tYpst
 
 This document is the user-facing reference for **Candy's Typst DSL**. Candy turns
 `.tyx` X-sheets (standard Typst extended with candy directives) into self-contained

@@ -28,8 +28,9 @@ use typst_kit::fonts::FontStore;
 use typst_kit::packages::SystemPackages;
 use typst_layout::PagedDocument;
 use typst_library::diag::FileError;
-use typst_library::foundations::{Bytes, Datetime, Duration};
+use typst_library::foundations::{Bytes, Datetime, Duration, Smart};
 use typst_library::text::Font;
+use typst_library::visualize::Paint;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
 use typst_syntax::ast::{self, Expr};
@@ -246,6 +247,10 @@ pub struct Renderer {
     /// `transform` content swaps) have a distinct source each frame and still
     /// recompile, but are themselves memoized, so a counter that repeats a
     /// value reuses its compile too.
+    /// Memoized background-color resolutions: raw `#scene(bg: …)` expression →
+    /// resolved `#rrggbb` (or `#rrggbbaa`) hex string. Resolving goes through
+    /// the real Typst compiler (see `resolve_bg_hex`), so it is done once per
+    /// distinct background expression and shared across every frame.
     ///
     /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
     /// parallel frame-render loop.
@@ -258,6 +263,8 @@ pub struct Renderer {
     /// size / canvas is constant, so the cached `RenderedFrame` composites
     /// directly. `Mutex` for the same `&self`-shared reason as `body_cache`.
     sprite_cache: Mutex<HashMap<SpriteKey, Arc<crate::renderer::RenderedFrame>>>,
+    /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
+    bg_cache: Mutex<HashMap<String, String>>,
 }
 
 impl Renderer {
@@ -285,6 +292,7 @@ impl Renderer {
             morph_cache: HashMap::new(),
             body_cache: Mutex::new(HashMap::new()),
             sprite_cache: Mutex::new(HashMap::new()),
+            bg_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -332,6 +340,98 @@ impl Renderer {
     fn resolve_body(&self, label: &Label, time_ms: u32) -> String {
         self.morph_body_for(label, time_ms)
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
+    }
+
+    /// Resolve a `#scene(bg: …)` color expression to a `#rrggbb(aa)` hex string
+    /// suitable for an SVG `fill` / video canvas, using the real Typst compiler.
+    ///
+    /// We compile a 1×1pt page whose `fill` is the expression and read back the
+    /// resolved page color — this honors *any* valid Typst color (`white`,
+    /// `rgb("#05060f")`, `rgb(r,g,b)`, `luma(…)`, gradients, …) instead of a
+    /// hand-rolled string parser. A non-color paint (e.g. a gradient) or an
+    /// unresolvable expression falls back to opaque white. Results are memoized
+    /// per distinct expression.
+    fn resolve_bg_hex(&self, bg: &str) -> String {
+        if let Some(c) = self.bg_cache.lock().unwrap().get(bg) {
+            return c.clone();
+        }
+        let resolved = {
+            let src = format!(
+                "#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()"
+            );
+            self.compile(&src)
+                .ok()
+                .and_then(|doc| {
+                    doc.pages().first().and_then(|p| match &p.fill {
+                        Smart::Custom(Some(Paint::Solid(c))) => Some(c.to_hex().to_string()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| "white".to_string())
+        };
+        self.bg_cache
+            .lock()
+            .unwrap()
+            .insert(bg.to_string(), resolved.clone());
+        resolved
+    }
+
+    /// Effective background hex for `scene_id`, walking up the scene tree to
+    /// inherit a parent's `bg` (root with none ⇒ opaque white).
+    fn scene_bg_hex(&self, scene_id: usize) -> String {
+        let mut cur = Some(scene_id);
+        while let Some(id) = cur {
+            if let Some(s) = self.scene.scenes.iter().find(|s| s.id == id) {
+                if let Some(bg) = &s.bg {
+                    return self.resolve_bg_hex(bg);
+                }
+                cur = s.parent;
+            } else {
+                break;
+            }
+        }
+        "white".to_string()
+    }
+
+    /// Parse a `#rrggbb(aa)` hex (or a bare `#rgb`) into `(r, g, b, a)`, with
+    /// full opacity as the default alpha. Used to seed the video canvas.
+    fn hex_to_rgba(bg: &str) -> [u8; 4] {
+        let h = bg.trim_start_matches('#');
+        let bytes = match h.len() {
+            3 => {
+                let r = h.as_bytes()[0];
+                let g = h.as_bytes()[1];
+                let b = h.as_bytes()[2];
+                vec![Self::hex_digit(r), Self::hex_digit(g), Self::hex_digit(b), 255u8]
+            }
+            6 => {
+                let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(255);
+                let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(255);
+                let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(255);
+                vec![r, g, b, 255]
+            }
+            8 => {
+                let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(255);
+                let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(255);
+                let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(255);
+                let a = u8::from_str_radix(&h[6..8], 16).unwrap_or(255);
+                vec![r, g, b, a]
+            }
+            _ => vec![255, 255, 255, 255],
+        };
+        [bytes[0], bytes[1], bytes[2], bytes[3]]
+    }
+
+    /// Map a single hex digit (`0-9`, `a-f`, `A-F`) to its 0–15 value, doubling
+    /// it to a 0–255 byte for `#rgb` shorthand expansion. Unknown digits → 15.
+    fn hex_digit(b: u8) -> u8 {
+        match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => 15,
+        }
+        .saturating_mul(17)
     }
 
     /// Compose a parent transform onto a child transform (group support).
@@ -862,14 +962,25 @@ impl Renderer {
         // Canvas size follows the active scene's page (not an arbitrary frame).
         let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
         let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
-        let mut canvas = vec![255u8; w * h * 4];
+        // Seed the canvas with the active scene's background color (inheriting
+        // from a parent scene, defaulting to opaque white), so the configured
+        // `bg` actually shows in the encoded video — not a hardcoded white.
+        let bg_rgba = if self.scene.scenes.is_empty() {
+            [255u8, 255, 255, 255]
+        } else {
+            Self::hex_to_rgba(&self.scene_bg_hex(active))
+        };
+        let mut canvas = vec![0u8; w * h * 4];
+        for chunk in canvas.chunks_mut(4) {
+            chunk.copy_from_slice(&bg_rgba);
+        }
         for (opacity, f) in &objs {
             composite_over(&mut canvas, f, *opacity, w, h);
         }
         // Apply the global camera (pan + zoom + rotate) by warping the
         // composited canvas through the inverse camera transform.
         if let Some(cam) = &camera {
-            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt);
+            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg_rgba);
         }
         Ok(crate::renderer::RenderedFrame {
             width: w,
@@ -975,16 +1086,24 @@ impl Renderer {
                 .unwrap_or((self.page_w, self.page_h))
         };
 
-        // White background, page-sized canvas.
+        // Background, page-sized canvas. The fill honors the active scene's
+        // configured `bg` (e.g. rgb("#05060f")), inheriting from a parent
+        // scene and defaulting to opaque white when none is set.
+        let bg_hex = if self.scene.scenes.is_empty() {
+            "white".to_string()
+        } else {
+            self.scene_bg_hex(active)
+        };
         let mut out = String::new();
         out.push_str(&format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{pw}\" height=\"{ph}\" viewBox=\"0 0 {pw} {ph}\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n",
             pw = pw, ph = ph
         ));
         out.push_str(&format!(
-            "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"white\"/>\n",
+            "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"{bg_hex}\"/>\n",
             pw = pw,
-            ph = ph
+            ph = ph,
+            bg_hex = bg_hex
         ));
 
         // A present camera wraps the whole scene (objects + subtitles) in a
@@ -1599,10 +1718,20 @@ fn camera_matrix_px(cam: &FrameData, page_w_pt: f64, page_h_pt: f64, ppi: f32) -
 }
 
 /// Bilinear-sample a RGBA canvas at `(x, y)` (in pixels). Out-of-bounds samples
-/// return opaque white (the page background).
-fn sample_bilinear(src: &[u8], w: usize, h: usize, x: f64, y: f64) -> (u8, u8, u8, u8) {
+/// return the scene background colour `bg` — the same fill native Typst paints
+/// on the page, so a camera pan/zoom/rotate that exposes area outside the
+/// original canvas reveals the configured background (e.g. a dark night sky),
+/// not a hardcoded white edge.
+fn sample_bilinear(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    x: f64,
+    y: f64,
+    bg: [u8; 4],
+) -> (u8, u8, u8, u8) {
     if x < 0.0 || y < 0.0 || x > w as f64 - 1.0 || y > h as f64 - 1.0 {
-        return (255, 255, 255, 255);
+        return (bg[0], bg[1], bg[2], bg[3]);
     }
     let x0 = x.floor() as usize;
     let y0 = y.floor() as usize;
@@ -1639,8 +1768,10 @@ fn sample_bilinear(src: &[u8], w: usize, h: usize, x: f64, y: f64) -> (u8, u8, u
     )
 }
 
-/// Warp a fully-composited (opaque white) canvas through the inverse camera
-/// transform, sampling the source with bilinear filtering.
+/// Warp a fully-composited canvas through the inverse camera transform,
+/// sampling the source with bilinear filtering. `bg` is the scene background
+/// colour used for samples that fall outside the original canvas (so exposed
+/// margins match native Typst's page fill instead of hardcoded white).
 fn warp_canvas_with_camera(
     canvas: &mut [u8],
     w: usize,
@@ -1649,6 +1780,7 @@ fn warp_canvas_with_camera(
     page_w_pt: f64,
     page_h_pt: f64,
     ppi: f32,
+    bg: [u8; 4],
 ) {
     let m = camera_matrix_px(cam, page_w_pt, page_h_pt, ppi);
     let inv = m.inverse();
@@ -1656,7 +1788,7 @@ fn warp_canvas_with_camera(
     for y in 0..h {
         for x in 0..w {
             let (sx, sy) = inv.apply(x as f64, y as f64);
-            let (r, g, b, a) = sample_bilinear(&src, w, h, sx, sy);
+            let (r, g, b, a) = sample_bilinear(&src, w, h, sx, sy, bg);
             let di = (y * w + x) * 4;
             canvas[di] = r;
             canvas[di + 1] = g;
@@ -2639,6 +2771,7 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
             parent: None,
             scope: 0,
             page_size: None,
+            bg: None,
             start_ms: 0,
             end_ms: 0,
             owns_labels: owns.clone(),
@@ -2730,6 +2863,7 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
             parent: None,
             scope: 0,
             page_size: None,
+            bg: None,
             start_ms: 0,
             end_ms: 0,
             owns_labels: owns.clone(),
