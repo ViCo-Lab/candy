@@ -547,16 +547,39 @@ impl Renderer {
             let mut palette: Vec<(Label, String)> = Vec::new();
             let mut blocks = String::new();
             for (i, label) in labels.iter().enumerate() {
-                let raw = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
-                // Synthetic / empty bodies (e.g. `none` group parents) occupy no
-                // box and are skipped — they are containers, not drawn content.
-                if raw.is_empty() || raw == "none" {
+                let natural = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
+                // Frame-0 body (content-timeline resolved at t=0). A mobject that
+                // is revealed / transformed / hidden so nothing shows at t=0 yet
+                // WILL render later has `frame0` empty/`none` while `natural`
+                // still carries the real content. Such mobjects must keep their
+                // natural box in the flow — otherwise every later mobject shifts
+                // up and the hidden mobject never gets a `nat` to be placed at —
+                // so we emit them wrapped in `#hide[…]`, exactly the native-Typst
+                // idiom for "keep the space, hide the ink", instead of dropping
+                // them from the flow. Pure containers whose base body is empty /
+                // `none` *and* which never render any content own no box and are
+                // still skipped.
+                let frame0 = content_for(&self.scene, label, 0);
+                let frame0_t = frame0.trim();
+                if (natural.is_empty() || natural == "none")
+                    && (frame0_t.is_empty() || frame0_t == "none")
+                {
                     continue;
                 }
                 // Distinct, safe 24-bit colour (skips black/white corners).
                 let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
                 palette.push((label.clone(), color.clone()));
-                let body = substitute_counters(&self.scene, raw, 0);
+                let natural_sub = substitute_counters(&self.scene, natural, 0);
+                let body = if frame0_t.is_empty() || frame0_t == "none" {
+                    // Temporarily not rendered: keep the box, hide the ink.
+                    // Note: this is interpolated inside `#{{ … }}` (Typst *code*
+                    // mode), so `hide` is called as a bare function — no `#`.
+                    format!("hide[{natural_sub}]")
+                } else {
+                    // `content_for` already substituted counters at t=0, so the
+                    // frame-0 body can be emitted verbatim.
+                    frame0_t.to_string()
+                };
                 // A block-level, content-sized wrapper makes Typst place this
                 // object on its own line in the normal flow (so it stacks
                 // vertically with the others), while the unique fill colour lets
@@ -583,10 +606,6 @@ impl Renderer {
             let svg = typst_svg::svg(page, &SvgOptions::default());
             // Read each object's natural top-left back from its colour box.
             for (label, color) in &palette {
-                let raw = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
-                if raw.is_empty() || raw == "none" {
-                    continue;
-                }
                 let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
                     continue;
                 };
@@ -2547,6 +2566,43 @@ fn morph_renders_interpolated_polygon() {
 ///   2. Multiple并列 mobjects must keep their *declaration* order top-to-bottom.
 ///      The labels below are deliberately declared as `zeta, alpha, mid` (not
 ///      alphabetical) so a stray alphabetical sort would be detected.
+
+/// Independent ground-truth reference shared by the layout regression tests:
+/// lay the bodies out in plain document flow (each wrapped in a uniquely
+/// coloured block) and read back each block's top-left. This deliberately does
+/// NOT call `ensure_natural`, so a regression in the production layout (ink
+/// offset shift, scrambled order, or dropped hidden mobjects) is caught rather
+/// than silently mirrored.
+#[cfg(test)]
+fn native_natural_positions(
+    r: &Renderer,
+    ordered: &[(String, String)],
+    page_w: f64,
+    page_h: f64,
+) -> HashMap<Label, (f64, f64)> {
+    let mut palette: Vec<(Label, String)> = Vec::new();
+    let mut blocks = String::new();
+    for (i, (label, body)) in ordered.iter().enumerate() {
+        let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
+        palette.push((Label(label.clone()), color.clone()));
+        blocks.push_str(&format!(
+            "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ {body} }}]"
+        ));
+    }
+    let src = format!(
+        "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n{blocks}\n"
+    );
+    let doc = r.compile(&src).expect("native layout compile");
+    let page = doc.pages().first().expect("native layout page");
+    let svg = typst_svg::svg(page, &SvgOptions::default());
+    let mut out = HashMap::new();
+    for (label, color) in &palette {
+        let (lx, ly, _, _) = bbox_of_svg_with_fill(&svg, color).expect("native bbox");
+        out.insert(label.clone(), (lx, ly));
+    }
+    out
+}
+
 #[test]
 fn renderer_natural_layout_matches_native_and_declaration_order() {
     use crate::core::ast::{Label, Scene, SceneInfo, Slide};
@@ -2604,35 +2660,6 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
     // block's top-left. This deliberately does NOT call `ensure_natural`, so a
     // regression in the production layout (ink-offset shift, scrambled order) is
     // caught rather than silently mirrored.
-    fn native_natural_positions(
-        r: &Renderer,
-        ordered: &[(String, String)],
-        page_w: f64,
-        page_h: f64,
-    ) -> HashMap<Label, (f64, f64)> {
-        let mut palette: Vec<(Label, String)> = Vec::new();
-        let mut blocks = String::new();
-        for (i, (label, body)) in ordered.iter().enumerate() {
-            let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
-            palette.push((Label(label.clone()), color.clone()));
-            blocks.push_str(&format!(
-                "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ {body} }}]"
-            ));
-        }
-        let src = format!(
-            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n{blocks}\n"
-        );
-        let doc = r.compile(&src).expect("native layout compile");
-        let page = doc.pages().first().expect("native layout page");
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        let mut out = HashMap::new();
-        for (label, color) in &palette {
-            let (lx, ly, _, _) = bbox_of_svg_with_fill(&svg, color).expect("native bbox");
-            out.insert(label.clone(), (lx, ly));
-        }
-        out
-    }
-
     let native = native_natural_positions(&r, &ordered, page_w, page_h);
 
     // (1) Each mobject's natural top-left must equal native Typst's content-box
@@ -2653,4 +2680,84 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
     let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
     assert!(y("zeta") < y("alpha"), "order scrambled: zeta must sit above alpha");
     assert!(y("alpha") < y("mid"), "order scrambled: alpha must sit above mid");
+}
+
+/// Regression test for "temporarily-not-rendered mobjects use `#hide` to occupy
+/// their natural space instead of being skipped". A mobject hidden at frame 0
+/// (its content-timeline resolves to `none` at t=0, e.g. a `reveal`/`typewriter`
+/// before its start) must STILL reserve its natural box in the flow — otherwise
+/// every later mobject shifts up and the hidden mobject never gets a `nat` to be
+/// placed at once it appears. The layout now wraps such mobjects in `#hide[…]`.
+#[test]
+fn hidden_at_frame0_mobject_reserves_space_via_hide() {
+    use crate::core::ast::{Label, Scene, SceneInfo, Slide};
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    // `hidden` is suppressed at t=0 via the content timeline; its base body is
+    // still real text (what it shows once revealed).
+    let ordered: Vec<(String, String)> = vec![
+        ("top".into(), "text(size: 18pt)[Top]\n".into()),
+        ("hidden".into(), "text(size: 18pt)[Hidden]\n".into()),
+        ("bottom".into(), "text(size: 18pt)[Bottom]\n".into()),
+    ];
+    let mut items = HashMap::new();
+    for (l, b) in &ordered {
+        items.insert(Label(l.clone()), b.trim().to_string());
+    }
+    // Suppress `hidden` at frame 0 (mirrors `reveal`/`typewriter` behaviour).
+    let mut ct: HashMap<Label, Vec<(u32, String)>> = HashMap::new();
+    ct.insert(Label("hidden".into()), vec![(0, "none".to_string())]);
+
+    let owns: Vec<Label> = ordered.iter().map(|(l, _)| Label(l.clone())).collect();
+    let scene = Scene {
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
+        items,
+        content_timeline: ct,
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        subtitles: Vec::new(),
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
+        scenes: vec![SceneInfo {
+            id: 0,
+            parent: None,
+            scope: 0,
+            page_size: None,
+            start_ms: 0,
+            end_ms: 0,
+            owns_labels: owns.clone(),
+        }],
+        root_scene: Some(0),
+        morph_pairs: Vec::new(),
+        groups: HashMap::new(),
+        private_metadata: PrivateMeta::default(),
+    };
+
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+
+    let page_w = 16.0 * PT_PER_CM;
+    let page_h = 9.0 * PT_PER_CM;
+    let native = native_natural_positions(&r, &ordered, page_w, page_h);
+
+    // (1) The hidden mobject MUST have a natural position (it was not skipped).
+    let hidden = r.nat_for(&Label("hidden".into())).expect("hidden mobject must get a nat");
+    // (2) Its natural position must match where it would sit if shown (native
+    //     Typst, all-visible) — i.e. `#hide` reserved the same box.
+    let nat_hidden = native.get(&Label("hidden".into())).expect("native nat present");
+    assert!(
+        (hidden.0 - nat_hidden.0).abs() < 1.0 && (hidden.1 - nat_hidden.1).abs() < 1.0,
+        "hidden: candy nat {hidden:?} != native {nat_hidden:?} (space not reserved)"
+    );
+    // (3) It must keep its slot in the flow: below `top`, above `bottom`.
+    let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
+    assert!(y("top") < y("hidden"), "hidden must sit below top");
+    assert!(y("hidden") < y("bottom"), "hidden must reserve space above bottom");
 }
