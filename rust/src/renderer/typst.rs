@@ -37,7 +37,7 @@ use typst_utils::{LazyHash, Scalar};
 
 use crate::core::ast::{FrameData, Label, Scene, SubPos, Subtitle};
 use crate::core::error::CandyError;
-use crate::core::morph::{extract_shapes_from_svg, MorphPlan, polygon_area};
+use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 const PT_PER_CM: f64 = 28.346_456_692_913_385;
@@ -96,16 +96,10 @@ impl typst_kit::downloader::Downloader for RustlsDownloader {
         _key: &dyn std::any::Any,
         url: &str,
     ) -> std::io::Result<(Option<usize>, Box<dyn std::io::Read>)> {
-        let response = self
-            .agent
-            .get(url)
-            .call()
-            .map_err(|err| match err {
-                ureq::Error::Status(404, _) => {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, err)
-                }
-                err => std::io::Error::other(err),
-            })?;
+        let response = self.agent.get(url).call().map_err(|err| match err {
+            ureq::Error::Status(404, _) => std::io::Error::new(std::io::ErrorKind::NotFound, err),
+            err => std::io::Error::other(err),
+        })?;
         let content_len: Option<usize> = response
             .header("Content-Length")
             .and_then(|header| header.parse().ok());
@@ -414,12 +408,57 @@ impl Renderer {
         }
 
         // Camera is a synthetic mobject; extract and remove it from the draw set.
-        let camera = states.get(&Label(CAMERA_LABEL.into())).cloned();
+        let mut camera = states.get(&Label(CAMERA_LABEL.into())).cloned();
         states.remove(&Label(CAMERA_LABEL.into()));
 
+        // A `#camera` directive is *scene-scoped*: it only transforms the scene
+        // in which it is declared. Once that scene ends, the camera returns to
+        // identity so a pan/zoom/rotate from an earlier scene does not leak into
+        // later scenes (which would shift/scale/rotate content that should sit
+        // at its plain-Typst position). This mirrors the per-scene reset used
+        // for every other animated property. With no scene tree the camera
+        // applies globally (legacy behaviour).
+        //
+        // The camera's "home scene" is the scene active at the camera's *first*
+        // keyframe (the directive's start). We apply the camera only while the
+        // current frame's active scene is that same home scene. (The scheduler
+        // also snapshots every item — including the synthetic camera — at the
+        // document's final frame, which would otherwise pin the camera transform
+        // to the very end; keying off the *first* keyframe avoids that trap.)
+        if !self.scene.scenes.is_empty() {
+            if camera.is_some() {
+                // Home scene = the scene active when the camera *animation*
+                // actually begins. The interpolator expands the sparse camera
+                // keyframes into one dense frame per sample time, and the
+                // scheduler also seeds `__camera__` with an identity keyframe at
+                // `time_ms = 0`, so we can't just take the minimum keyframe time.
+                // Instead we locate the first frame where the camera deviates
+                // from identity — that is the start of the `#camera` directive —
+                // and use its home scene. The camera then applies only while the
+                // current frame's active scene is that same home scene; once the
+                // scene ends it returns to identity (no leak into later scenes).
+                let is_nonidentity = |f: &FrameData| {
+                    f.x.abs() > 1e-6
+                        || f.y.abs() > 1e-6
+                        || (f.scale - 1.0).abs() > 1e-6
+                        || f.rotation.abs() > 1e-6
+                };
+                let cam_start = all_frames
+                    .iter()
+                    .filter(|f| f.target.0 == CAMERA_LABEL && is_nonidentity(f))
+                    .map(|f| f.time_ms)
+                    .min()
+                    .unwrap_or(0);
+                let home = self.scene.active_scene_at(cam_start);
+                let active = self.scene.active_scene_at(time_ms);
+                if active != home {
+                    camera = None;
+                }
+            }
+        }
+
         // Synthetic group parents (empty body) are containers, not drawn.
-        let parent_labels: std::collections::HashSet<&Label> =
-            self.scene.groups.values().collect();
+        let parent_labels: std::collections::HashSet<&Label> = self.scene.groups.values().collect();
 
         let mut out: HashMap<Label, FrameData> = HashMap::new();
         for label in states.keys() {
@@ -439,16 +478,19 @@ impl Renderer {
 
     /// Compute (once) the natural layout of every mobject.
     ///
-    /// Each scene's objects are laid out in a vertical flow (top-to-bottom,
-    /// horizontally centered) that mirrors where the same content would land
-    /// under plain Typst. This is what makes `#play` beats and `mobject` text
-    /// appear at their "standard mode" positions instead of all piling up at the
-    /// page origin (0, 0).
+    /// Each scene's objects are laid out by plain Typst document flow — every
+    /// mobject is emitted as an ordinary block-level Typst object on its own
+    /// line, so Typst stacks them top-to-bottom (left-aligned) with its standard
+    /// spacing, exactly as the same bodies would land if written directly in a
+    /// Typst source. This is what makes `#play` beats and `mobject` text appear
+    /// at their "standard mode" positions instead of all piling up at the page
+    /// origin (0, 0), and it stays consistent with how hand-written Typst would
+    /// typeset the same content (no synthetic `#stack` gap or centring).
     ///
     /// We cannot rely on Typst's `data-typst-label` SVG attribute — the
     /// `typst_svg` exporter used here does not emit it — so instead we measure
-    /// each object's bounding box by rendering it in isolation and stack the
-    /// boxes ourselves.
+    /// each object's bounding box by wrapping it in a uniquely-coloured block
+    /// and reading the footprint back from the single rendered layout SVG.
     fn ensure_natural(&mut self) -> Result<(), CandyError> {
         if self.natural_computed {
             return Ok(());
@@ -476,51 +518,81 @@ impl Renderer {
         } else {
             for s in &self.scene.scenes {
                 let pg = self.scene.effective_page_pt(s.id);
-                let mut ls: Vec<Label> = s.owns_labels.clone();
-                ls.sort_by(|a, b| a.0.cmp(&b.0));
+                // `owns_labels` is in declaration order, which matches the
+                // top-to-bottom document flow we want to reproduce.
+                let ls: Vec<Label> = s.owns_labels.clone();
                 by_scene.push((s.id, pg, ls));
             }
         }
 
-        let gap = 0.6 * PT_PER_CM; // vertical gap between stacked objects
-        let top_pad = 0.3 * PT_PER_CM;
         let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
 
-        for (sid, (pw, ph), labels) in &by_scene {
-            let mut cursor = top_pad;
-            for label in labels {
-                // Only `play` blocks and string-literal mobjects participate in
-                // the flow layout. Shapes (circle/rect/polygon/…) are animated
-                // from the page centre (their historical anchor), so leaving them
-                // at (0, 0) preserves existing animation behaviour and avoids
-                // stacking unrelated geometry off-canvas. This also matches the
-                // user-visible complaint: `play` beats and revealed text were all
-                // piling up at the origin instead of sitting at their "standard
-                // mode" (flow) positions.
-                let body_src = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
-                let is_flow = label.0.starts_with("__block_") || body_src.starts_with('"');
-                if !is_flow {
+        for (_sid, (pw, ph), labels) in &by_scene {
+            // Native layout pass: each mobject is wrapped in a content-sized,
+            // block-level coloured `block` and emitted in plain document flow.
+            // Typst's own block flow stacks them top-to-bottom (left-aligned) with
+            // its standard spacing — exactly where the same bodies would land if
+            // written directly in a Typst source. This is faithful to "standard
+            // Typst" layout, unlike `#stack(dir: ttb, spacing: …)`, which imposes a
+            // synthetic fixed gap and centring that do not match plain Typst.
+            if labels.is_empty() {
+                continue;
+            }
+            let mut palette: Vec<(Label, String)> = Vec::new();
+            let mut blocks = String::new();
+            for (i, label) in labels.iter().enumerate() {
+                let raw = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
+                // Synthetic / empty bodies (e.g. `none` group parents) occupy no
+                // box and are skipped — they are containers, not drawn content.
+                if raw.is_empty() || raw == "none" {
                     continue;
                 }
-                // Content-less / synthetic objects (e.g. `none`) occupy no box.
-                let Some(bbox) = self.measure_label(&preamble, label) else {
-                    cursor += gap;
+                // Distinct, safe 24-bit colour (skips black/white corners).
+                let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
+                palette.push((label.clone(), color.clone()));
+                let body = substitute_counters(&self.scene, raw, 0);
+                // A block-level, content-sized wrapper makes Typst place this
+                // object on its own line in the normal flow (so it stacks
+                // vertically with the others), while the unique fill colour lets
+                // us recover its footprint from the single rendered SVG.
+                blocks.push_str(&format!(
+                    "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ {body} }}]"
+                ));
+            }
+            if blocks.is_empty() {
+                continue;
+            }
+            let src = format!(
+                "{preamble}\n#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
+                 {blocks}\n"
+            );
+            let doc = match self.compile(&src) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let page = match doc.pages().first() {
+                Some(p) => p,
+                None => continue,
+            };
+            let svg = typst_svg::svg(page, &SvgOptions::default());
+            // Read each object's natural top-left back from its colour box.
+            for (label, color) in &palette {
+                let raw = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
+                if raw.is_empty() || raw == "none" {
+                    continue;
+                }
+                let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
                     continue;
                 };
-                let (minx, miny, maxx, maxy) = bbox;
-                let w = (maxx - minx).max(1.0);
-                let h = (maxy - miny).max(1.0);
-                let x = ((*pw - w) / 2.0).max(0.0); // center horizontally
-                // Place the object so its measured top-left lands at (x, cursor).
-                nat.insert(label.clone(), (x - minx, cursor - miny));
-                cursor += h + gap;
-            }
-            if cursor > *ph {
-                eprintln!(
-                    "warn: scene {sid} natural content height ({:.1}pt) overflows the \
-                     canvas ({:.1}pt); consider splitting it into more scenes",
-                    cursor, ph
-                );
+                // The object's own bbox offset (rendered in isolation) is needed
+                // so the per-frame `#place` lands the content's top-left exactly
+                // on the native position recovered above.
+                let Some(own_bbox) = self.measure_label(&preamble, label, *pw, *ph) else {
+                    continue;
+                };
+                let (lx, ly, _, _) = layout_bbox;
+                let (ox, oy, _, _) = own_bbox;
+                nat.insert(label.clone(), (lx - ox, ly - oy));
             }
         }
 
@@ -585,6 +657,8 @@ impl Renderer {
         &self,
         preamble: &str,
         label: &Label,
+        page_w: f64,
+        page_h: f64,
     ) -> Option<(f64, f64, f64, f64)> {
         let raw = self.scene.items.get(label)?;
         // Synthetic / empty bodies render to nothing measurable.
@@ -592,11 +666,18 @@ impl Renderer {
             return None;
         }
         let body = substitute_counters(&self.scene, raw, 0);
-        // Prefix with `#` so the body (a function-call / content expression) is
-        // evaluated rather than treated as plain text.
-        let src = format!(
-            "{preamble}\n#set page(width: 4000pt, height: 4000pt, margin: 0pt, fill: none)\n#{body}\n"
-        );
+        // Render the body EXACTLY as the final frame does — through the same
+        // `#place(top + left, …)[#scale(origin: top + left, …)[#{body}]]`
+        // wrapper, on the SAME scene page — so the measured offset matches
+        // per-frame placement (an inline shape's baseline offset depends on the
+        // page/line context, so the measurement page must equal the render page).
+        // Placing at (0 pt, 0 pt) and reading the body's bounding-box minimum
+        // yields `own`: the offset between the `#place` anchor (content-box
+        // top-left) and the body's *visual* top-left. The page uses `fill: none`,
+        // so no background rectangle pollutes the measurement. `nat = layout -
+        // own` then lands the visual top-left precisely on the native position —
+        // regardless of how Typst sits an inline shape on its baseline.
+        let src = place_source(page_w, page_h, 0.0, 0.0, 100.0, 0.0, &body, preamble);
         let doc = self.compile(&src).ok()?;
         let page = doc.pages().first()?;
         let svg = typst_svg::svg(page, &SvgOptions::default());
@@ -733,7 +814,10 @@ impl Renderer {
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
-            self.scene_pages.get(&active).copied().unwrap_or((self.page_w, self.page_h))
+            self.scene_pages
+                .get(&active)
+                .copied()
+                .unwrap_or((self.page_w, self.page_h))
         };
 
         let mut labels: Vec<&Label> = states.keys().collect();
@@ -864,7 +948,10 @@ impl Renderer {
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
-            self.scene_pages.get(&active).copied().unwrap_or((self.page_w, self.page_h))
+            self.scene_pages
+                .get(&active)
+                .copied()
+                .unwrap_or((self.page_w, self.page_h))
         };
 
         // White background, page-sized canvas.
@@ -875,7 +962,8 @@ impl Renderer {
         ));
         out.push_str(&format!(
             "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"white\"/>\n",
-            pw = pw, ph = ph
+            pw = pw,
+            ph = ph
         ));
 
         // A present camera wraps the whole scene (objects + subtitles) in a
@@ -905,7 +993,11 @@ impl Renderer {
         // Subtitle overlays: one per visible scope, subject to
         // parental shadowing + auto-destroy. Drawn on top of the objects.
         for sub in &self.scene.subtitles {
-            if self.scene.visible_subtitle_ids_at(time_ms).contains(&sub.id) {
+            if self
+                .scene
+                .visible_subtitle_ids_at(time_ms)
+                .contains(&sub.id)
+            {
                 let svg = self.render_subtitle_svg(sub, time_ms)?;
                 out.push_str(&svg);
                 out.push('\n');
@@ -1383,12 +1475,7 @@ fn camera_transform_svg(cam: &FrameData, page_w: f64, page_h: f64) -> String {
 
 /// Forward camera matrix (scene → screen) in *pixel* space, for the pixel-path
 /// warp. `ppi` is `pixel_per_pt`.
-fn camera_matrix_px(
-    cam: &FrameData,
-    page_w_pt: f64,
-    page_h_pt: f64,
-    ppi: f32,
-) -> Matrix {
+fn camera_matrix_px(cam: &FrameData, page_w_pt: f64, page_h_pt: f64, ppi: f32) -> Matrix {
     let (cx, cy) = (page_w_pt * ppi as f64 / 2.0, page_h_pt * ppi as f64 / 2.0);
     let dx = cam.x * PT_PER_CM * ppi as f64;
     let dy = cam.y * PT_PER_CM * ppi as f64;
@@ -1654,6 +1741,110 @@ fn bbox_of_svg(svg: &str) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
+/// Like [`bbox_of_svg`] but unions only the geometry that carries the given
+/// `fill` colour (case-insensitive, `#rrggbb`). Used by the native layout pass:
+/// each mobject is wrapped in a uniquely-coloured `box`, so locating that
+/// colour's footprint recovers the object's natural top-left as laid out by
+/// Typst itself — no hand-computed coordinates.
+fn bbox_of_svg_with_fill(svg: &str, fill: &str) -> Option<(f64, f64, f64, f64)> {
+    let target = fill.to_ascii_lowercase();
+    let mut fill_stack: Vec<String> = Vec::new();
+    let mut cur_fill = String::new();
+    let mut stack: Vec<[f64; 6]> = Vec::new();
+    let mut cur: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    let mut idx = 0;
+    while idx < svg.len() {
+        let Some(lt) = svg[idx..].find('<') else {
+            break;
+        };
+        let lt = idx + lt;
+        if svg[lt..].starts_with("</g>") {
+            if let Some(m) = stack.pop() {
+                cur = m;
+            }
+            if let Some(f) = fill_stack.pop() {
+                cur_fill = f;
+            }
+            idx = lt + 4;
+            continue;
+        }
+        let Some(gt) = svg[lt..].find('>') else {
+            break;
+        };
+        let gt = lt + gt;
+        let tag = &svg[lt + 1..gt];
+        let is_g_open = tag == "g" || tag.starts_with("g ") || tag.starts_with("g>");
+        let mut el_matrix = cur;
+        if let Some(t) = svg_attr(tag, "transform") {
+            el_matrix = compose_matrix(cur, &parse_transform_attr(&t));
+        }
+        // Effective fill for this element: an explicit `fill` attr wins,
+        // otherwise it inherits from the nearest ancestor group.
+        let mut el_fill = cur_fill.clone();
+        if let Some(f) = svg_attr(tag, "fill") {
+            el_fill = f.to_ascii_lowercase();
+        }
+        if is_g_open {
+            stack.push(cur);
+            fill_stack.push(cur_fill.clone());
+            cur = el_matrix;
+            cur_fill = el_fill;
+            idx = gt + 1;
+            continue;
+        }
+        if el_fill == target {
+            let pts: Vec<(f64, f64)> = match tag.split_whitespace().next() {
+                Some("rect") => {
+                    let (x, y) = (svg_num(tag, "x"), svg_num(tag, "y"));
+                    let (w, h) = (svg_num(tag, "width"), svg_num(tag, "height"));
+                    vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+                }
+                Some("circle") => {
+                    let (cx, cy, r) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "r"));
+                    vec![(cx - r, cy - r), (cx + r, cy + r)]
+                }
+                Some("ellipse") => {
+                    let (cx, cy) = (svg_num(tag, "cx"), svg_num(tag, "cy"));
+                    let (rx, ry) = (svg_num(tag, "rx"), svg_num(tag, "ry"));
+                    vec![(cx - rx, cy - ry), (cx + rx, cy + ry)]
+                }
+                Some("polygon") | Some("polyline") => svg_points(svg_attr(tag, "points")),
+                Some("path") => match svg_attr(tag, "d") {
+                    Some(d) => collect_path_points(&d),
+                    None => vec![],
+                },
+                _ => vec![],
+            };
+            for (x, y) in pts {
+                let (px, py) = apply_matrix(&el_matrix, x, y);
+                if px < min_x {
+                    min_x = px;
+                }
+                if py < min_y {
+                    min_y = py;
+                }
+                if px > max_x {
+                    max_x = px;
+                }
+                if py > max_y {
+                    max_y = py;
+                }
+            }
+        }
+        idx = gt + 1;
+    }
+    if min_x.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    }
+}
+
 /// Extract `name="value"` (single or double quoted) from a tag string.
 fn svg_attr(tag: &str, name: &str) -> Option<String> {
     let pat = format!("{name}=");
@@ -1684,21 +1875,278 @@ fn svg_points(s: Option<String>) -> Vec<(f64, f64)> {
         .filter_map(|t| t.trim().parse::<f64>().ok())
         .collect::<Vec<_>>()
         .chunks(2)
-        .filter_map(|c| if c.len() == 2 { Some((c[0], c[1])) } else { None })
+        .filter_map(|c| {
+            if c.len() == 2 {
+                Some((c[0], c[1]))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
 /// Loose extent of an SVG path: every coordinate pair in `d` (control points
 /// included). Good enough for layout spacing.
+/// A token in an SVG path `d` string: a command letter or a numeric argument.
+enum PathTok {
+    Cmd(char),
+    Num(f64),
+}
+
+/// Pull the next numeric argument, skipping any interleaved command letters
+/// (which belong to a later group). Returns `None` at end-of-input or when the
+/// next token is a command (so the caller can stop consuming this group).
+fn next_path_num(toks: &[PathTok], i: &mut usize) -> Option<f64> {
+    while *i < toks.len() {
+        match toks[*i] {
+            PathTok::Num(v) => {
+                *i += 1;
+                return Some(v);
+            }
+            PathTok::Cmd(_) => return None,
+        }
+    }
+    None
+}
+
+/// Parse an SVG path `d` attribute into the set of points that bound it.
+///
+/// Unlike a naive "pair up all numbers" scheme, this honours command letters,
+/// relative (lowercase) vs absolute (uppercase) coordinates, the single-axis
+/// `h`/`v` commands, and implicit command repetition (e.g. `M 0 0 1 1` draws a
+/// move followed by a line). Bézier control points are included so the returned
+/// hull bounds the whole curve (a Bézier lies inside its control-point convex
+/// hull). Previously this function just zipped every number into `(x, y)` pairs,
+/// which silently transposed `v`/`h` rects and broke any non-square path.
 fn collect_path_points(d: &str) -> Vec<(f64, f64)> {
-    let nums: Vec<f64> = d
-        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
-        .filter(|t| !t.is_empty())
-        .filter_map(|t| t.parse::<f64>().ok())
-        .collect();
-    nums.chunks(2)
-        .filter_map(|c| if c.len() == 2 { Some((c[0], c[1])) } else { None })
-        .collect()
+    // Tokenize: command letters vs numbers (scientific notation is allowed).
+    let mut toks: Vec<PathTok> = Vec::new();
+    let mut num = String::new();
+    let flush = |num: &mut String, toks: &mut Vec<PathTok>| {
+        if !num.is_empty() {
+            if let Ok(v) = num.parse::<f64>() {
+                toks.push(PathTok::Num(v));
+            }
+            num.clear();
+        }
+    };
+    for c in d.chars() {
+        if matches!(
+            c,
+            'M' | 'm'
+                | 'L'
+                | 'l'
+                | 'H'
+                | 'h'
+                | 'V'
+                | 'v'
+                | 'C'
+                | 'c'
+                | 'S'
+                | 's'
+                | 'Q'
+                | 'q'
+                | 'T'
+                | 't'
+                | 'A'
+                | 'a'
+                | 'Z'
+                | 'z'
+        ) {
+            flush(&mut num, &mut toks);
+            toks.push(PathTok::Cmd(c));
+        } else if c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E' {
+            // `e`/`E` only appear inside scientific-notation numbers, so they are
+            // part of a numeric token rather than a (non-existent) command.
+            num.push(c);
+        } else {
+            flush(&mut num, &mut toks);
+        }
+    }
+    flush(&mut num, &mut toks);
+
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    let mut sx = 0.0; // current subpath start (for `Z`)
+    let mut sy = 0.0;
+    let mut cmd: Option<char> = None;
+    let mut first = true; // first argument group of the current command run
+    let mut i = 0;
+    while i < toks.len() {
+        if let PathTok::Cmd(c) = toks[i] {
+            cmd = Some(c);
+            first = true;
+            i += 1;
+        }
+        let base = match cmd {
+            Some(c) => c,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        let rel = base.is_lowercase();
+        // A `M`/`m` run emits move then implicit lineto for the rest of the group.
+        let eff = if first {
+            base
+        } else {
+            match base {
+                'M' => 'L',
+                'm' => 'l',
+                o => o,
+            }
+        };
+        match eff {
+            'Z' | 'z' => {
+                cx = sx;
+                cy = sy;
+                pts.push((cx, cy));
+                first = false;
+            }
+            'H' | 'h' => {
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                cx = if rel { cx + x } else { x };
+                pts.push((cx, cy));
+                first = false;
+            }
+            'V' | 'v' => {
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                cy = if rel { cy + y } else { y };
+                pts.push((cx, cy));
+                first = false;
+            }
+            'L' | 'l' | 'M' | 'm' | 'T' | 't' => {
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let (nx, ny) = if rel { (cx + x, cy + y) } else { (x, y) };
+                cx = nx;
+                cy = ny;
+                if eff == 'M' || eff == 'm' {
+                    sx = cx;
+                    sy = cy;
+                }
+                pts.push((cx, cy));
+                first = false;
+            }
+            'Q' | 'q' => {
+                let x1 = next_path_num(&toks, &mut i);
+                let y1 = next_path_num(&toks, &mut i);
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let (cx1, cy1) = if rel {
+                    (cx + x1.unwrap_or(0.0), cy + y1.unwrap_or(0.0))
+                } else {
+                    (x1.unwrap_or(0.0), y1.unwrap_or(0.0))
+                };
+                let (nx, ny) = if rel { (cx + x, cy + y) } else { (x, y) };
+                pts.push((cx1, cy1));
+                pts.push((nx, ny));
+                cx = nx;
+                cy = ny;
+                first = false;
+            }
+            'S' | 's' => {
+                let x2 = next_path_num(&toks, &mut i);
+                let y2 = next_path_num(&toks, &mut i);
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let (cx2, cy2) = if rel {
+                    (cx + x2.unwrap_or(0.0), cy + y2.unwrap_or(0.0))
+                } else {
+                    (x2.unwrap_or(0.0), y2.unwrap_or(0.0))
+                };
+                let (nx, ny) = if rel { (cx + x, cy + y) } else { (x, y) };
+                pts.push((cx2, cy2));
+                pts.push((nx, ny));
+                cx = nx;
+                cy = ny;
+                first = false;
+            }
+            'C' | 'c' => {
+                let x1 = next_path_num(&toks, &mut i);
+                let y1 = next_path_num(&toks, &mut i);
+                let x2 = next_path_num(&toks, &mut i);
+                let y2 = next_path_num(&toks, &mut i);
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let (cx1, cy1) = if rel {
+                    (cx + x1.unwrap_or(0.0), cy + y1.unwrap_or(0.0))
+                } else {
+                    (x1.unwrap_or(0.0), y1.unwrap_or(0.0))
+                };
+                let (cx2, cy2) = if rel {
+                    (cx + x2.unwrap_or(0.0), cy + y2.unwrap_or(0.0))
+                } else {
+                    (x2.unwrap_or(0.0), y2.unwrap_or(0.0))
+                };
+                let (nx, ny) = if rel { (cx + x, cy + y) } else { (x, y) };
+                pts.push((cx1, cy1));
+                pts.push((cx2, cy2));
+                pts.push((nx, ny));
+                cx = nx;
+                cy = ny;
+                first = false;
+            }
+            'A' | 'a' => {
+                // rx ry x-axis-rotation large-arc-flag sweep-flag x y
+                let _rx = next_path_num(&toks, &mut i);
+                let _ry = next_path_num(&toks, &mut i);
+                let _rot = next_path_num(&toks, &mut i);
+                let _la = next_path_num(&toks, &mut i);
+                let _sw = next_path_num(&toks, &mut i);
+                let x = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let y = match next_path_num(&toks, &mut i) {
+                    Some(v) => v,
+                    None => break,
+                };
+                let (nx, ny) = if rel { (cx + x, cy + y) } else { (x, y) };
+                pts.push((nx, ny));
+                cx = nx;
+                cy = ny;
+                first = false;
+            }
+            _ => {
+                // Unknown command: consume one number and move on.
+                next_path_num(&toks, &mut i);
+                first = false;
+            }
+        }
+    }
+    pts
 }
 
 /// Apply a 2-D affine `[a, b, c, d, e, f]` to a point.
@@ -1733,13 +2181,22 @@ fn parse_transform_attr(s: &str) -> [f64; 6] {
             .unwrap_or(0);
         let name = &rest[name_start..open];
         let args: Vec<f64> = rest[open + 1..close]
-            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+            .split(|c: char| {
+                !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+            })
             .filter(|t| !t.is_empty())
             .filter_map(|t| t.parse::<f64>().ok())
             .collect();
         let tm = match name {
             "translate" if args.len() >= 2 => [1.0, 0.0, 0.0, 1.0, args[0], args[1]],
-            "translate" => [1.0, 0.0, 0.0, 1.0, args.first().copied().unwrap_or(0.0), 0.0],
+            "translate" => [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                args.first().copied().unwrap_or(0.0),
+                0.0,
+            ],
             "scale" if args.len() >= 2 => [args[0], 0.0, 0.0, args[1], 0.0, 0.0],
             "scale" => {
                 let s = args.first().copied().unwrap_or(1.0);
@@ -1783,6 +2240,48 @@ pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
         }
         Err(e) => Err(CandyError::Typst(format!("{:?}", e))),
     }
+}
+
+#[test]
+fn path_parser_handles_relative_hv_and_implicit_repeat() {
+    // Typst emits the coloured layout-marker rects as relative `v`/`h` paths.
+    // The old naive parser zipped every number into `(x, y)` pairs and
+    // transposed width/height (44.18×13.16 reported as 13.16×44.18).
+    let pts = collect_path_points("M 0 0v 13.16h 44.18v -13.16Z");
+    let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
+    let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(min_x, 0.0);
+    assert_eq!(min_y, 0.0);
+    assert!(
+        (max_x - 44.18).abs() < 1e-6,
+        "expected width 44.18, got {max_x}"
+    );
+    assert!(
+        (max_y - 13.16).abs() < 1e-6,
+        "expected height 13.16, got {max_y}"
+    );
+}
+
+#[test]
+fn path_parser_includes_bezier_control_points() {
+    // Control points must be part of the returned hull, otherwise the bbox of
+    // a curve would be under-reported (a Bézier lives inside its control hull).
+    let pts = collect_path_points("M 0 0 C 10 20 30 -10 40 0 L 40 10");
+    let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
+    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!(
+        (max_y - 20.0).abs() < 1e-6,
+        "control point y=20 must bound bbox, got {max_y}"
+    );
+    assert!(
+        (min_y - (-10.0)).abs() < 1e-6,
+        "control point y=-10 must bound bbox, got {min_y}"
+    );
 }
 
 /// Verify the content timeline actually swaps an mobject's rendered body
@@ -1863,7 +2362,10 @@ fn subtitle_stays_in_viewport() {
         easing: Easing::Linear,
     });
     let scene = Scene {
-        slides: vec![Slide { duration_ms: 100, actions: vec![] }],
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
         items: HashMap::new(),
         content_timeline: HashMap::new(),
         initial: HashMap::new(),
@@ -1959,7 +2461,10 @@ fn morph_renders_interpolated_polygon() {
     let body0 = r
         .morph_body_for(&Label("b".into()), 0)
         .expect("expected a morphed polygon at t=0");
-    assert!(body0.starts_with("polygon("), "morph body must be a polygon");
+    assert!(
+        body0.starts_with("polygon("),
+        "morph body must be a polygon"
+    );
     // Mid-window: still a polygon (interpolated shape).
     assert!(
         r.morph_body_for(&Label("b".into()), 50)

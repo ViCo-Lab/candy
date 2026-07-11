@@ -28,7 +28,7 @@
 ///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
 ///
 /// Under standard Typst this simply renders `body` at its natural position.
-#let mobject(label, body) = body
+#let mobject(label, body) = block(body)
 
 /// Animate an object to a new placement / scale / rotation / opacity over
 /// `duration` milliseconds.
@@ -95,7 +95,7 @@
 /// object, precisely controllable like a mobject).
 ///
 /// Under standard Typst the body is shown in the first frame.
-#let play(body, duration: 500) = body
+#let play(body, duration: 500) = block(body)
 
 // ============================================================================
 // Manim-inspired directives
@@ -474,7 +474,7 @@
 /// - `bg`: background fill (default `white`).
 /// - `body`: the scene's content.
 ///
-/// ## Scene semantics
+/// *Scene semantics*
 ///
 /// - *Nesting.* Scenes may be nested: a `scene` call *inside* another scene's
 ///   `body` creates a child scene. Nesting is detected through the Typst AST,

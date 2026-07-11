@@ -62,7 +62,7 @@
   #ecounter("r", seed: 0, step: 1, duration: 500)
 
   // Display the current counter value
-  #mobject("count-display", text(size: 24pt)[Count: ecval(r)])
+  #mobject("count-display", text(size: 24pt)[Count: #ecval("r")])
 
   // Pause the counter from incrementing
   #pause(duration: 500)
@@ -183,7 +183,7 @@
   #pause(duration: 300)
 
   // Progressive character-by-character reveal
-  #reveal("text-body", by: "char", duration: 1500, easing: "smooth")
+  #reveal("text-body", by: "word", duration: 1500, easing: "smooth")
   #pause(duration: 500)
 
   // Typewriter effect (alias for reveal by char)

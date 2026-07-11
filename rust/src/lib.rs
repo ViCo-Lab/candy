@@ -42,8 +42,8 @@ use crate::core::interpolator;
 use crate::core::scheduler;
 use crate::parser::extract_dsl_from_svg;
 use crate::parser::parse_tyx;
-use crate::renderer::video::{self, Container, EncodedVideo};
 use crate::renderer::Renderer;
+use crate::renderer::video::{self, Container, EncodedVideo};
 
 /// Input source for the `build` pipeline.
 ///
@@ -75,10 +75,9 @@ impl Input {
     /// `#import "file.typ"` calls resolve relative to the source.
     pub fn project_root(&self) -> std::path::PathBuf {
         match self {
-            Input::Tyx(p) | Input::Svg(p) => p
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default(),
+            Input::Tyx(p) | Input::Svg(p) => {
+                p.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+            }
         }
     }
 }
@@ -127,7 +126,15 @@ pub fn build(
     fps: u32,
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
-    build_input(Input::from(input), intermediate_dir, output, format, codec, fps, pixel_per_pt)
+    build_input(
+        Input::from(input),
+        intermediate_dir,
+        output,
+        format,
+        codec,
+        fps,
+        pixel_per_pt,
+    )
 }
 
 /// Like [`build`], but takes an explicit [`Input`] so callers can force the
@@ -142,7 +149,16 @@ pub fn build_input(
     fps: u32,
     pixel_per_pt: f32,
 ) -> Result<(), CandyError> {
-    build_input_with_gpu(input, intermediate_dir, output, format, codec, fps, pixel_per_pt, false)
+    build_input_with_gpu(
+        input,
+        intermediate_dir,
+        output,
+        format,
+        codec,
+        fps,
+        pixel_per_pt,
+        false,
+    )
 }
 
 /// Like [`build_input`], but with an explicit `use_gpu` flag.
@@ -207,10 +223,7 @@ pub fn build_input_with_gpu(
         std::fs::create_dir_all(intermediate_dir)?;
         for (i, &t_ms) in sample_times.iter().enumerate() {
             let svg = renderer.render_frame_at(t_ms, &frames)?; // Step 5
-            std::fs::write(
-                intermediate_dir.join(format!("frame_{:05}.svg", i)),
-                svg,
-            )?;
+            std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
         }
         return Ok(());
     }
@@ -290,7 +303,9 @@ pub fn build_input_with_gpu(
     // hand-written muxer. Self-contained codecs (AV1, H264) go through
     // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
     // back to E007.
-    let bytes: Vec<u8> = if codec.uses_ffmpeg() || (codec == Codec::H265 && crate::renderer::ffmpeg::find_ffmpeg().is_some()) {
+    let bytes: Vec<u8> = if codec.uses_ffmpeg()
+        || (codec == Codec::H265 && crate::renderer::ffmpeg::find_ffmpeg().is_some())
+    {
         // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
         let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
         let max_h = probe.iter().map(|f| f.height).max().unwrap_or(16);
@@ -306,10 +321,7 @@ pub fn build_input_with_gpu(
                 );
                 for (i, &t_ms) in sample_times.iter().enumerate() {
                     let svg = renderer.render_frame_at(t_ms, &frames)?;
-                    std::fs::write(
-                        intermediate_dir.join(format!("frame_{:05}.svg", i)),
-                        svg,
-                    )?;
+                    std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
                 }
                 return Err(e);
             }
@@ -325,10 +337,7 @@ pub fn build_input_with_gpu(
                 );
                 for (i, &t_ms) in sample_times.iter().enumerate() {
                     let svg = renderer.render_frame_at(t_ms, &frames)?;
-                    std::fs::write(
-                        intermediate_dir.join(format!("frame_{:05}.svg", i)),
-                        svg,
-                    )?;
+                    std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
                 }
                 return Err(e);
             }
@@ -347,7 +356,11 @@ pub fn build_input_with_gpu(
 /// Compose a frame onto a uniform `tw × th` opaque-white canvas (copies source
 /// pixels to top-left). Used by the ffmpeg path to give ffmpeg a uniform frame
 /// size (its rawvideo input doesn't support per-frame dimensions).
-fn compose_uniform(frame: &crate::renderer::RenderedFrame, tw: usize, th: usize) -> crate::renderer::RenderedFrame {
+fn compose_uniform(
+    frame: &crate::renderer::RenderedFrame,
+    tw: usize,
+    th: usize,
+) -> crate::renderer::RenderedFrame {
     let mut rgba = vec![255u8; tw * th * 4];
     for y in 0..frame.height.min(th) {
         let src = y * frame.width * 4;

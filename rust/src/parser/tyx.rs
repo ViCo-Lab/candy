@@ -128,9 +128,15 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
         root.end_ms = ctx.cursor;
     }
-    for (label, sid) in &ctx.label_scene {
-        if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == *sid) {
-            s.owns_labels.push(label.clone());
+    // Build each scene's `owns_labels` in *declaration order* (source order).
+    // `label_scene` is a `HashMap` whose iteration order is non-deterministic,
+    // which would scramble the top-to-bottom document flow the renderer relies
+    // on; `label_order` preserves the order mobjects were declared in.
+    for label in &ctx.label_order {
+        if let Some(&sid) = ctx.label_scene.get(label) {
+            if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == sid) {
+                s.owns_labels.push(label.clone());
+            }
         }
     }
 
@@ -289,6 +295,10 @@ struct ParseCtx {
     current_scene: usize,
     /// label -> owning scene id (populated as mobjects are declared).
     label_scene: HashMap<Label, usize>,
+    /// Mobject labels in *declaration order* (source order). `label_scene` is a
+    /// `HashMap` whose iteration order is non-deterministic, so we record the
+    /// order separately to reproduce standard Typst top-to-bottom document flow.
+    label_order: Vec<Label>,
     /// Monotonic id for synthetic subtitles.
     subtitle_id: usize,
 }
@@ -579,6 +589,9 @@ fn process_mobject(
     let label = Label(label_str);
     ctx.items.insert(label.clone(), body);
     ctx.label_scene.insert(label.clone(), ctx.current_scene);
+    if !ctx.label_order.contains(&label) {
+        ctx.label_order.push(label.clone());
+    }
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -770,6 +783,9 @@ fn process_play(
     ctx.block_counter += 1;
     ctx.items.insert(label.clone(), body);
     ctx.label_scene.insert(label.clone(), ctx.current_scene);
+    if !ctx.label_order.contains(&label) {
+        ctx.label_order.push(label.clone());
+    }
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -1456,6 +1472,9 @@ fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
     if !ctx.items.contains_key(label) {
         ctx.items.insert(label.clone(), body.to_string());
         ctx.label_scene.insert(label.clone(), ctx.current_scene);
+        if !ctx.label_order.contains(label) {
+            ctx.label_order.push(label.clone());
+        }
         ctx.initial.insert(
             label.clone(),
             FrameData {
@@ -1686,6 +1705,9 @@ fn process_transform(
             .copied()
             .unwrap_or(ctx.current_scene),
     );
+    if !ctx.label_order.contains(&tmp) {
+        ctx.label_order.push(tmp.clone());
+    }
     ctx.initial.insert(
         tmp.clone(),
         FrameData {
