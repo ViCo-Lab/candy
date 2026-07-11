@@ -84,8 +84,14 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
         root.end_ms = ctx.cursor;
     }
-    for (label, sid) in &ctx.label_scene {
-        if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == *sid) {
+    // Attribute every declared label to its owning scene in *declaration*
+    // order (`label_order` is recorded the first time each label is registered).
+    // This keeps the natural top-to-bottom flow layout and the paint z-order
+    // faithful to source order; iterating `label_scene` (a `HashMap`) directly
+    // would scramble并列 mobjects on every run.
+    for label in &ctx.label_order {
+        let sid = ctx.label_scene.get(label).copied().unwrap_or(0);
+        if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == sid) {
             s.owns_labels.push(label.clone());
         }
     }
@@ -174,6 +180,12 @@ pub(crate) struct ParseCtx {
     pub(crate) current_scene: usize,
     /// label -> owning scene id (populated as mobjects are declared).
     pub(crate) label_scene: HashMap<Label, usize>,
+    /// Declaration order of every label (mobjects + synthetic `__xf_*`/`__block_*`),
+    /// recorded the first time each label is registered. Used to lay out and
+    /// paint mobjects in source order — `HashMap` iteration is not stable, so a
+    /// deterministic order must be tracked explicitly (otherwise the vertical
+    /// arrangement / z-order of并列 mobjects comes out scrambled).
+    pub(crate) label_order: Vec<Label>,
     /// Monotonic id for synthetic subtitles.
     pub(crate) subtitle_id: usize,
 }
@@ -467,6 +479,41 @@ mod tests {
         assert_eq!(scene.audio[0].path, "voice.opus");
         assert_eq!(scene.audio[0].start_ms, 65); // 30 + 20 + 15 (pause)
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn mobject_declaration_order_is_preserved() {
+        //并列 mobjects must keep their source declaration order. The labels are
+        // declared `zeta, alpha, mid` (deliberately NOT alphabetical) so a stray
+        // `HashMap`-iteration sort is caught. `owns_labels` drives both the
+        // natural top-to-bottom layout and the paint z-order.
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("zeta", text(size: 20pt)[First])
+#mobject("alpha", rect(width: 3cm, height: 1cm))
+#mobject("mid", text(size: 14pt)[Third])
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_order.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        let root = scene
+            .scenes
+            .iter()
+            .find(|s| s.id == 0)
+            .expect("root scene");
+        assert_eq!(
+            root.owns_labels,
+            vec![
+                Label("zeta".into()),
+                Label("alpha".into()),
+                Label("mid".into())
+            ],
+            "mobject declaration order was scrambled"
+        );
     }
 
     #[test]

@@ -24,6 +24,17 @@ use crate::parser::expr::{
     resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
 };
 
+/// Register `label` as owned by `scene`, recording its first-seen (declaration)
+/// position in `label_order` so mobjects can later be laid out / painted in
+/// source order. `HashMap` iteration is not stable, so this explicit order is
+/// what prevents并列 mobjects from coming out in a scrambled arrangement.
+fn register_label(ctx: &mut ParseCtx, label: Label, scene: usize) {
+    if !ctx.label_scene.contains_key(&label) {
+        ctx.label_order.push(label.clone());
+    }
+    ctx.label_scene.insert(label, scene);
+}
+
 /// Resolve and dispatch a single Candy function call.
 pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     let Some(sym) = call_symbol(&call, ctx) else {
@@ -105,7 +116,7 @@ fn process_mobject(
 
     let label = Label(label_str);
     ctx.items.insert(label.clone(), body);
-    ctx.label_scene.insert(label.clone(), ctx.current_scene);
+    register_label(ctx, label.clone(), ctx.current_scene);
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -296,7 +307,7 @@ fn process_play(
     let label = Label(format!("__block_{}", ctx.block_counter));
     ctx.block_counter += 1;
     ctx.items.insert(label.clone(), body);
-    ctx.label_scene.insert(label.clone(), ctx.current_scene);
+    register_label(ctx, label.clone(), ctx.current_scene);
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -1005,7 +1016,7 @@ fn process_reveal(
 fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
     if !ctx.items.contains_key(label) {
         ctx.items.insert(label.clone(), body.to_string());
-        ctx.label_scene.insert(label.clone(), ctx.current_scene);
+        register_label(ctx, label.clone(), ctx.current_scene);
         ctx.initial.insert(
             label.clone(),
             FrameData {
@@ -1157,13 +1168,12 @@ fn process_transform(
     ctx.items.insert(tmp.clone(), old_body.clone());
     // The parked old-content mobject belongs to the *target's* scene so it is
     // shown/hidden together with the target across the transform.
-    ctx.label_scene.insert(
-        tmp.clone(),
-        ctx.label_scene
-            .get(&label)
-            .copied()
-            .unwrap_or(ctx.current_scene),
-    );
+    let sid = ctx
+        .label_scene
+        .get(&label)
+        .copied()
+        .unwrap_or(ctx.current_scene);
+    register_label(ctx, tmp.clone(), sid);
     ctx.initial.insert(
         tmp.clone(),
         FrameData {

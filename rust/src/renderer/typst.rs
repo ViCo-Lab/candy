@@ -590,15 +590,18 @@ impl Renderer {
                 let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
                     continue;
                 };
-                // The object's own bbox offset (rendered in isolation) is needed
-                // so the per-frame `#place` lands the content's top-left exactly
-                // on the native position recovered above.
-                let Some(own_bbox) = self.measure_label(&preamble, label, *pw, *ph) else {
-                    continue;
-                };
+                // The natural position is exactly where plain Typst lays the
+                // object's content box: the coloured `block` we wrap it in
+                // shrinks to the body, so its fill footprint's top-left *is* the
+                // body's native content-box top-left (`lx, ly`). At render time
+                // the per-frame `#place(top + left, …)` aligns the body's content
+                // box to this anchor, and the body's ink follows its own intrinsic
+                // offset — the same offset native Typst applies. So placing at
+                // `(lx, ly)` reproduces native Typst positioning exactly. Using
+                // `lx - ox` would instead shift every object by its ink offset
+                // (left/up for text), which is the positioning anomaly.
                 let (lx, ly, _, _) = layout_bbox;
-                let (ox, oy, _, _) = own_bbox;
-                nat.insert(label.clone(), (lx - ox, ly - oy));
+                nat.insert(label.clone(), (lx, ly));
             }
         }
 
@@ -653,41 +656,6 @@ impl Renderer {
 
         self.natural_computed = true;
         Ok(())
-    }
-
-    /// Measure a single mobject's bounding box (in Typst points, y-down,
-    /// page-origin) by rendering it in isolation on a large transparent page and
-    /// unioning the bounding boxes of all drawn geometry. Returns `None` for
-    /// content-less bodies (e.g. `none`).
-    fn measure_label(
-        &self,
-        preamble: &str,
-        label: &Label,
-        page_w: f64,
-        page_h: f64,
-    ) -> Option<(f64, f64, f64, f64)> {
-        let raw = self.scene.items.get(label)?;
-        // Synthetic / empty bodies render to nothing measurable.
-        if raw.trim().is_empty() || raw.trim() == "none" {
-            return None;
-        }
-        let body = substitute_counters(&self.scene, raw, 0);
-        // Render the body EXACTLY as the final frame does — through the same
-        // `#place(top + left, …)[#scale(origin: top + left, …)[#{body}]]`
-        // wrapper, on the SAME scene page — so the measured offset matches
-        // per-frame placement (an inline shape's baseline offset depends on the
-        // page/line context, so the measurement page must equal the render page).
-        // Placing at (0 pt, 0 pt) and reading the body's bounding-box minimum
-        // yields `own`: the offset between the `#place` anchor (content-box
-        // top-left) and the body's *visual* top-left. The page uses `fill: none`,
-        // so no background rectangle pollutes the measurement. `nat = layout -
-        // own` then lands the visual top-left precisely on the native position —
-        // regardless of how Typst sits an inline shape on its baseline.
-        let src = place_source(page_w, page_h, 0.0, 0.0, 100.0, 0.0, &body, preamble);
-        let doc = self.compile(&src).ok()?;
-        let page = doc.pages().first()?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        bbox_of_svg(&svg)
     }
 
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
@@ -781,6 +749,23 @@ impl Renderer {
         Ok(frame)
     }
 
+    /// Stable paint index for each label, following source *declaration* order:
+    /// scenes in order, each scene's `owns_labels` in declaration order. Used so
+    /// the composite z-order is deterministic and faithful to native Typst
+    /// (later-declared mobjects paint on top) instead of an arbitrary `HashMap`
+    /// iteration or an alphabetical sort that scrambles并列 mobjects.
+    fn draw_order_index(&self) -> HashMap<Label, usize> {
+        let mut idx = HashMap::new();
+        let mut i = 0usize;
+        for s in &self.scene.scenes {
+            for l in &s.owns_labels {
+                idx.entry(l.clone()).or_insert(i);
+                i += 1;
+            }
+        }
+        idx
+    }
+
     /// Composite all mobjects (per-object opacity) onto an opaque-white canvas.
     pub fn render_frame_pixels(
         &mut self,
@@ -827,7 +812,8 @@ impl Renderer {
         };
 
         let mut labels: Vec<&Label> = states.keys().collect();
-        labels.sort_by(|a, b| a.0.cmp(&b.0));
+        let order = self.draw_order_index();
+        labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
 
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
@@ -878,6 +864,14 @@ impl Renderer {
     /// natural layout before spawning parallel frame renders.
     pub fn ensure_natural_public(&mut self) -> Result<(), CandyError> {
         self.ensure_natural()
+    }
+
+    /// Test-only accessor for the computed natural (first-frame) top-left of a
+    /// mobject, in Typst points (page origin). Used by the native-consistency /
+    /// declaration-order regression tests.
+    #[cfg(test)]
+    pub(crate) fn nat_for(&self, label: &Label) -> Option<(f64, f64)> {
+        self.nat.get(label).copied()
     }
 
     /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).
@@ -939,9 +933,11 @@ impl Renderer {
         // and extract the optional global camera state.
         let (states, camera) = self.prepare_states(all_frames, time_ms);
 
-        // Deterministic z-order (same as the video path).
+        // Deterministic z-order (same as the video path), following source
+        // declaration order so并列 mobjects paint in the order they were written.
         let mut labels: Vec<&Label> = states.keys().collect();
-        labels.sort_by(|a, b| a.0.cmp(&b.0));
+        let order = self.draw_order_index();
+        labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
 
         // Resolve the active scene + its canvas. Only the active scene's
         // mobjects are rendered; a parent scene is auto-hidden while a child
@@ -1737,105 +1733,11 @@ fn compose(a: Matrix, b: Matrix) -> Matrix {
     }
 }
 
-/// Union the bounding boxes of every drawn element in a Typst SVG, returning
-/// `(min_x, min_y, max_x, max_y)` in the SVG's y-down, page-origin coordinate
-/// space (the same space `place_source` places objects in). Returns `None` when
-/// the SVG holds no measurable geometry (e.g. an empty / `none` body).
-///
-/// Typst's `typst_svg` exporter does not emit `data-typst-label`, so we cannot
-/// recover per-element identities from the markup. For layout we only need each
-/// object's extent, so we walk the SVG applying `transform`s (group + per-element,
-/// including the glyph `translate`s) and union every element's box. Path `d`
-/// strings use cubic Béziers; we approximate each path's extent by its
-/// control-point polygon — a slight over-estimate that is harmless for spacing.
-fn bbox_of_svg(svg: &str) -> Option<(f64, f64, f64, f64)> {
-    let mut stack: Vec<[f64; 6]> = Vec::new();
-    let mut cur: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-
-    let mut idx = 0;
-    while idx < svg.len() {
-        let Some(lt) = svg[idx..].find('<') else {
-            break;
-        };
-        let lt = idx + lt;
-        if svg[lt..].starts_with("</g>") {
-            if let Some(m) = stack.pop() {
-                cur = m;
-            }
-            idx = lt + 4;
-            continue;
-        }
-        let Some(gt) = svg[lt..].find('>') else {
-            break;
-        };
-        let gt = lt + gt;
-        let tag = &svg[lt + 1..gt];
-        let is_g_open = tag == "g" || tag.starts_with("g ") || tag.starts_with("g>");
-        let mut el_matrix = cur;
-        if let Some(t) = svg_attr(tag, "transform") {
-            el_matrix = compose_matrix(cur, &parse_transform_attr(&t));
-        }
-        if is_g_open {
-            stack.push(cur);
-            cur = el_matrix;
-            idx = gt + 1;
-            continue;
-        }
-        let pts: Vec<(f64, f64)> = match tag.split_whitespace().next() {
-            Some("rect") => {
-                let (x, y) = (svg_num(tag, "x"), svg_num(tag, "y"));
-                let (w, h) = (svg_num(tag, "width"), svg_num(tag, "height"));
-                vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
-            }
-            Some("circle") => {
-                let (cx, cy, r) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "r"));
-                vec![(cx - r, cy - r), (cx + r, cy + r)]
-            }
-            Some("ellipse") => {
-                let (cx, cy) = (svg_num(tag, "cx"), svg_num(tag, "cy"));
-                let (rx, ry) = (svg_num(tag, "rx"), svg_num(tag, "ry"));
-                vec![(cx - rx, cy - ry), (cx + rx, cy + ry)]
-            }
-            Some("polygon") | Some("polyline") => svg_points(svg_attr(tag, "points")),
-            Some("path") => match svg_attr(tag, "d") {
-                Some(d) => collect_path_points(&d),
-                None => vec![],
-            },
-            _ => vec![],
-        };
-        for (x, y) in pts {
-            let (px, py) = apply_matrix(&el_matrix, x, y);
-            if px < min_x {
-                min_x = px;
-            }
-            if py < min_y {
-                min_y = py;
-            }
-            if px > max_x {
-                max_x = px;
-            }
-            if py > max_y {
-                max_y = py;
-            }
-        }
-        idx = gt + 1;
-    }
-    if min_x.is_finite() {
-        Some((min_x, min_y, max_x, max_y))
-    } else {
-        None
-    }
-}
-
-/// Like [`bbox_of_svg`] but unions only the geometry that carries the given
-/// `fill` colour (case-insensitive, `#rrggbb`). Used by the native layout pass:
-/// each mobject is wrapped in a uniquely-coloured `box`, so locating that
-/// colour's footprint recovers the object's natural top-left as laid out by
-/// Typst itself — no hand-computed coordinates.
+/// Union only the geometry that carries the given `fill` colour
+/// (case-insensitive, `#rrggbb`). Used by the native layout pass: each mobject
+/// is wrapped in a uniquely-coloured `box`, so locating that colour's footprint
+/// recovers the object's natural top-left as laid out by Typst itself — no
+/// hand-computed coordinates.
 fn bbox_of_svg_with_fill(svg: &str, fill: &str) -> Option<(f64, f64, f64, f64)> {
     let target = fill.to_ascii_lowercase();
     let mut fill_stack: Vec<String> = Vec::new();
@@ -2635,4 +2537,120 @@ fn morph_renders_interpolated_polygon() {
 
     // The plan was actually precomputed (not empty).
     assert!(!r.morph_cache.is_empty(), "morph plan should be cached");
+}
+
+/// Regression test for two coupled rendering bugs:
+///   1. Positioning must match native Typst — `nat` is the body's content-box
+///      top-left (the coloured-block top-left), NOT shifted by the body's ink
+///      offset. A text body has a nonzero ink offset, so this catches the
+///      `nat = lx - ox` regression.
+///   2. Multiple并列 mobjects must keep their *declaration* order top-to-bottom.
+///      The labels below are deliberately declared as `zeta, alpha, mid` (not
+///      alphabetical) so a stray alphabetical sort would be detected.
+#[test]
+fn renderer_natural_layout_matches_native_and_declaration_order() {
+    use crate::core::ast::{Label, Scene, SceneInfo, Slide};
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    let ordered: Vec<(String, String)> = vec![
+        ("zeta".into(), "text(size: 20pt)[First]".into()),
+        ("alpha".into(), "rect(width: 3cm, height: 1cm)".into()),
+        ("mid".into(), "text(size: 14pt)[Third]".into()),
+    ];
+    let mut items = HashMap::new();
+    for (l, b) in &ordered {
+        items.insert(Label(l.clone()), b.clone());
+    }
+    let owns: Vec<Label> = ordered.iter().map(|(l, _)| Label(l.clone())).collect();
+    let scene = Scene {
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
+        items,
+        content_timeline: HashMap::new(),
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        subtitles: Vec::new(),
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
+        scenes: vec![SceneInfo {
+            id: 0,
+            parent: None,
+            scope: 0,
+            page_size: None,
+            start_ms: 0,
+            end_ms: 0,
+            owns_labels: owns.clone(),
+        }],
+        root_scene: Some(0),
+        morph_pairs: Vec::new(),
+        groups: HashMap::new(),
+        private_metadata: PrivateMeta::default(),
+    };
+
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+
+    let page_w = 16.0 * PT_PER_CM;
+    let page_h = 9.0 * PT_PER_CM;
+
+    // Independent ground-truth reference: lay the bodies out in plain document
+    // flow (each wrapped in a uniquely coloured block) and read back each
+    // block's top-left. This deliberately does NOT call `ensure_natural`, so a
+    // regression in the production layout (ink-offset shift, scrambled order) is
+    // caught rather than silently mirrored.
+    fn native_natural_positions(
+        r: &Renderer,
+        ordered: &[(String, String)],
+        page_w: f64,
+        page_h: f64,
+    ) -> HashMap<Label, (f64, f64)> {
+        let mut palette: Vec<(Label, String)> = Vec::new();
+        let mut blocks = String::new();
+        for (i, (label, body)) in ordered.iter().enumerate() {
+            let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
+            palette.push((Label(label.clone()), color.clone()));
+            blocks.push_str(&format!(
+                "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ {body} }}]"
+            ));
+        }
+        let src = format!(
+            "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n{blocks}\n"
+        );
+        let doc = r.compile(&src).expect("native layout compile");
+        let page = doc.pages().first().expect("native layout page");
+        let svg = typst_svg::svg(page, &SvgOptions::default());
+        let mut out = HashMap::new();
+        for (label, color) in &palette {
+            let (lx, ly, _, _) = bbox_of_svg_with_fill(&svg, color).expect("native bbox");
+            out.insert(label.clone(), (lx, ly));
+        }
+        out
+    }
+
+    let native = native_natural_positions(&r, &ordered, page_w, page_h);
+
+    // (1) Each mobject's natural top-left must equal native Typst's content-box
+    //     top-left (within 1pt — far smaller than a text ink offset of ~16pt).
+    for (l, _) in &ordered {
+        let label = Label(l.clone());
+        let candy = r.nat_for(&label).expect("candy nat present");
+        let nat = native.get(&label).expect("native nat present");
+        assert!(
+            (candy.0 - nat.0).abs() < 1.0 && (candy.1 - nat.1).abs() < 1.0,
+            "label {l}: candy nat {candy:?} != native {nat:?}"
+        );
+    }
+
+    // (2) Declaration order must be preserved top-to-bottom. With labels
+    //     `zeta, alpha, mid`, an alphabetical sort would put `alpha` on top;
+    //     assert `zeta` is highest and the order follows the source.
+    let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
+    assert!(y("zeta") < y("alpha"), "order scrambled: zeta must sit above alpha");
+    assert!(y("alpha") < y("mid"), "order scrambled: alpha must sit above mid");
 }
