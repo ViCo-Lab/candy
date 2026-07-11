@@ -18,6 +18,12 @@ and encoding backend. Inspired by 3Blue1Brown's
 - Smooth **object transitions** (Manim-style `Transform`): morph a mobject into
   new inline content — including **formulas** — via `#transform`, keeping the
   original label reusable; `#morph` / `#fade-transform` crossfade two mobjects.
+- **Progressive text reveal** (`#reveal` / `#typewriter`) that types a string
+  mobject in word- or character-by-word while its layout box stays reserved — so
+  later mobjects never jump when the text appears.
+- **Groups & camera**: `#group` several mobjects to move/scale/rotate them as one,
+  and `#camera` for global pan / zoom / rotate "tours"; `#track` drives a target
+  through multi-property keyframes.
 - Familiar appearance for Manim users.
 
 ## The `.tyx` format (Typst X-sheet)

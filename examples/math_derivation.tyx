@@ -1,0 +1,67 @@
+#import "@preview/candy:0.1.0": *
+
+// A long, step-by-step math derivation — the quadratic formula — driven by
+// `#transform` (morph the running equation in place), `#subtitle` (on-screen
+// explanation), `#indicate` / `#flash` (term highlighting) and `#typewriter`
+// (a narration line that types itself out, reserving its layout box from
+// frame 0 thanks to candy's `#hide`-based hidden-mobject handling).
+//
+// Run:  candy build examples/math_derivation.tyx
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+
+  // Title (spiral-in from a scaled/rotated, invisible state).
+  #mobject("title", text(22pt, weight: "bold", fill: blue)[Deriving the Quadratic Formula])
+  #spiral-in("title", scale: 2.0, rotate: 360.0, duration: 800, easing: "cubic-out")
+  #pause(duration: 300)
+
+  // The running equation. It is transformed in place at every step; the label
+  // keeps the latest content, so we can keep transforming it.
+  #mobject("eq", [$a x^2 + b x + c = 0$])
+  #animate("eq", to: (0cm, 1.5cm), duration: 600, easing: "smooth")
+  #subtitle([Start: a general quadratic, with $a != 0$.], position: "bottom")
+  #pause(duration: 700)
+
+  // Step 1 — divide by a.
+  #transform("eq", to: [$x^2 + (b / a) x + c / a = 0$], duration: 1000, easing: "smooth")
+  #subtitle([1 · Divide the whole equation by $a$.], position: "bottom")
+  #flash("eq", factor: 1.4, duration: 400)
+  #pause(duration: 600)
+
+  // Step 2 — move the constant to the right.
+  #transform("eq", to: [$x^2 + (b / a) x = -c / a$], duration: 1000, easing: "smooth")
+  #subtitle([2 · Move the constant term to the right.], position: "bottom")
+  #pause(duration: 600)
+
+  // Step 3 — complete the square (highlight the linear coefficient).
+  #transform("eq", to: [$x^2 + (b / a) x + (b / (2 a))^2 = (b / (2 a))^2 - c / a$],
+    duration: 1000, easing: "smooth")
+  #subtitle([3 · Add $(b / 2 a)^2$ to both sides to complete the square.], position: "bottom")
+  #indicate("eq", factor: 1.08, dx: 0cm, dy: -0.3cm, duration: 600)
+  #pause(duration: 700)
+
+  // Step 4 — factor the left, combine the right.
+  #transform("eq", to: [$(x + b / (2 a))^2 = (b^2 - 4 a c) / (4 a^2)$],
+    duration: 1000, easing: "smooth")
+  #subtitle([4 · Factor the left; put the right over a common denominator.], position: "bottom")
+  #pause(duration: 600)
+
+  // Step 5 — take the square root.
+  #transform("eq", to: [$x + b / (2 a) = plus.minus sqrt(b^2 - 4 a c) / (2 a)$],
+    duration: 1000, easing: "smooth")
+  #subtitle([5 · Take the square root (note the $plus.minus$).], position: "bottom")
+  #flash("eq", factor: 1.3, duration: 400)
+  #pause(duration: 600)
+
+  // Step 6 — solve for x.
+  #transform("eq", to: [$x = (-b plus.minus sqrt(b^2 - 4 a c)) / (2 a)$],
+    duration: 1200, easing: "smooth")
+  #subtitle([6 · Subtract $b / 2 a$ and we are done.], position: "bottom")
+  #indicate("eq", factor: 1.12, duration: 700)
+  #pause(duration: 800)
+
+  // A typed-out conclusion that reserves its space from frame 0.
+  #mobject("outro", "The quadratic formula — typeset one character at a time.")
+  #typewriter("outro", duration: 1600, easing: "linear")
+  #pause(duration: 800)
+]

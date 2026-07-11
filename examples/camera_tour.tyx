@@ -1,0 +1,50 @@
+#import "@preview/candy:0.1.0": *
+
+// A cinematic "camera tour": a field of labelled markers is explored with the
+// global `#camera` (pan + zoom + rotate), then a nested scene presents a title
+// card via `#transition` + `#spiral-in`. Longer duration, multi-phase.
+//
+// Run:  candy build examples/camera_tour.tyx
+
+#scene(width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+
+  #mobject("cap", text(18pt, weight: "bold", fill: white)[Field survey])
+  #spiral-in("cap", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #pause(duration: 300)
+
+  // A scatter of "markers" to fly over.
+  #mobject("m1", circle(radius: 0.5cm, fill: red))
+  #mobject("m2", square(size: 1cm, fill: green))
+  #mobject("m3", circle(radius: 0.5cm, fill: yellow))
+  #mobject("m4", polygon((0cm, 0.6cm), (0.6cm, -0.4cm), (-0.6cm, -0.4cm), fill: orange))
+  #mobject("m5", circle(radius: 0.5cm, fill: purple))
+  #animate("m1", to: (3cm, 3cm),  duration: 1)
+  #animate("m2", to: (5cm, 6cm),  duration: 1)
+  #animate("m3", to: (11cm, 3cm), duration: 1)
+  #animate("m4", to: (13cm, 6cm), duration: 1)
+  #animate("m5", to: (8cm, 7.5cm),duration: 1)
+
+  // Phase 1 — zoom into the lower-left cluster.
+  #camera(zoom: 2.2, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+  #subtitle([Zooming into the west cluster.], position: "bottom")
+  #pause(duration: 700)
+
+  // Phase 2 — pull back and pan to the east.
+  #camera(zoom: 1.0, x: 3cm, y: -1cm, duration: 1500, easing: "smooth")
+  #subtitle([Panning east.], position: "bottom")
+  #pause(duration: 700)
+
+  // Phase 3 — a slow rotate for a dynamic angle.
+  #camera(zoom: 1.4, rotate: 12, duration: 1500, easing: "smooth")
+  #subtitle([Tilting the view.], position: "bottom")
+  #pause(duration: 700)
+
+  // Title card: a nested scene replaces the field (parent auto-hidden).
+  #transition(kind: "fade", duration: 400)
+  #scene(width: 16cm, height: 9cm, bg: black)[
+    #mobject("t", text(40pt, weight: "bold", fill: white)[Candy])
+    #spiral-in("t", scale: 2.5, rotate: 360.0, duration: 1000, easing: "cubic-out")
+    #subtitle([a code-oriented animation engine for Typst], position: "bottom")
+    #pause(duration: 900)
+  ]
+]

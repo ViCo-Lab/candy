@@ -210,6 +210,24 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 // Suspended; will be restored on enclosing scope exit.
             }
         }
+        // Capture top-level user-defined helpers (functions / values) so
+        // mobject bodies — compiled in *detached* Typst modules — can reference
+        // them. A body like `star(white, s: 0.45cm)` only resolves if `star` is
+        // re-injected into the per-object compile (otherwise Typst errors with
+        // "unknown variable: star"). We take only bindings at the document root
+        // (not inside a `#scene` or `{ … }` block), mirroring where `@preview`
+        // imports are captured. Candy-named lets are skipped so they don't
+        // shadow a real directive in the detached module.
+        let is_candy_named = lb.kind().bindings().iter().any(|b| {
+            let n = b.as_str();
+            CANDY.iter().any(|c| *c == n || *c == n.replace('_', "-"))
+        });
+        if !is_candy_named && ctx.scene_stack.is_empty() && ctx.scope_stack.len() == 1 {
+            let text = format!("#{}", raw[node.range()].trim());
+            if !ctx.imports.contains(&text) {
+                ctx.imports.push(text);
+            }
+        }
     }
 
     // Scene scoping: a `scene` call opens a *nested scene* around its body.

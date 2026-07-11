@@ -1,0 +1,83 @@
+#import "@preview/candy:0.1.0": *
+
+// Step-by-step Euclidean construction of a regular hexagon inscribed in a
+// circle: draw the circle, drop six vertices on it, connect them with edges,
+// then spin the whole figure with `#group` + `#animate(rotate:)` to reveal its
+// six-fold symmetry. Each phase is narrated with a `#subtitle`.
+//
+// Run:  candy build examples/geometric_construction.tyx
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+
+  #mobject("cap", text(20pt, weight: "bold", fill: blue)[Constructing a regular hexagon])
+  #spiral-in("cap", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #pause(duration: 300)
+
+  // Center + circumcircle (radius 2cm).
+  #mobject("center", circle(radius: 0.18cm, fill: black))
+  #animate("center", to: (8cm, 4.5cm), duration: 1)
+  #mobject("circ", circle(radius: 2cm, stroke: 1.5pt + blue, fill: none))
+  #animate("circ", to: (8cm, 4.5cm), duration: 1)
+  #subtitle([1 · Draw a circle of radius $r$.], position: "bottom")
+  #pause(duration: 600)
+
+  // Six vertices on the circle (step 60° apart).
+  #mobject("v0", circle(radius: 0.16cm, fill: red))
+  #mobject("v1", circle(radius: 0.16cm, fill: red))
+  #mobject("v2", circle(radius: 0.16cm, fill: red))
+  #mobject("v3", circle(radius: 0.16cm, fill: red))
+  #mobject("v4", circle(radius: 0.16cm, fill: red))
+  #mobject("v5", circle(radius: 0.16cm, fill: red))
+  #animate("v0", to: (10.0cm, 4.5cm),  duration: 1)
+  #animate("v1", to: (9.0cm, 6.232cm), duration: 1)
+  #animate("v2", to: (7.0cm, 6.232cm), duration: 1)
+  #animate("v3", to: (6.0cm, 4.5cm),   duration: 1)
+  #animate("v4", to: (7.0cm, 2.768cm), duration: 1)
+  #animate("v5", to: (9.0cm, 2.768cm), duration: 1)
+  #spiral-in("v0", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v1", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v2", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #pause(duration: 150)
+  #spiral-in("v3", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v4", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v5", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #subtitle([2 · Mark six points one radius apart around the circle.], position: "bottom")
+  #pause(duration: 600)
+
+  // Six edges, each drawn from its start vertex (local origin) to the next.
+  #mobject("e0", line(start: (0cm, 0cm), end: (-1cm, 1.732cm),     stroke: 1.5pt + green))
+  #mobject("e1", line(start: (0cm, 0cm), end: (-2cm, 0cm),         stroke: 1.5pt + green))
+  #mobject("e2", line(start: (0cm, 0cm), end: (-1cm, -1.732cm),    stroke: 1.5pt + green))
+  #mobject("e3", line(start: (0cm, 0cm), end: (1cm, -1.732cm),     stroke: 1.5pt + green))
+  #mobject("e4", line(start: (0cm, 0cm), end: (2cm, 0cm),          stroke: 1.5pt + green))
+  #mobject("e5", line(start: (0cm, 0cm), end: (1cm, 1.732cm),      stroke: 1.5pt + green))
+  #animate("e0", to: (10.0cm, 4.5cm),   duration: 1)
+  #animate("e1", to: (9.0cm, 6.232cm),  duration: 1)
+  #animate("e2", to: (7.0cm, 6.232cm),  duration: 1)
+  #animate("e3", to: (6.0cm, 4.5cm),    duration: 1)
+  #animate("e4", to: (7.0cm, 2.768cm),  duration: 1)
+  #animate("e5", to: (9.0cm, 2.768cm),  duration: 1)
+  #disappear("e0"); #disappear("e1"); #disappear("e2")
+  #disappear("e3"); #disappear("e4"); #disappear("e5")
+  #animate("e0", opacity: 1.0, duration: 350, easing: "smooth")
+  #animate("e1", opacity: 1.0, duration: 350, easing: "smooth")
+  #animate("e2", opacity: 1.0, duration: 350, easing: "smooth")
+  #animate("e3", opacity: 1.0, duration: 350, easing: "smooth")
+  #animate("e4", opacity: 1.0, duration: 350, easing: "smooth")
+  #animate("e5", opacity: 1.0, duration: 350, easing: "smooth")
+  #subtitle([3 · Connect consecutive points — the side equals the radius.], position: "bottom")
+  #pause(duration: 600)
+
+  // Group the whole figure and spin it to show the symmetry.
+  #group("hex", members: ("v0", "v1", "v2", "v3", "v4", "v5",
+                          "e0", "e1", "e2", "e3", "e4", "e5", "center"))
+  #animate("hex", rotate: 360, duration: 2400, easing: "linear")
+  #subtitle([4 · Six-fold rotational symmetry.], position: "bottom")
+  #pause(duration: 400)
+
+  // Morph the caption into a closing statement.
+  #mobject("done", text(16pt, weight: "bold", fill: green)[A regular hexagon])
+  #transform("done", to: text(16pt, weight: "bold", fill: green)[Regular hexagon ✓],
+    duration: 800, easing: "smooth")
+  #pause(duration: 700)
+]

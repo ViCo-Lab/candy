@@ -124,6 +124,17 @@ An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `la
 string and changes a transform (position / scale / rotation / opacity) over `duration`
 frames. Multiple actions on different targets run in parallel.
 
+**Layout & hidden mobjects.** A mobject's *natural* placement is where `body` lands in
+the document flow; `ensure_natural` measures that box by rendering every object once.
+Mobjects that are *temporarily not rendered* at frame 0 — a `#reveal` / `#typewriter`
+target before it has typed anything, a `play` block, or a `transform` target whose
+content timeline starts as `none` — still **reserve their natural box** in the flow:
+candy wraps them in Typst `#hide[…]` so the space is kept (and the hidden object gets a
+correct `nat` to be placed at once it appears) while later mobjects do **not** shift up
+to fill the gap. Pure containers with no content of their own are the only objects
+skipped. This means you can safely stack a `reveal` caption between two always-visible
+shapes without the layout jumping when the text types in.
+
 ---
 
 ## Directives reference
@@ -327,6 +338,72 @@ afterwards.
 #transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
 ```
 
+#### `#reveal(target, by: "word", duration: 1000, easing: "linear")` {#reveal}
+
+Progressively reveal a *string* mobject by swapping its body to longer and longer
+prefixes over `duration`. `by: "word"` reveals word-by-word; `by: "char"` reveals
+character-by-character. Non-string bodies fall back to a plain `FadeIn` with a warning.
+The body must be a string literal (`#mobject("cap", "Hello")`), not a content block.
+At frame 0 the target is `none`, but candy keeps its layout box reserved (see
+[Mobjects & actions](#mobjects--actions)), so later content does not jump as it types in.
+
+#### `#typewriter(target, duration: 1000, easing: "linear")` {#typewriter}
+
+Convenience alias for `#reveal(.., by: "char")` — a classic typewriter reveal.
+
+```typst
+#mobject("cap", "Step 1: divide by a.")
+#typewriter("cap", duration: 1500, easing: "linear")
+```
+
+#### `#track(target, keys: (), duration: 1000, easing: "linear")` {#track}
+
+Drive a single target through several keyframes, each controlling a subset of its
+properties — a timeline track that removes the need for many sequential `#animate`s.
+Mirrors a Manim `ValueTracker`-driven animation. `keys` is an array of
+`(t, (x, y, scale, opacity, rotation))` tuples, where `t` is the time offset (ms) from
+the slide start and each inner value is *optional* (omitted properties carry their
+previous value forward); `x`/`y` are in cm, `scale`/`opacity`/`rotation` unitless. A
+keyframe may also be written flat as `(t, x, y, scale, opacity, rotation)`.
+
+```typst
+#track("p",
+  keys: (
+    (0,    (0cm, 0cm, 1, 1, 0)),
+    (1000, (3cm, 2cm, 1.5, 1, 90)),
+    (2000, (4cm, 0cm, 1, 0, 0)),
+  ),
+  duration: 2000, easing: "smooth")
+```
+
+---
+
+### Camera & groups
+
+#### `#group(name, members: ())` {#group}
+
+Group several mobjects under a synthetic parent so they move / scale / rotate together.
+Animate the `name` afterwards (e.g. `#animate("g", rotate: 360)`) to transform every
+member at once. Groups may be nested. The group's rotation pivots about the figure's
+centroid, so a ring of objects placed around a center spins in place.
+
+```typst
+#group("wheel", members: ("spoke1", "spoke2", "hub"))
+#animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+```
+
+#### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "linear")` {#camera}
+
+A global camera move applied to the whole scene (pan + zoom + rotate), mirroring
+Manim's camera frame transforms. `x` / `y` are a pan offset in cm from the page center;
+`zoom > 1` magnifies; `rotate` tilts clockwise in degrees. The camera is scene-scoped:
+it only transforms the scene active when the `#camera` directive runs.
+
+```typst
+#camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+#camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+```
+
 ---
 
 ### Subtitles
@@ -478,6 +555,12 @@ same `.tyx` compiles under plain `typst compile` with the `seed` value.
 | `examples/video_placeholder_demo.tyx` | `#video` placeholder box |
 | `examples/zoom_transition_demo.tyx` | `#zoom-to` + `#transition` + `#set_color` |
 | `examples/easing_showcase.tyx` | all named easings + custom `expr:`/`bezier:` |
+| `examples/math_derivation.tyx` | long step-by-step equation derivation via `#transform` + `#subtitle` + `#indicate`/`#flash` + `#typewriter` |
+| `examples/constellation.tyx` | `#spiral-in` stars + sequential line fade-in + `#wiggle` sparkle (nested night-sky scene) |
+| `examples/geometric_construction.tyx` | step-by-step regular-hexagon construction + `#group` + `#animate(rotate:)` symmetry spin |
+| `examples/camera_tour.tyx` | cinematic `#camera` pan/zoom/rotate tour + nested title-card scene + `#transition` |
+| `examples/data_viz.tyx` | animated horizontal bar chart "race" via `#transform` (reused labels) + `#indicate` leader + `#typewriter` |
+| `examples/orbit_demo.tyx` | `#group` ring spin + `#track` orbiting planet + `#camera` push-in (orrery) |
 
 See each file in `examples/` for the full, runnable source. Build any of them with:
 

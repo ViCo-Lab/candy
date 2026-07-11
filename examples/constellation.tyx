@@ -1,0 +1,76 @@
+#import "@preview/candy:0.1.0": *
+
+// A "connect the stars" animation: scattered stars spiral-in one by one, then
+// the constellation's connecting lines fade in sequentially, and the stars
+// sparkle with a `#wiggle`. Longer duration, several sequenced phases.
+//
+// Run:  candy build examples/constellation.tyx
+
+#let star(c, s: 0.35cm) = {
+  polygon(
+    (0cm, -s), (s * 0.3, -s * 0.3), (s, -s * 0.2), (s * 0.4, s * 0.25),
+    (s * 0.6, s), (0cm, s * 0.5), (-s * 0.6, s), (-s * 0.4, s * 0.25),
+    (-s, -s * 0.2), (-s * 0.3, -s * 0.3),
+    fill: c,
+  )
+}
+
+#scene(width: 16cm, height: 9cm, bg: rgb("#05060f"))[
+
+  #mobject("cap", text(20pt, weight: "bold", fill: white)[Ursa Minor])
+  #spiral-in("cap", scale: 2.0, rotate: 180.0, duration: 700, easing: "cubic-out")
+  #pause(duration: 300)
+
+  // Six stars at scattered absolute positions on the night sky.
+  #mobject("s1", star(white, s: 0.45cm))
+  #mobject("s2", star(white, s: 0.35cm))
+  #mobject("s3", star(white, s: 0.40cm))
+  #mobject("s4", star(white, s: 0.30cm))
+  #mobject("s5", star(white, s: 0.42cm))
+  #mobject("s6", star(white, s: 0.32cm))
+
+  #animate("s1", to: (4cm, 3cm),  duration: 1)
+  #animate("s2", to: (6cm, 2cm),  duration: 1)
+  #animate("s3", to: (7cm, 4cm),  duration: 1)
+  #animate("s4", to: (9cm, 3cm),  duration: 1)
+  #animate("s5", to: (11cm, 5cm), duration: 1)
+  #animate("s6", to: (12cm, 3cm), duration: 1)
+
+  #spiral-in("s1", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s2", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #pause(duration: 200)
+  #spiral-in("s3", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s4", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #pause(duration: 200)
+  #spiral-in("s5", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s6", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #pause(duration: 600)
+
+  // Connecting lines. Start invisible, then fade each in sequentially so the
+  // figure is "drawn" across the sky.
+  #mobject("l1", line(start: (4cm, 3cm),  end: (6cm, 2cm),  stroke: 1pt + rgb("#5b6ee1")))
+  #mobject("l2", line(start: (6cm, 2cm),  end: (7cm, 4cm),  stroke: 1pt + rgb("#5b6ee1")))
+  #mobject("l3", line(start: (7cm, 4cm),  end: (9cm, 3cm),  stroke: 1pt + rgb("#5b6ee1")))
+  #mobject("l4", line(start: (9cm, 3cm),  end: (11cm, 5cm), stroke: 1pt + rgb("#5b6ee1")))
+  #mobject("l5", line(start: (11cm, 5cm), end: (12cm, 3cm), stroke: 1pt + rgb("#5b6ee1")))
+
+  #disappear("l1"); #disappear("l2"); #disappear("l3"); #disappear("l4"); #disappear("l5")
+  #animate("l1", opacity: 1.0, duration: 400, easing: "smooth")
+  #animate("l2", opacity: 1.0, duration: 400, easing: "smooth")
+  #animate("l3", opacity: 1.0, duration: 400, easing: "smooth")
+  #animate("l4", opacity: 1.0, duration: 400, easing: "smooth")
+  #animate("l5", opacity: 1.0, duration: 400, easing: "smooth")
+  #pause(duration: 500)
+
+  // Sparkle.
+  #wiggle("s1", degrees: 12, duration: 500)
+  #wiggle("s3", degrees: 12, duration: 500)
+  #wiggle("s5", degrees: 12, duration: 500)
+  #wiggle("s2", degrees: 12, duration: 500)
+  #wiggle("s4", degrees: 12, duration: 500)
+  #wiggle("s6", degrees: 12, duration: 500)
+  #pause(duration: 600)
+
+  #subtitle([A constellation, built from scattered points.], position: "bottom", duration: none)
+  #pause(duration: 800)
+]

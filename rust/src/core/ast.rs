@@ -421,10 +421,13 @@ pub struct Scene {
     /// Audio tracks attached via `candy.audio`.
     #[serde(default)]
     pub audio: Vec<AudioTrack>,
-    /// Top-level `@preview`/package import lines captured from the source `.tyx`
-    /// (e.g. `#import "@preview/cetz:0.3.0": *`). They are re-injected into
-    /// candy's per-object compile snippets — which are detached Typst modules —
-    /// so mobject bodies can reference symbols from external Typst packages.
+    /// Top-level source lines re-injected into candy's per-object compile
+    /// snippets — which are detached Typst modules. This holds:
+    /// * `@preview`/package import lines (e.g. `#import "@preview/cetz:0.3.0": *`)
+    ///   so mobject bodies can reference external packages, and
+    /// * user-defined top-level `#let` helpers (e.g. `#let star(c, s: 0.35cm) = …`)
+    ///   so a body like `star(white)` resolves instead of failing with
+    ///   "unknown variable: star".
     /// Local relative imports are intentionally excluded (they would not
     /// resolve in a detached module).
     #[serde(default)]

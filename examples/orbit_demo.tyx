@@ -1,0 +1,54 @@
+#import "@preview/candy:0.1.0": *
+
+// A tiny orrery: a sun at the center, a ring of eight moons grouped with
+// `#group` and spun with `#animate(rotate:)`, plus a planet that orbits along a
+// circular `#track`. Showcases `group`, `track`, and `camera` together.
+//
+// Run:  candy build examples/orbit_demo.tyx
+
+#scene(width: 16cm, height: 9cm, bg: rgb("#04060d"))[
+
+  // Central sun.
+  #mobject("sun", circle(radius: 0.7cm, fill: rgb("#ffcf4d")))
+  #animate("sun", to: (8cm, 4.5cm), duration: 1)
+  #flash("sun", factor: 1.3, duration: 500)
+
+  // A ring of eight moons (radius 3cm), placed at absolute points.
+  #mobject("d0", circle(radius: 0.22cm, fill: white))
+  #mobject("d1", circle(radius: 0.22cm, fill: white))
+  #mobject("d2", circle(radius: 0.22cm, fill: white))
+  #mobject("d3", circle(radius: 0.22cm, fill: white))
+  #mobject("d4", circle(radius: 0.22cm, fill: white))
+  #mobject("d5", circle(radius: 0.22cm, fill: white))
+  #mobject("d6", circle(radius: 0.22cm, fill: white))
+  #mobject("d7", circle(radius: 0.22cm, fill: white))
+  #animate("d0", to: (11.0cm, 4.5cm),   duration: 1)
+  #animate("d1", to: (10.121cm, 6.621cm), duration: 1)
+  #animate("d2", to: (8.0cm, 7.5cm),   duration: 1)
+  #animate("d3", to: (5.879cm, 6.621cm), duration: 1)
+  #animate("d4", to: (5.0cm, 4.5cm),   duration: 1)
+  #animate("d5", to: (5.879cm, 2.379cm), duration: 1)
+  #animate("d6", to: (8.0cm, 1.5cm),   duration: 1)
+  #animate("d7", to: (10.121cm, 2.379cm), duration: 1)
+
+  // Spin the ring (group rotation pivots about the figure's centroid ≈ center).
+  #group("ring", members: ("d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"))
+  #animate("ring", rotate: 360, duration: 4000, easing: "linear")
+  #subtitle([A ring of moons, spinning as one.], position: "bottom")
+
+  // A planet orbiting on a wider circle, driven by a keyframe track.
+  #mobject("planet", circle(radius: 0.35cm, fill: rgb("#4dd2ff")))
+  #track("planet",
+    keys: (
+      (0,    (12.0cm, 4.5cm, 1, 1, 0)),
+      (1000, (8.0cm, 8.5cm, 1, 1, 0)),
+      (2000, (4.0cm, 4.5cm, 1, 1, 0)),
+      (3000, (8.0cm, 0.5cm, 1, 1, 0)),
+      (4000, (12.0cm, 4.5cm, 1, 1, 0)),
+    ),
+    duration: 4000, easing: "smooth")
+
+  // Gentle camera push-in as the system settles.
+  #camera(zoom: 1.25, duration: 4000, easing: "smooth")
+  #pause(duration: 800)
+]

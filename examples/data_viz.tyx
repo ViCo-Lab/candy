@@ -1,0 +1,51 @@
+#import "@preview/candy:0.1.0": *
+
+// An animated horizontal bar chart. Bars start as short stubs and "race" to
+// their final lengths via `#transform` (which keeps each label, so we can
+// re-run the race with a second dataset). The leader is highlighted with
+// `#indicate`, and a typed-out caption narrates the result.
+//
+// Run:  candy build examples/data_viz.tyx
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+
+  #mobject("title", text(20pt, weight: "bold", fill: blue)[Quarterly revenue])
+  #spiral-in("title", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #pause(duration: 300)
+
+  // Five horizontal bars (left-aligned, stacked). Each starts short.
+  #mobject("b1", rect(width: 0.6cm, height: 0.8cm, fill: red))
+  #mobject("b2", rect(width: 0.6cm, height: 0.8cm, fill: green))
+  #mobject("b3", rect(width: 0.6cm, height: 0.8cm, fill: blue))
+  #mobject("b4", rect(width: 0.6cm, height: 0.8cm, fill: orange))
+  #mobject("b5", rect(width: 0.6cm, height: 0.8cm, fill: purple))
+
+  // Race to the first dataset (staggered so they grow in sequence).
+  #transform("b1", to: rect(width: 4.0cm, height: 0.8cm, fill: red),   duration: 800, easing: "smooth")
+  #transform("b2", to: rect(width: 6.5cm, height: 0.8cm, fill: green), duration: 800, easing: "smooth")
+  #transform("b3", to: rect(width: 3.0cm, height: 0.8cm, fill: blue),  duration: 800, easing: "smooth")
+  #transform("b4", to: rect(width: 8.0cm, height: 0.8cm, fill: orange),duration: 800, easing: "smooth")
+  #transform("b5", to: rect(width: 5.0cm, height: 0.8cm, fill: purple),duration: 800, easing: "smooth")
+  #subtitle([Q1 — Orange leads the quarter.], position: "bottom")
+  #pause(duration: 700)
+
+  // Highlight the leader.
+  #indicate("b4", factor: 1.15, duration: 600)
+  #pause(duration: 500)
+
+  // Re-run the race with a different dataset (the labels are reused).
+  #transform("b1", to: rect(width: 5.5cm, height: 0.8cm, fill: red),   duration: 800, easing: "smooth")
+  #transform("b2", to: rect(width: 4.0cm, height: 0.8cm, fill: green), duration: 800, easing: "smooth")
+  #transform("b3", to: rect(width: 7.5cm, height: 0.8cm, fill: blue),  duration: 800, easing: "smooth")
+  #transform("b4", to: rect(width: 6.0cm, height: 0.8cm, fill: orange),duration: 800, easing: "smooth")
+  #transform("b5", to: rect(width: 9.0cm, height: 0.8cm, fill: purple),duration: 800, easing: "smooth")
+  #subtitle([Q2 — Purple takes the lead.], position: "bottom")
+  #pause(duration: 700)
+
+  #indicate("b5", factor: 1.15, duration: 600)
+  #pause(duration: 500)
+
+  #mobject("outro", "Blue and Purple surged; Orange cooled off.")
+  #typewriter("outro", duration: 1500, easing: "linear")
+  #pause(duration: 800)
+]
