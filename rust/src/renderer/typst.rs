@@ -947,7 +947,10 @@ impl Renderer {
             objs.push((st.opacity, frame));
         }
 
-        // Subtitle overlays on top of the objects.
+        // Subtitle overlays are collected separately: they must be composited
+        // AFTER the global camera warp so they stay pinned at a fixed page
+        // position/size regardless of the current view (pan/zoom/rotate).
+        let mut subs: Vec<crate::renderer::RenderedFrame> = Vec::new();
         for sub in &self.scene.subtitles {
             if self
                 .scene
@@ -955,7 +958,7 @@ impl Renderer {
                 .contains(&sub.id)
             {
                 let frame = self.render_subtitle_pixels(sub, time_ms, pixel_per_pt)?;
-                objs.push((1.0, frame));
+                subs.push(frame);
             }
         }
 
@@ -978,9 +981,17 @@ impl Renderer {
             composite_over(&mut canvas, f, *opacity, w, h);
         }
         // Apply the global camera (pan + zoom + rotate) by warping the
-        // composited canvas through the inverse camera transform.
+        // composited object canvas through the inverse camera transform.
+        // Subtitles are deliberately NOT warped here — they are overlaid
+        // afterwards so they remain at a fixed page position and fixed size
+        // no matter what the camera does.
         if let Some(cam) = &camera {
             warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg_rgba);
+        }
+        // Overlay subtitles on top of the warped canvas, at their fixed
+        // page-anchored positions.
+        for f in &subs {
+            composite_over(&mut canvas, f, 1.0, w, h);
         }
         Ok(crate::renderer::RenderedFrame {
             width: w,
@@ -1106,8 +1117,10 @@ impl Renderer {
             bg_hex = bg_hex
         ));
 
-        // A present camera wraps the whole scene (objects + subtitles) in a
-        // single global transform group. The white background stays fixed.
+        // A present camera wraps only the mobjects in a single global transform
+        // group. The background and subtitle overlays stay fixed (drawn outside
+        // this group) so they are unaffected by the camera; only the mobjects
+        // move/scale/rotate under the view.
         if let Some(cam) = &camera {
             out.push_str(&format!(
                 "<g transform=\"{}\">\n",
@@ -1130,8 +1143,18 @@ impl Renderer {
             out.push_str(&format!("<g opacity=\"{op}\">\n{obj_svg}\n</g>\n"));
         }
 
+        // Close the camera group BEFORE drawing subtitles so the captions are
+        // not transformed by the camera — they stay pinned at a fixed page
+        // position and fixed size regardless of the current view (pan/zoom/
+        // rotate). The white background and the subtitle overlays therefore
+        // remain static while only the mobjects move under the camera.
+        if camera.is_some() {
+            out.push_str("</g>\n");
+        }
+
         // Subtitle overlays: one per visible scope, subject to
-        // parental shadowing + auto-destroy. Drawn on top of the objects.
+        // parental shadowing + auto-destroy. Drawn on top of the objects,
+        // OUTSIDE any camera transform, at their fixed page anchors.
         for sub in &self.scene.subtitles {
             if self
                 .scene
@@ -1142,10 +1165,6 @@ impl Renderer {
                 out.push_str(&svg);
                 out.push('\n');
             }
-        }
-
-        if camera.is_some() {
-            out.push_str("</g>\n");
         }
 
         out.push_str("</svg>\n");

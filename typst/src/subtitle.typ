@@ -47,6 +47,10 @@
 /// caption is auto-positioned (via `place`) at the requested anchor so the
 /// first frame renders correctly; candy's pipeline reads the same call from
 /// the AST and overlays it on every frame with the same anchoring.
+///
+/// Subtitles are camera-independent: a global `#camera` (pan/zoom/rotate) only
+/// transforms the mobjects, never the captions — a subtitle always stays at its
+/// fixed page anchor and fixed size, regardless of the current view.
 #let subtitle(
   body,
   duration: none,
