@@ -103,6 +103,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         items: ctx.items,
         content_timeline: ctx.content_timeline,
         morph_pairs: ctx.morph_pairs,
+        transform_plans: ctx.transform_plans,
         initial: ctx.initial,
         audio: ctx.audio,
         imports: ctx.imports.clone(),
@@ -148,6 +149,9 @@ pub(crate) struct ParseCtx {
     pub(crate) content_timeline: HashMap<Label, Vec<(u32, String)>>,
     /// Real shape-morph pairs recorded by `#morph(from, to)`.
     pub(crate) morph_pairs: Vec<crate::core::ast::MorphPair>,
+    /// Per-glyph fragment morph plans recorded by `#transform(target, to: …)`
+    /// when both bodies are inline content (formulas / text). Empty otherwise.
+    pub(crate) transform_plans: Vec<crate::core::ast::TransformPlan>,
     /// Monotonic counter for synthetic `__xf_<label>_<n>` mobjects created by
     /// `transform`, so repeated transforms on the same label don't clash.
     pub(crate) xf_counter: usize,
@@ -787,6 +791,14 @@ mod tests {
             &scene.slides[1].actions[..],
             [Action::Transform { target, .. }] if target.0 == "box"
         ));
+
+        // Inline content (formula) → per-glyph TransformPlan; shape → blob morph.
+        assert_eq!(scene.transform_plans.len(), 1, "transform_plans: {:?}", scene.transform_plans);
+        assert_eq!(scene.transform_plans[0].target.0, "eq");
+        assert_eq!(scene.transform_plans[0].old_body, "[$a + b = c$]");
+        assert_eq!(scene.transform_plans[0].new_body, "[$a + b + d = c$]");
+        assert_eq!(scene.morph_pairs.len(), 1, "morph_pairs: {:?}", scene.morph_pairs);
+        assert_eq!(scene.morph_pairs[0].to.0, "box");
         std::fs::remove_file(&tmp).ok();
     }
 

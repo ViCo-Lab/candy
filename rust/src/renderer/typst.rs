@@ -54,6 +54,21 @@ const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// the per-frame cost is linear in the point count — 3pt is a good balance).
 const MORPH_MAX_SEGMENT: f64 = 3.0;
 
+/// A precomputed per-glyph `Transform` layout: the matched / unmatched glyph
+/// fragments of one `#transform(target, to: …)` call, in absolute page
+/// coordinates (cm). Built once in `ensure_natural`; sampled per frame by the
+/// render paths.
+struct TransformFragmentPlan {
+    target: Label,
+    old: Label,
+    start_ms: u32,
+    end_ms: u32,
+    easing: crate::core::easing::Easing,
+    /// Glyph fragments. Each carries its old-position `(from_x, from_y)` and
+    /// new-position `(to_x, to_y)` (page cm), plus the opacity endpoints.
+    frags: Vec<crate::core::ast::CharFragment>,
+}
+
 /// A no-op downloader used when the `system-downloader` feature is disabled.
 /// Returns NotFound for every URL, so @preview packages resolve only from
 /// the local cache (pre-populated via `typst compile`).
@@ -239,6 +254,15 @@ pub struct Renderer {
     /// render both bodies to SVG, extract + align their outline rings). Each
     /// frame then just samples the plan — this is the performance-first design.
     morph_cache: HashMap<(Label, Label), MorphPlan>,
+    /// Precomputed per-glyph fragment layouts for `#transform` of inline content
+    /// (formulas / text). Built once in `ensure_natural`: each `TransformPlan`'s
+    /// old/new bodies are split into glyph fragments, laid out at their absolute
+    /// page positions, and matched (LCS). During the transform window the
+    /// renderer composites the interpolated fragments *over* the target label —
+    /// the old content disassembles and the new content reassembles glyph by
+    /// glyph, instead of the whole block dissolving at once (the previous
+    /// "stiff" crossfade). Empty for shape transforms / non-inline content.
+    transform_fragments: Vec<TransformFragmentPlan>,
     /// Cache of compiled Typst documents keyed by their exact source string.
     /// Intermediate frames that produce an identical source (e.g. paused or
     /// otherwise static objects) reuse the prior compile instead of re-running
@@ -290,6 +314,7 @@ impl Renderer {
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
             morph_cache: HashMap::new(),
+            transform_fragments: Vec::new(),
             body_cache: Mutex::new(HashMap::new()),
             sprite_cache: Mutex::new(HashMap::new()),
             bg_cache: Mutex::new(HashMap::new()),
@@ -356,9 +381,8 @@ impl Renderer {
             return c.clone();
         }
         let resolved = {
-            let src = format!(
-                "#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()"
-            );
+            let src =
+                format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
             self.compile(&src)
                 .ok()
                 .and_then(|doc| {
@@ -402,7 +426,12 @@ impl Renderer {
                 let r = h.as_bytes()[0];
                 let g = h.as_bytes()[1];
                 let b = h.as_bytes()[2];
-                vec![Self::hex_digit(r), Self::hex_digit(g), Self::hex_digit(b), 255u8]
+                vec![
+                    Self::hex_digit(r),
+                    Self::hex_digit(g),
+                    Self::hex_digit(b),
+                    255u8,
+                ]
             }
             6 => {
                 let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(255);
@@ -773,8 +802,359 @@ impl Renderer {
                 .insert((pair.from.clone(), pair.to.clone()), plan);
         }
 
+        // Precompute per-glyph fragment layouts for inline `#transform` calls.
+        // Each plan's old/new bodies are split into glyph fragments, laid out at
+        // their absolute page positions, and matched via LCS. Only plans that
+        // actually produced fragments are kept (empty ones fall back to the
+        // crossfade, which is left intact).
+        let plans = self.scene.transform_plans.clone();
+        for plan in &plans {
+            match self.compute_transform_fragments(plan) {
+                Ok(frags) if !frags.is_empty() => {
+                    self.transform_fragments.push(TransformFragmentPlan {
+                        target: plan.target.clone(),
+                        old: plan.old.clone(),
+                        start_ms: plan.start_ms,
+                        end_ms: plan.end_ms,
+                        easing: plan.easing.clone(),
+                        frags,
+                    });
+                }
+                Ok(_frags) => {
+                    // No fragments: leave the legacy crossfade intact.
+                }
+                Err(_) => {
+                    // Fragment computation failed: leave the legacy crossfade intact.
+                }
+            }
+        }
+
         self.natural_computed = true;
         Ok(())
+    }
+
+    /// Split an inline body (`[…]` or `$[…]$`) into glyph fragments and lay
+    /// them out at their absolute page positions, matched (LCS) between the old
+    /// and new content. Returns the `CharFragment`s (page-cm positions) for the
+    /// renderer to interpolate per frame. Empty if the body can't be split.
+    fn compute_transform_fragments(
+        &self,
+        plan: &crate::core::ast::TransformPlan,
+    ) -> Result<Vec<crate::core::ast::CharFragment>, CandyError> {
+        let Some((old_math, old_tok)) = tokenize_inline(&plan.old_body) else {
+            return Ok(Vec::new());
+        };
+        let Some((new_math, new_tok)) = tokenize_inline(&plan.new_body) else {
+            return Ok(Vec::new());
+        };
+        let (w_old, h_old) = self.measure_whole(&plan.old_body)?;
+        let (w_new, h_new) = self.measure_whole(&plan.new_body)?;
+        let old_pos = self.layout_tokens(old_math, &old_tok, w_old, h_old)?;
+        let new_pos = self.layout_tokens(new_math, &new_tok, w_new, h_new)?;
+
+        let old_wrapped: Vec<String> = old_tok.iter().map(|t| wrap_token(old_math, t)).collect();
+        let new_wrapped: Vec<String> = new_tok.iter().map(|t| wrap_token(new_math, t)).collect();
+
+        // LCS-align old ↔ new tokens; matched pairs glide, unmatched fade.
+        let dp = lcs_table(&old_tok, &new_tok);
+        let mut i = 0usize;
+        let mut j = 0usize;
+        let mut matched: Vec<(usize, usize)> = Vec::new();
+        while i < old_tok.len() && j < new_tok.len() {
+            if old_tok[i] == new_tok[j] {
+                matched.push((i, j));
+                i += 1;
+                j += 1;
+            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        let matched_old: std::collections::HashSet<usize> =
+            matched.iter().map(|(o, _)| *o).collect();
+        let matched_new: std::collections::HashSet<usize> =
+            matched.iter().map(|(_, n)| *n).collect();
+
+        let mut frags: Vec<crate::core::ast::CharFragment> = Vec::new();
+        for (o, n) in &matched {
+            let (fx, fy) = old_pos[*o];
+            let (tx, ty) = new_pos[*n];
+            frags.push(crate::core::ast::CharFragment {
+                body: old_wrapped[*o].clone(),
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_opacity: 1.0,
+                to_opacity: 1.0,
+            });
+        }
+        for o in 0..old_tok.len() {
+            if matched_old.contains(&o) {
+                continue;
+            }
+            let (fx, fy) = old_pos[o];
+            // Old-only token slides toward the nearest matched token that follows
+            // it in the old sequence (or the last matched token if it is the
+            // rightmost). This produces a Manim-style "push out" effect.
+            let (tx, ty) = matched
+                .iter()
+                .find(|(mo, _)| *mo >= o)
+                .map(|(_, mn)| new_pos[*mn])
+                .or_else(|| matched.last().map(|(_, mn)| new_pos[*mn]))
+                .unwrap_or((fx, fy));
+            frags.push(crate::core::ast::CharFragment {
+                body: old_wrapped[o].clone(),
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_opacity: 1.0,
+                to_opacity: 0.0,
+            });
+        }
+        for n in 0..new_tok.len() {
+            if matched_new.contains(&n) {
+                continue;
+            }
+            let (tx, ty) = new_pos[n];
+            // New-only token slides in from the nearest matched token that
+            // precedes it in the new sequence (or the first matched token if it
+            // is the leftmost). This produces a Manim-style "insert" effect.
+            let (fx, fy) = matched
+                .iter()
+                .rev()
+                .find(|(_, mn)| *mn <= n)
+                .map(|(mo, _)| old_pos[*mo])
+                .or_else(|| matched.first().map(|(mo, _)| old_pos[*mo]))
+                .unwrap_or((tx, ty));
+            frags.push(crate::core::ast::CharFragment {
+                body: new_wrapped[n].clone(),
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_opacity: 0.0,
+                to_opacity: 1.0,
+            });
+        }
+        Ok(frags)
+    }
+
+    /// Lay out `tokens` left-to-right as offsets (cm) from the top-left of the
+    /// body, distributing the slack between the measured zero-gap row width and
+    /// the real body width (`w_real`, `h_real` in pt) as uniform gaps so the
+    /// fragment positions match the real formula's glyph positions. The offsets
+    /// are later added to the target mobject's current position at render time.
+    fn layout_tokens(
+        &self,
+        is_math: bool,
+        tokens: &[String],
+        w_real: f64,
+        _h_real: f64,
+    ) -> Result<Vec<(f64, f64)>, CandyError> {
+        let layouts = self.measure_token_layouts(is_math, tokens)?;
+        let n = layouts.len();
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let w_row: f64 = layouts.iter().map(|l| l.2).sum();
+        let gap = if n > 1 {
+            ((w_real - w_row) / (n as f64 - 1.0)).max(0.0)
+        } else {
+            0.0
+        };
+        let x0 = layouts[0].0;
+        let y0 = layouts[0].1;
+        let mut x = x0;
+        let mut out = Vec::with_capacity(n);
+        for l in &layouts {
+            let x_rel = x - x0;
+            let y_rel = l.1 - y0;
+            out.push((x_rel / PT_PER_CM, y_rel / PT_PER_CM));
+            x += l.2 + gap;
+        }
+        Ok(out)
+    }
+
+    /// Measure each token's `(x_left, y_top, width, height)` (pt, relative to
+    /// the row's first token) by rendering them as colored boxes in a zero-gap
+    /// horizontal stack.
+    fn measure_token_layouts(
+        &self,
+        is_math: bool,
+        tokens: &[String],
+    ) -> Result<Vec<(f64, f64, f64, f64)>, CandyError> {
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+        for (i, t) in tokens.iter().enumerate() {
+            let color = distinct_color(i);
+            let wrapped = wrap_token(is_math, t);
+            // NOTE: this runs *inside* `#stack(...)`, i.e. already in code mode,
+            // so the function call must be `box(...)` (no leading `#`).
+            parts.push(format!(
+                "box(inset: 0pt, fill: rgb(\"{color}\"))[{wrapped}]"
+            ));
+        }
+        let inner = parts.join(", ");
+        let src = format!(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
+             #set text(fill: black)\n\
+             #stack(dir: ltr, spacing: 0pt, {inner})\n"
+        );
+        let doc = self.compile_cached(&src)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let svg = typst_svg::svg(page, &SvgOptions::default());
+        let mut out = Vec::with_capacity(tokens.len());
+        for i in 0..tokens.len() {
+            let color = distinct_color(i);
+            match bbox_of_svg_with_fill(&svg, &color) {
+                Some((min_x, min_y, max_x, max_y)) => {
+                    out.push((min_x, min_y, max_x - min_x, max_y - min_y));
+                }
+                None => out.push((0.0, 0.0, 0.0, 0.0)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Measure the real (zero-gap-free) width/height (pt) of a whole body by
+    /// rendering it as a single colored box.
+    fn measure_whole(&self, body: &str) -> Result<(f64, f64), CandyError> {
+        let color = "#ff00aa";
+        let src = format!(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
+             #set text(fill: black)\n\
+             #box(inset: 0pt, fill: rgb(\"{color}\"))["
+        );
+        let src = format!("{src}#{body}]\n");
+        let doc = self.compile_cached(&src)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let svg = typst_svg::svg(page, &SvgOptions::default());
+        match bbox_of_svg_with_fill(&svg, color) {
+            Some((min_x, min_y, max_x, max_y)) => Ok((max_x - min_x, max_y - min_y)),
+            None => Ok((0.0, 0.0)),
+        }
+    }
+
+    /// Render a body at an explicit absolute page position (cm) — used for
+    /// transform glyph fragments. No sprite cache (positions change per frame).
+    fn render_placed_pixels(
+        &self,
+        body: &str,
+        x_cm: f64,
+        y_cm: f64,
+        scale_pct: f64,
+        rotation: f64,
+        pixel_per_pt: f32,
+        pw: f64,
+        ph: f64,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+        let preamble = imports_preamble(&self.scene);
+        let placed = place_source(pw, ph, x_cm, y_cm, scale_pct, rotation, body, &preamble);
+        let doc = self.compile_cached(&placed)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let opts = RenderOptions {
+            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
+            render_bleed: false,
+        };
+        let pix = render(page, &opts);
+        Ok(crate::renderer::RenderedFrame {
+            width: pix.width() as usize,
+            height: pix.height() as usize,
+            rgba: pix.data().to_vec(),
+        })
+    }
+
+    /// Render a body at an explicit absolute page position (cm) to a full-page
+    /// SVG string — used for transform glyph fragments in the SVG path.
+    fn render_placed_svg(
+        &self,
+        body: &str,
+        x_cm: f64,
+        y_cm: f64,
+        scale_pct: f64,
+        rotation: f64,
+        page_w: f64,
+        page_h: f64,
+    ) -> Result<String, CandyError> {
+        let preamble = imports_preamble(&self.scene);
+        let src = place_source(
+            page_w, page_h, x_cm, y_cm, scale_pct, rotation, body, &preamble,
+        );
+        let doc = self.compile_cached(&src)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        Ok(typst_svg::svg(page, &SvgOptions::default()))
+    }
+
+    /// Whether `label` is hidden by an active per-glyph transform (its `target`
+    /// or `old` mobject), so the renderer can draw the interpolated fragments
+    /// instead. Only plans that actually produced fragments hide their labels.
+    fn transform_hidden(&self, label: &Label, time_ms: u32) -> bool {
+        for p in &self.transform_fragments {
+            if time_ms >= p.start_ms && time_ms < p.end_ms {
+                if &p.target == label || &p.old == label {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Build the interpolated glyph-fragment overlays for the current frame as
+    /// `(opacity, RenderedFrame)` pairs, ready to be composited *with* the
+    /// mobjects (so they are warped by the camera like ordinary objects).
+    /// The fragment offsets stored in `CharFragment` are relative to the
+    /// target mobject's body top-left; at render time we add the target's
+    /// current position so the morph follows the mobject's translation.
+    fn transform_fragment_frames(
+        &self,
+        states: &HashMap<Label, crate::core::ast::FrameData>,
+        time_ms: u32,
+        pixel_per_pt: f32,
+        pw: f64,
+        ph: f64,
+    ) -> Result<Vec<(f64, crate::renderer::RenderedFrame)>, CandyError> {
+        let mut out: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
+        for p in &self.transform_fragments {
+            if time_ms < p.start_ms || time_ms >= p.end_ms {
+                continue;
+            }
+            let (base_x, base_y) = states
+                .get(&p.target)
+                .map(|s| (s.x, s.y))
+                .unwrap_or((0.0, 0.0));
+            let denom = (p.end_ms - p.start_ms).max(1) as f64;
+            let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
+            let te = (p.easing.resolve())(t);
+            for f in &p.frags {
+                let x = base_x + f.from_x + (f.to_x - f.from_x) * te;
+                let y = base_y + f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_opacity + (f.to_opacity - f.from_opacity) * te;
+                if op <= 0.001 {
+                    continue;
+                }
+                let frame =
+                    self.render_placed_pixels(&f.body, x, y, 100.0, 0.0, pixel_per_pt, pw, ph)?;
+                out.push((op, frame));
+            }
+        }
+        Ok(out)
     }
 
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
@@ -936,15 +1316,32 @@ impl Renderer {
 
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
-            // Parent auto-hide: skip mobjects not owned by the active scene.
-            if !self.scene.scenes.is_empty()
-                && self.label_scene.get(*label).copied().unwrap_or(0) != active
-            {
+            // Parent auto-hide: a label is hidden only when its owner scene is a
+            // proper ancestor of the active scene (a child scene is active, so
+            // its ancestors are hidden). When the root scene is active, every
+            // mobject stays visible regardless of which scene owns it.
+            if !self.scene.scenes.is_empty() {
+                let owner = self.label_scene.get(*label).copied().unwrap_or(active);
+                if owner != active && self.scene.scene_is_ancestor(owner, active) {
+                    continue;
+                }
+            }
+            // Per-glyph transform: the `target`/`old` mobjects are replaced by
+            // the interpolated glyph fragments, so skip them during the window.
+            if self.transform_hidden(*label, time_ms) {
                 continue;
             }
             let st = states.get(*label).unwrap();
             let frame = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
             objs.push((st.opacity, frame));
+        }
+
+        // Per-glyph transform overlays (Manim-style). Added to `objs` so they
+        // are composited and then warped by the camera together with the other
+        // mobjects — the old content disassembles and the new reassembles.
+        let frag_frames = self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph)?;
+        for (opacity, frame) in frag_frames {
+            objs.push((opacity, frame));
         }
 
         // Subtitle overlays are collected separately: they must be composited
@@ -1015,6 +1412,26 @@ impl Renderer {
         self.nat.get(label).copied()
     }
 
+    /// Test-only: summary of the precomputed per-glyph transform plans
+    /// `(target, fragment_count, start_ms, end_ms)`.
+    #[cfg(test)]
+    pub(crate) fn transform_plans_debug(&self) -> Vec<(String, usize, u32, u32)> {
+        self.transform_fragments
+            .iter()
+            .map(|p| (p.target.0.clone(), p.frags.len(), p.start_ms, p.end_ms))
+            .collect()
+    }
+
+    /// Test-only: total number of glyph fragments active at `time_ms`.
+    #[cfg(test)]
+    pub(crate) fn active_fragment_count(&self, time_ms: u32) -> usize {
+        self.transform_fragments
+            .iter()
+            .filter(|p| time_ms >= p.start_ms && time_ms < p.end_ms)
+            .map(|p| p.frags.len())
+            .sum()
+    }
+
     /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).
     ///
     /// Available only when the `gpu` cargo feature is enabled. Renders the
@@ -1074,11 +1491,12 @@ impl Renderer {
         // and extract the optional global camera state.
         let (states, camera) = self.prepare_states(all_frames, time_ms);
 
-        // Deterministic z-order (same as the video path), following source
-        // declaration order so并列 mobjects paint in the order they were written.
         let mut labels: Vec<&Label> = states.keys().collect();
         let order = self.draw_order_index();
         labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
+
+        // Deterministic z-order (same as the video path), following source
+        // declaration order so并列 mobjects paint in the order they were written.
 
         // Resolve the active scene + its canvas. Only the active scene's
         // mobjects are rendered; a parent scene is auto-hidden while a child
@@ -1129,10 +1547,19 @@ impl Renderer {
         }
 
         for label in labels {
-            // Parent auto-hide: skip mobjects not owned by the active scene.
-            if !self.scene.scenes.is_empty()
-                && self.label_scene.get(label).copied().unwrap_or(0) != active
-            {
+            // Parent auto-hide: a label is hidden only when its owner scene is a
+            // proper ancestor of the active scene (a child scene is active, so
+            // its ancestors are hidden). When the root scene is active, every
+            // mobject stays visible regardless of which scene owns it.
+            if !self.scene.scenes.is_empty() {
+                let owner = self.label_scene.get(label).copied().unwrap_or(active);
+                if owner != active && self.scene.scene_is_ancestor(owner, active) {
+                    continue;
+                }
+            }
+            // Per-glyph transform: the `target`/`old` mobjects are replaced by
+            // the interpolated glyph fragments, so skip them during the window.
+            if self.transform_hidden(label, time_ms) {
                 continue;
             }
             let st = &states[label];
@@ -1141,6 +1568,33 @@ impl Renderer {
             // SVG <g opacity> applies to all descendants (shapes + text).
             let op = st.opacity.clamp(0.0, 1.0);
             out.push_str(&format!("<g opacity=\"{op}\">\n{obj_svg}\n</g>\n"));
+        }
+
+        // Per-glyph transform overlays (Manim-style), drawn INSIDE the camera
+        // group so they move with the view like the other mobjects. Each
+        // fragment is a full-page SVG placed at its interpolated position
+        // relative to the target mobject's current translation.
+        for p in &self.transform_fragments {
+            if time_ms < p.start_ms || time_ms >= p.end_ms {
+                continue;
+            }
+            let (base_x, base_y) = states
+                .get(&p.target)
+                .map(|s| (s.x, s.y))
+                .unwrap_or((0.0, 0.0));
+            let denom = (p.end_ms - p.start_ms).max(1) as f64;
+            let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
+            let te = (p.easing.resolve())(t);
+            for f in &p.frags {
+                let x = base_x + f.from_x + (f.to_x - f.from_x) * te;
+                let y = base_y + f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_opacity + (f.to_opacity - f.from_opacity) * te;
+                if op <= 0.001 {
+                    continue;
+                }
+                let svg = self.render_placed_svg(&f.body, x, y, 100.0, 0.0, pw, ph)?;
+                out.push_str(&format!("<g opacity=\"{op}\">\n{svg}\n</g>\n"));
+            }
         }
 
         // Close the camera group BEFORE drawing subtitles so the captions are
@@ -1522,6 +1976,108 @@ fn subtitle_place_expr(sub: &Subtitle, margin: f64) -> String {
             format!("place(top + right, dx: -{margin}cm, dy: {margin}cm)")
         }
     }
+}
+
+/// Wrap a single glyph token into a renderable Typst body: math tokens become
+/// `$[tok]$`, text tokens become `[tok]`.
+fn wrap_token(is_math: bool, tok: &str) -> String {
+    if is_math {
+        format!("${tok}$")
+    } else {
+        format!("[{tok}]")
+    }
+}
+
+/// Split an inline body (`[…]` or `$[…]$`) into glyph tokens. Returns
+/// `(is_math, tokens)` where `tokens` are the inner content strings (operators,
+/// identifiers, words). Returns `None` if the body can't be split into tokens.
+fn tokenize_inline(body: &str) -> Option<(bool, Vec<String>)> {
+    let b = body.trim();
+    let inner = b
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(b)
+        .trim();
+    if inner.starts_with('$') {
+        // Math mode: strip the leading `$` and trailing `$`, then split into
+        // identifier runs (e.g. `sin`, `eq`, `x1`) and single-char operators /
+        // symbols, with whitespace as a delimiter.
+        let m = inner.strip_prefix('$').unwrap_or(inner);
+        let m = m.strip_suffix('$').unwrap_or(m).trim();
+        let toks = tokenize_math(m);
+        if toks.is_empty() {
+            return None;
+        }
+        return Some((true, toks));
+    }
+    // Plain text: split into words.
+    let toks: Vec<String> = inner.split_whitespace().map(|s| s.to_string()).collect();
+    if toks.is_empty() {
+        return None;
+    }
+    Some((false, toks))
+}
+
+/// Split a math-mode string into glyph tokens: consecutive alphanumerics form
+/// one token (so `sin`, `eq`, `x1` stay whole), each other char is its own
+/// token, and whitespace is a delimiter.
+fn tokenize_math(s: &str) -> Vec<String> {
+    let mut toks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_alnum: Option<bool> = None;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !cur.is_empty() {
+                toks.push(std::mem::take(&mut cur));
+                cur_alnum = None;
+            }
+            continue;
+        }
+        let alnum = c.is_alphanumeric();
+        match cur_alnum {
+            Some(prev) if prev == alnum => cur.push(c),
+            _ => {
+                if !cur.is_empty() {
+                    toks.push(std::mem::take(&mut cur));
+                }
+                cur.push(c);
+                cur_alnum = Some(alnum);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        toks.push(cur);
+    }
+    toks
+}
+
+/// A deterministic, pairwise-distinct color for the i-th measurement box
+/// (avoids collisions with black/white so `bbox_of_svg_with_fill` finds it).
+fn distinct_color(i: usize) -> String {
+    let h = (i as f64 * 0.61803398875) % 1.0;
+    let r = ((h * 255.0).round() as u32) & 0xff;
+    let g = (((h + 0.33) % 1.0) * 255.0).round() as u32 & 0xff;
+    let b = (((h + 0.66) % 1.0) * 255.0).round() as u32 & 0xff;
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Longest-common-subsequence length table for token alignment. `dp[i][j]` is
+/// the LCS length of `a[i..]` and `b[j..]`. Used to match old/new glyph tokens
+/// so common runs stay put while only the differing tokens fade in/out.
+fn lcs_table(a: &[String], b: &[String]) -> Vec<Vec<usize>> {
+    let n = a.len();
+    let m = b.len();
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            if a[i] == b[j] {
+                dp[i][j] = dp[i + 1][j + 1] + 1;
+            } else {
+                dp[i][j] = dp[i + 1][j].max(dp[i][j + 1]);
+            }
+        }
+    }
+    dp
 }
 
 /// Compile a subtitle's body to a single-page Typst document, placed at the
@@ -2485,6 +3041,7 @@ fn content_timeline_swaps_rendered_body() {
         scenes: Vec::new(),
         root_scene: None,
         morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
@@ -2535,6 +3092,7 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         scenes: Vec::new(),
         root_scene: None,
         morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
@@ -2606,6 +3164,7 @@ fn subtitle_stays_in_viewport() {
         scenes: Vec::new(),
         root_scene: None,
         morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
@@ -2662,6 +3221,7 @@ fn morph_renders_interpolated_polygon() {
         items,
         content_timeline: HashMap::new(),
         morph_pairs,
+        transform_plans: Vec::new(),
         initial: HashMap::new(),
         audio: Vec::new(),
         imports: Vec::new(),
@@ -2797,6 +3357,7 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
         }],
         root_scene: Some(0),
         morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
@@ -2830,8 +3391,14 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
     //     `zeta, alpha, mid`, an alphabetical sort would put `alpha` on top;
     //     assert `zeta` is highest and the order follows the source.
     let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
-    assert!(y("zeta") < y("alpha"), "order scrambled: zeta must sit above alpha");
-    assert!(y("alpha") < y("mid"), "order scrambled: alpha must sit above mid");
+    assert!(
+        y("zeta") < y("alpha"),
+        "order scrambled: zeta must sit above alpha"
+    );
+    assert!(
+        y("alpha") < y("mid"),
+        "order scrambled: alpha must sit above mid"
+    );
 }
 
 /// Regression test for "temporarily-not-rendered mobjects use `#hide` to occupy
@@ -2889,6 +3456,7 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         }],
         root_scene: Some(0),
         morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
@@ -2901,10 +3469,14 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
     let native = native_natural_positions(&r, &ordered, page_w, page_h);
 
     // (1) The hidden mobject MUST have a natural position (it was not skipped).
-    let hidden = r.nat_for(&Label("hidden".into())).expect("hidden mobject must get a nat");
+    let hidden = r
+        .nat_for(&Label("hidden".into()))
+        .expect("hidden mobject must get a nat");
     // (2) Its natural position must match where it would sit if shown (native
     //     Typst, all-visible) — i.e. `#hide` reserved the same box.
-    let nat_hidden = native.get(&Label("hidden".into())).expect("native nat present");
+    let nat_hidden = native
+        .get(&Label("hidden".into()))
+        .expect("native nat present");
     assert!(
         (hidden.0 - nat_hidden.0).abs() < 1.0 && (hidden.1 - nat_hidden.1).abs() < 1.0,
         "hidden: candy nat {hidden:?} != native {nat_hidden:?} (space not reserved)"
@@ -2912,5 +3484,81 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
     // (3) It must keep its slot in the flow: below `top`, above `bottom`.
     let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
     assert!(y("top") < y("hidden"), "hidden must sit below top");
-    assert!(y("hidden") < y("bottom"), "hidden must reserve space above bottom");
+    assert!(
+        y("hidden") < y("bottom"),
+        "hidden must reserve space above bottom"
+    );
+}
+
+/// Per-glyph `Transform` must split inline content into independent glyph
+/// fragments (matched glide, unmatched fade) instead of the old crossfade, and
+/// must handle *chained* transforms by reading the latest `content_timeline`
+/// entry as the old body.
+#[test]
+fn transform_splits_inline_content_into_glyph_fragments() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_frag.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    let plans = r.transform_plans_debug();
+    assert_eq!(plans.len(), 2, "expected 2 chained plans: {:?}", plans);
+    // Plan 0: $a+b=c$ (5) -> $a+b+d=c$ (7): 5 matched + 2 new = 7 fragments.
+    assert_eq!(plans[0].1, 7, "plan0 fragment count: {:?}", plans);
+    // Plan 1: $a+b+d=c$ (7) -> $a+b+d+e=c$ (9): 7 matched + 2 new = 9 fragments.
+    assert_eq!(plans[1].1, 9, "plan1 fragment count: {:?}", plans);
+    // Before any window: nothing active.
+    assert_eq!(r.active_fragment_count(0), 0);
+    // Mid plan-0 window: 7 fragments.
+    let mid0 = plans[0].2 + (plans[0].3 - plans[0].2) / 2;
+    assert_eq!(r.active_fragment_count(mid0), 7, "mid plan0: {:?}", plans);
+    // Mid plan-1 window: 9 fragments.
+    let mid1 = plans[1].2 + (plans[1].3 - plans[1].2) / 2;
+    assert_eq!(r.active_fragment_count(mid1), 9, "mid plan1: {:?}", plans);
+    // After both windows: target shows final content, no fragments.
+    let after = plans[1].3 + 10;
+    assert_eq!(
+        r.active_fragment_count(after),
+        0,
+        "after windows: {:?}",
+        plans
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: after a per-glyph `transform` window the target must render its
+/// NEW content (the content-timeline swap), not disappear.
+#[test]
+fn transform_target_renders_after_window() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_after.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Mid-window: fragments present.
+    let mid = 30u32;
+    let svg_mid = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    assert!(svg_mid.contains("<svg"), "mid-window svg empty");
+    // After window (past end_ms): target shows new content — must contain a
+    // nested `<svg` for the rendered glyphs, not just the background rect.
+    let after = 200u32;
+    let svg_after = String::from_utf8(r.render_frame_at(after, &frames).unwrap()).unwrap();
+    let nested = svg_after.matches("<svg").count();
+    assert!(
+        nested >= 2,
+        "after window target must render (nested svg count={nested})"
+    );
+    std::fs::remove_file(&tmp).ok();
 }

@@ -1100,6 +1100,43 @@ fn process_morph(
     ctx.cursor += 1 + duration;
 }
 
+/// Whether a mobject body is *inline content* (a formula or plain text) that
+/// can be split into independent glyph fragments for a Manim-style `Transform`.
+/// Returns `false` for shape constructors (`circle(…)`, `rect(…)`, …) — those
+/// keep the outline-blob morph instead.
+fn is_inline_content(body: &str) -> bool {
+    let b = body.trim();
+    let inner = b
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(b)
+        .trim();
+    // Math mode is always inline content.
+    if inner.starts_with('$') {
+        return true;
+    }
+    // Shape constructors are NOT inline content → keep the blob morph.
+    for kw in [
+        "circle(",
+        "rect(",
+        "ellipse(",
+        "square(",
+        "triangle(",
+        "polygon(",
+        "line(",
+        "path(",
+        "arrow(",
+        "arc(",
+        "image(",
+    ] {
+        if inner.contains(kw) {
+            return false;
+        }
+    }
+    // Anything else (plain text, unknown call) is treated as inline content.
+    true
+}
+
 /// `transform(target, to: <content>, duration: 24, easing: "smooth")` —
 /// Manim's `Transform` / `ReplacementTransform`: morph a single mobject's
 /// content into a new inline `content` (a Typst body). Keeps the **original
@@ -1130,7 +1167,18 @@ fn process_transform(
     let easing = resolve_easing(named, &label);
 
     // Capture the current content of `target` before we replace it.
-    let old_body = ctx.items.get(&label).cloned().unwrap_or_default();
+    // Capture the *currently displayed* content of `target` before we replace
+    // it. `items[label]` keeps the original body (transforms swap content via
+    // `content_timeline`, never overwriting `items`), so for a *chained*
+    // transform we must read the latest `content_timeline` entry instead —
+    // otherwise a second `#transform` would morph from the original body, not
+    // the intermediate result just shown.
+    let old_body = ctx
+        .content_timeline
+        .get(&label)
+        .and_then(|v| v.last().map(|(_, b)| b.clone()))
+        .or_else(|| ctx.items.get(&label).cloned())
+        .unwrap_or_default();
 
     // No existing mobject → just fade the new content in.
     if old_body.is_empty() {
@@ -1197,16 +1245,38 @@ fn process_transform(
         .or_default()
         .push((switch_at, new_body.clone()));
 
-    // Real shape morph: precompute a `MorphPlan` between the old content's
-    // outline and the new content's outline.
-    ctx.morph_pairs.push(crate::core::ast::MorphPair {
-        from: tmp.clone(),
-        to: label.clone(),
-        to_body: Some(new_body.clone()),
-        start_ms: switch_at,
-        end_ms: switch_at + duration,
-        easing: easing.clone(),
-    });
+    // Decide between a per-glyph fragment morph (inline content: formulas /
+    // text) and the outline blob morph (shapes). The fragment morph is what
+    // makes formula transitions look like a real Manim `Transform` — the old
+    // equation disassembles glyph-by-glyph and reassembles into the new one —
+    // instead of the whole block dissolving at once (the previous "stiff"
+    // crossfade) or being replaced by a single largest-outline polygon blob.
+    let is_inline = is_inline_content(&old_body) && is_inline_content(&new_body);
+    if is_inline {
+        // The renderer splits both bodies into glyph fragments and lays them
+        // out; `fragments` is filled in by `ensure_natural`. No shape blob.
+        ctx.transform_plans.push(crate::core::ast::TransformPlan {
+            target: label.clone(),
+            old: tmp.clone(),
+            old_body: old_body.clone(),
+            new_body: new_body.clone(),
+            fragments: Vec::new(),
+            start_ms: switch_at,
+            end_ms: switch_at + duration,
+            easing: easing.clone(),
+        });
+    } else {
+        // Real shape morph: precompute a `MorphPlan` between the old content's
+        // outline and the new content's outline (the blob).
+        ctx.morph_pairs.push(crate::core::ast::MorphPair {
+            from: tmp.clone(),
+            to: label.clone(),
+            to_body: Some(new_body.clone()),
+            start_ms: switch_at,
+            end_ms: switch_at + duration,
+            easing: easing.clone(),
+        });
+    }
 
     // Single morph slide: the scheduler's native `Transform` action crossfades
     // `old` out while `target` (now showing `new_body`) fades in.

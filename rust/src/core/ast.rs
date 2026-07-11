@@ -304,6 +304,53 @@ pub struct MorphPair {
     pub easing: Easing,
 }
 
+/// A single glyph / sub-formula fragment used by the per-character `Transform`
+/// morph. The renderer lays out `body` in isolation to recover its absolute
+/// position on the page; during the transform each fragment interpolates its
+/// `(x, y)` (cm, page origin) from `from_*` (the old content's layout) to
+/// `to_*` (the new content's layout), and its `opacity` from `from_opacity` to
+/// `to_opacity` (1 → 1 for matched glyphs, 1 → 0 for old-only, 0 → 1 for
+/// new-only). `body` is the full Typst content to render the fragment (e.g.
+/// `[a]`, `[+]`, `[=]`, or a longer run that could not be split further).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CharFragment {
+    pub body: String,
+    /// Page-anchored top-left of the fragment in the *old* content (cm).
+    pub from_x: f64,
+    pub from_y: f64,
+    /// Page-anchored top-left of the fragment in the *new* content (cm).
+    pub to_x: f64,
+    pub to_y: f64,
+    /// Opacity at window start (old-only fragments: 1, others: 1).
+    pub from_opacity: f64,
+    /// Opacity at window end (new-only fragments: 1, others: 1).
+    pub to_opacity: f64,
+}
+
+/// A Manim-style per-glyph `Transform` plan for one `#transform(target, to: …)`
+/// call whose old/new bodies are inline content. `target` is the label whose
+/// content is being replaced; `old` is the synthetic parked mobject holding the
+/// old content (used only as a fallback / for the crossfade safety net).
+/// `old_body` / `new_body` are the raw bodies so the renderer can re-measure
+/// and split them into glyph fragments. `fragments` is empty at parse time and
+/// filled in by the renderer's `ensure_natural` (which does the splitting +
+/// layout). During `[start_ms, end_ms]` the renderer composites the
+/// interpolated fragments *over* `target` so the old content visibly
+/// disassembles and reassembles into the new content instead of dissolving as
+/// one block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformPlan {
+    pub target: Label,
+    pub old: Label,
+    pub old_body: String,
+    pub new_body: String,
+    #[serde(default)]
+    pub fragments: Vec<CharFragment>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub easing: Easing,
+}
+
 impl Action {
     pub fn target(&self) -> &Label {
         match self {
@@ -414,6 +461,18 @@ pub struct Scene {
     /// shape across each pair's window. Empty unless `#morph` is used.
     #[serde(default)]
     pub morph_pairs: Vec<MorphPair>,
+    /// Per-glyph fragment morph plans recorded by `#transform(target, to: …)`
+    /// when both the old and new bodies are inline content (e.g. formulas /
+    /// text). Each plan drives a Manim-style `Transform`: the old content is
+    /// broken into independent glyph fragments that each move / fade toward the
+    /// matching fragment of the new content, while unmatched fragments fade out
+    /// (old-only) or in (new-only). This replaces the previous single crossfade
+    /// (which looked "stiff" because the whole block dissolved at once) and the
+    /// single largest-outline polygon blob (which did not resemble the formula).
+    /// Empty for shape transforms (which keep the outline morph) or when no
+    /// inline `#transform` is used.
+    #[serde(default)]
+    pub transform_plans: Vec<TransformPlan>,
     /// Initial per-object transform (frame 0). Seeded from `candy.mobject`'s
     /// `at`/`scale`/`opacity`. Objects absent here default to origin/scale 1.
     #[serde(default)]
@@ -505,6 +564,22 @@ impl Scene {
             }
         }
         best.or(self.root_scene).unwrap_or(0)
+    }
+
+    /// Whether `ancestor` is an ancestor of `descendant` in the scene tree
+    /// (including the case `ancestor == descendant`). Used by the renderer's
+    /// auto-hide rule: a scene is hidden only when one of its *descendants* is
+    /// the active scene — so when the root scene is active, every mobject stays
+    /// visible regardless of which scene owns it.
+    pub fn scene_is_ancestor(&self, ancestor: usize, descendant: usize) -> bool {
+        let mut cur = Some(descendant);
+        while let Some(id) = cur {
+            if id == ancestor {
+                return true;
+            }
+            cur = self.scenes.iter().find(|s| s.id == id).and_then(|s| s.parent);
+        }
+        false
     }
 
     /// Resolve the effective canvas size (in Typst points) for `scene_id`,
@@ -1036,6 +1111,7 @@ mod tests {
             scenes: Vec::new(),
             root_scene: None,
             morph_pairs: Vec::new(),
+            transform_plans: Vec::new(),
             groups: HashMap::new(),
             private_metadata: PrivateMeta::default(),
         }

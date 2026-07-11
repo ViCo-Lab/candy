@@ -79,6 +79,7 @@ mod tests {
             scenes: Vec::new(),
             root_scene: None,
             morph_pairs: Vec::new(),
+            transform_plans: Vec::new(),
             groups: HashMap::new(),
             private_metadata: PrivateMeta::default(),
         };
