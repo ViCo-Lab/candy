@@ -27,5 +27,5 @@ pub struct RenderedFrame {
 
 pub use typst::Renderer;
 #[cfg(test)]
-pub(crate) use typst::compile_svg_for_test;
+pub(crate) use typst::compile_file_for_test;
 pub use video::{encode_frames, mux, collect_audio, Codec, Container, EncodedVideo};

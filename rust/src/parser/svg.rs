@@ -18,24 +18,24 @@ use crate::core::error::CandyError;
 /// NOTE: the spec says "use `usvg` to parse the SVG". For the first version we
 /// use a targeted XML scan for the `lang="candy-json"` node instead (a full
 /// `usvg` parse is a reserved optimization; the JSON itself is authoritative).
-pub fn extract_dsl_from_svg(svg_path: &Path) -> Result<Scene, CandyError> {
+pub fn extract_scene_from_svg(svg_path: &Path) -> Result<Scene, CandyError> {
     let svg = std::fs::read_to_string(svg_path)?; // E001 on missing file
 
     let marker = svg
         .find("lang=\"candy-json\"")
-        .ok_or_else(|| CandyError::Dsl("no candy-json block found".into()))?; // E003
+        .ok_or_else(|| CandyError::Svg("no candy-json block found".into()))?; // E003
 
     let open_tag_start = svg[..marker]
         .rfind("<text")
-        .ok_or_else(|| CandyError::Dsl("candy-json not inside a <text>".into()))?; // E003
+        .ok_or_else(|| CandyError::Svg("candy-json not inside a <text>".into()))?; // E003
     let open_tag_end = svg[open_tag_start..]
         .find('>')
         .map(|k| open_tag_start + k)
-        .ok_or_else(|| CandyError::Dsl("malformed <text>".into()))?; // E003
+        .ok_or_else(|| CandyError::Svg("malformed <text>".into()))?; // E003
     let close = svg[open_tag_end..]
         .find("</text>")
         .map(|k| open_tag_end + k)
-        .ok_or_else(|| CandyError::Dsl("unterminated <text>".into()))?; // E003
+        .ok_or_else(|| CandyError::Svg("unterminated <text>".into()))?; // E003
 
     let content = &svg[open_tag_end + 1..close];
     let scene: Scene = serde_json::from_str(content)?; // E003 on invalid JSON
@@ -86,9 +86,9 @@ mod tests {
         let svg = format!(
             "<svg><text lang=\"candy-json\">{json}</text></svg>"
         );
-        let tmp = std::env::temp_dir().join("candy_test_dsl.svg");
+        let tmp = std::env::temp_dir().join("candy_test_svg.svg");
         std::fs::write(&tmp, svg).unwrap();
-        let back = extract_dsl_from_svg(&tmp).unwrap();
+        let back = extract_scene_from_svg(&tmp).unwrap();
         assert_eq!(back.slides[0].duration_ms, 12);
         assert_eq!(back.private_metadata.version_codename, "Ribose");
         // Easing survives the JSON round-trip.

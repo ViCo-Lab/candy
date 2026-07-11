@@ -42,7 +42,7 @@ enum Commands {
         /// Force the inputs to be parsed as SVGs rendered by `@preview/candy`
         /// (each containing a `candy-json` block). Without this flag, the
         /// parser is selected by file extension: `.svg` → SVG round-trip via
-        /// `extract_dsl_from_svg`, anything else → `.tyx`.
+        /// `extract_scene_from_svg`, anything else → `.tyx`.
         #[arg(long)]
         from_svg: bool,
         /// Output name hint (under `dist/` for videos; ignored for SVG drafts).

@@ -1,0 +1,895 @@
+//! Parse a `.tyx` (Typst X-sheet) file into a `Scene` AST — the orchestration
+//! layer.
+//!
+//! The `.tyx` format is **valid standard Typst**: it imports the Candy package
+//! and calls plain Candy functions (`mobject`, `animate`, `pause`, `audio`,
+//! `play`). This parser is **AST-driven** (built on `typst_syntax`), not a
+//! regex scanner: it walks the Typst syntax tree, resolves every call through
+//! the file's *imports*, and extracts each directive's arguments from the real
+//! expression nodes.
+//!
+//! Detection is **import-agnostic** for bare identifiers: a call is treated as
+//! a Candy directive iff its resolved name matches a Candy symbol that was
+//! actually imported. So it works whether the user wrote `#import "candy": *`
+//! (then `mobject(...)`), `#import "candy"` (then `candy.mobject(...)`), or
+//! renamed an import (`#import "candy": animate as anim`). The binding is what
+//! matters, not the literal prefix. See [`crate::parser::expr::call_symbol`]
+//! and the directive handlers in [`crate::parser::directives`].
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use typst_syntax::ast::{self, Expr};
+use typst_syntax::{LinkedNode, parse_code};
+
+use crate::core::ast::{
+    AudioTrack, CounterDef, CounterEvent, FrameData, Label, Scene, SceneInfo, Slide, Subtitle,
+};
+use crate::core::error::CandyError;
+use crate::core::meta::PrivateMeta;
+
+use crate::parser::directives::process_call;
+use crate::parser::expr::{CANDY, call_symbol};
+
+/// Centimeters per Typst point. Must match renderer::typst::PT_PER_CM.
+pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
+
+/// Parse `.tyx` file into a `Scene` AST.
+///
+/// Precondition: `path` exists and is valid UTF-8 (else E001).
+/// Postcondition: returns `Ok(Scene)` with validated slides (else E002).
+/// `private_metadata` is set to the fixed defaults.
+pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
+    let raw = std::fs::read_to_string(path)?; // E001 on missing file
+    // Parse as **code** (not markup). A `.tyx` X-sheet is a flat sequence of
+    // Candy directives (it even uses `//` line comments, which are only valid
+    // in code mode), so code mode is the correct interpretation. Critically,
+    // code mode surfaces `{ ... }` blocks as real `ast::CodeBlock` nodes —
+    // markup mode silently strips them — which is what drives the lexical
+    // shadowing / scope-restore logic in `walk` (see `candy_directive_restored_after_shadow_scope`).
+    let root = parse_code(&raw);
+    let node = LinkedNode::new(&root);
+
+    let mut ctx = ParseCtx::default();
+    // The whole document is the implicit root scope (id 0).
+    ctx.scope_stack.push(0);
+    ctx.scope_starts.insert(0, 0);
+    ctx.next_scope_id = 1;
+    // The whole document is also the implicit root *scene* (id 0). Every
+    // mobject / action not declared inside an explicit `#scene(...)` belongs
+    // to it. This is the "no root scene → whole document is one scene" rule.
+    ctx.scenes.push(SceneInfo {
+        id: 0,
+        parent: None,
+        scope: 0,
+        page_size: ctx
+            .page_size_cm
+            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        start_ms: 0,
+        end_ms: 0,
+        owns_labels: Vec::new(),
+    });
+    ctx.current_scene = 0;
+    ctx.next_scene_id = 1;
+    walk(&node, &raw, &mut ctx);
+    // Finalize the root scope's interval [0, cursor].
+    ctx.scopes.push(crate::core::ast::ScopeInfo {
+        id: 0,
+        parent: None,
+        start_ms: 0,
+        end_ms: ctx.cursor,
+    });
+    // Finalize the root scene's interval and attribute every mobject to the
+    // scene that owns it (defaulting to the root).
+    if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
+        root.end_ms = ctx.cursor;
+    }
+    for (label, sid) in &ctx.label_scene {
+        if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == *sid) {
+            s.owns_labels.push(label.clone());
+        }
+    }
+
+    let private = PrivateMeta::default();
+    let scene = Scene {
+        slides: ctx.slides,
+        items: ctx.items,
+        content_timeline: ctx.content_timeline,
+        morph_pairs: ctx.morph_pairs,
+        initial: ctx.initial,
+        audio: ctx.audio,
+        imports: ctx.imports.clone(),
+        page_size: ctx
+            .page_size_cm
+            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        subtitles: ctx.subtitles,
+        counters: ctx.counters,
+        counter_events: ctx.counter_events,
+        scopes: ctx.scopes,
+        scenes: ctx.scenes,
+        root_scene: Some(0),
+        groups: ctx.groups.clone(),
+        private_metadata: private,
+    };
+    scene.validate().map_err(CandyError::Parse)?; // E002
+    Ok(scene)
+}
+
+/// Accumulated parse state.
+#[derive(Default)]
+pub(crate) struct ParseCtx {
+    /// local name -> original Candy symbol (resolved through imports).
+    pub(crate) symbol_map: HashMap<String, String>,
+    /// Candy module alias names (`candy`, `c`, …) bound by a bare
+    /// `#import "candy"` / `#import "candy" as X`. Enables `candy.mobject(...)`
+    /// field-access detection while keeping ordinary method calls out.
+    pub(crate) candy_aliases: HashSet<String>,
+    /// label -> raw body source text.
+    pub(crate) items: HashMap<Label, String>,
+    /// label -> frame-0 visual state.
+    pub(crate) initial: HashMap<Label, FrameData>,
+    pub(crate) slides: Vec<Slide>,
+    pub(crate) audio: Vec<AudioTrack>,
+    pub(crate) cursor: u32,
+    pub(crate) block_counter: usize,
+    /// Page size in cm, detected from `#set page(width:.., height:..)`.
+    pub(crate) page_size_cm: Option<(f64, f64)>,
+    /// Top-level `@preview`/package import lines (raw source) to re-inject into
+    /// per-object compile snippets so mobject bodies can use external packages.
+    pub(crate) imports: Vec<String>,
+    /// Per-label content switches recorded by `transform` (`(time_ms, new_body)`).
+    pub(crate) content_timeline: HashMap<Label, Vec<(u32, String)>>,
+    /// Real shape-morph pairs recorded by `#morph(from, to)`.
+    pub(crate) morph_pairs: Vec<crate::core::ast::MorphPair>,
+    /// Monotonic counter for synthetic `__xf_<label>_<n>` mobjects created by
+    /// `transform`, so repeated transforms on the same label don't clash.
+    pub(crate) xf_counter: usize,
+    /// Lexical Typst scope tracking. `scope_stack` is the current nesting
+    /// (top = innermost scope). `next_scope_id` assigns fresh ids. `scope_starts`
+    /// records each scope's start `cursor` so the interval `[start, cursor-at-exit]`
+    /// can be recorded on scope exit. `scope_symbol_stack` snapshots
+    /// `symbol_map` at each code-block entry so a local `let` that shadows a
+    /// Candy name can be restored on scope exit (see `walk`).
+    pub(crate) scope_stack: Vec<usize>,
+    pub(crate) next_scope_id: usize,
+    pub(crate) scope_starts: HashMap<usize, u32>,
+    pub(crate) scope_symbol_stack: Vec<HashMap<String, String>>,
+    /// Subtitle overlays (字幕模块).
+    pub(crate) subtitles: Vec<Subtitle>,
+    /// Easing counters (缓动计数器模块).
+    pub(crate) counters: Vec<CounterDef>,
+    pub(crate) counter_events: Vec<CounterEvent>,
+    /// Lexical scope intervals (finalized on scope exit / at end of parse).
+    pub(crate) scopes: Vec<crate::core::ast::ScopeInfo>,
+    /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
+    /// owns mobjects declared right now; `scene_stack` tracks open scenes.
+    pub(crate) scenes: Vec<SceneInfo>,
+    /// Parent→child grouping links (`child → parent`), recorded by `#group`.
+    pub(crate) groups: HashMap<Label, Label>,
+    /// Next fresh scene id (root is `0`, assigned in `parse_tyx`).
+    pub(crate) next_scene_id: usize,
+    /// Open scene ids (top = innermost active scene).
+    pub(crate) scene_stack: Vec<usize>,
+    /// The scene that currently owns newly-declared mobjects.
+    pub(crate) current_scene: usize,
+    /// label -> owning scene id (populated as mobjects are declared).
+    pub(crate) label_scene: HashMap<Label, usize>,
+    /// Monotonic id for synthetic subtitles.
+    pub(crate) subtitle_id: usize,
+}
+
+/// Recursively walk the syntax tree.
+fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
+    // Lexical shadowing: a local `let name = …` / `let f(…) = …` that rebinds a
+    // Candy symbol hides the Candy directive for the rest of the enclosing
+    // scope, so ordinary user helpers named like Candy directives (e.g.
+    // `#let track = …`) are *not* misparsed as Candy pseudo-function calls.
+    // The binding is restored when the enclosing code block exits (or stays
+    // removed at the top level, which is also correct).
+    if let Some(lb) = node.get().cast::<ast::LetBinding>() {
+        // A `let name = …` or `let f(…) = …` binding introduces one or more
+        // new idents. If any of them shadows a Candy symbol, suspend that
+        // symbol for the rest of the enclosing scope.
+        for b in lb.kind().bindings() {
+            let n = b.as_str();
+            if ctx.symbol_map.remove(n).is_some()
+                || ctx.symbol_map.remove(&n.replace('_', "-")).is_some()
+            {
+                // Suspended; will be restored on enclosing scope exit.
+            }
+        }
+    }
+
+    // Scene scoping: a `scene` call opens a *nested scene* around its body.
+    if let Some(call) = node.get().cast::<ast::FuncCall>() {
+        if call_symbol(&call, ctx).as_deref() == Some("scene") {
+            let id = ctx.next_scene_id;
+            ctx.next_scene_id += 1;
+            let parent = ctx.current_scene;
+            let scope = ctx.next_scope_id;
+            ctx.next_scope_id += 1;
+            // Read the scene's own width/height (non-recursive: only the call's
+            // direct named args, so a nested scene's size doesn't leak up).
+            let mut w_cm: Option<f64> = None;
+            let mut h_cm: Option<f64> = None;
+            for a in call.args().items() {
+                if let ast::Arg::Named(n) = a {
+                    if let Some(cm) = collect_named_lengths_here(n.expr()) {
+                        match n.name().as_str() {
+                            "width" => w_cm = Some(cm),
+                            "height" => h_cm = Some(cm),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            let page_size = match (w_cm, h_cm) {
+                (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
+                _ => None,
+            };
+            let start = ctx.cursor;
+            ctx.scenes.push(SceneInfo {
+                id,
+                parent: Some(parent),
+                scope,
+                page_size,
+                start_ms: start,
+                end_ms: start,
+                owns_labels: Vec::new(),
+            });
+            ctx.scene_stack.push(id);
+            ctx.current_scene = id;
+            for child in node.children() {
+                walk(&child, raw, ctx);
+            }
+            if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == id) {
+                s.end_ms = ctx.cursor;
+            }
+            ctx.scene_stack.pop();
+            ctx.current_scene = parent;
+            return;
+        }
+    }
+
+    // Detect `#set page(width: X, height: Y)` to extract the page size.
+    if let Some(set_rule) = node.get().cast::<ast::SetRule>() {
+        let target = set_rule.target();
+        if matches!(target, Expr::Ident(ref id) if id.as_str() == "page") {
+            extract_page_size(node, ctx);
+        }
+    }
+    if let Some(imp) = node.get().cast::<ast::ModuleImport>() {
+        // Capture package imports (paths starting with '@') so they can be
+        // re-injected into candy's per-object compile snippets (which are
+        // detached Typst modules and would otherwise lose the binding). Local
+        // relative imports are skipped — they cannot resolve in a detached module.
+        if let Some(src) = module_import_path(&imp) {
+            if src.starts_with('@') {
+                // The ModuleImport AST node's range excludes the leading `#`
+                // escape, so re-add it so the injected line is valid Typst.
+                let text = format!("#{}", raw[node.range()].trim());
+                if !ctx.imports.contains(&text) {
+                    ctx.imports.push(text);
+                }
+            }
+        }
+        process_import(imp, ctx);
+    } else if let Some(call) = node.get().cast::<ast::FuncCall>() {
+        process_call(call, node, raw, ctx);
+    }
+
+    // Lexical scope: a Typst code block `{ ... }` opens a child scope. We push
+    // a fresh scope id (recording its start `cursor`), recurse into the block's
+    // children, then pop and record the scope's `[start, cursor-at-exit]`
+    // interval. This drives subtitle auto-destroy and counter/subtitle
+    // shadowing. The top-level document node is not a code block — it is the
+    // implicit root scope finalized in `parse_tyx`.
+    //
+    // We also snapshot `symbol_map` here so that any Candy name shadowed by a
+    // local `let` inside this block is restored when the block exits.
+    let opened_scope: Option<usize> = node.get().cast::<ast::CodeBlock>().map(|_| {
+        let id = ctx.next_scope_id;
+        ctx.next_scope_id += 1;
+        ctx.scope_starts.insert(id, ctx.cursor);
+        ctx.scope_stack.push(id);
+        ctx.scope_symbol_stack.push(ctx.symbol_map.clone());
+        id
+    });
+    for child in node.children() {
+        walk(&child, raw, ctx);
+    }
+    if let Some(id) = opened_scope {
+        let start = ctx.scope_starts.get(&id).copied().unwrap_or(0);
+        let parent = ctx
+            .scope_stack
+            .get(ctx.scope_stack.len().saturating_sub(2))
+            .copied();
+        ctx.scope_stack.pop();
+        // Restore the Candy-symbol bindings that were shadowed inside this block.
+        if let Some(saved) = ctx.scope_symbol_stack.pop() {
+            ctx.symbol_map = saved;
+        }
+        ctx.scopes.push(crate::core::ast::ScopeInfo {
+            id,
+            parent,
+            start_ms: start,
+            end_ms: ctx.cursor,
+        });
+    }
+}
+
+/// Extract the package/path string from a `#import "..."` statement.
+fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
+    match imp.source() {
+        Expr::Str(s) => Some(s.get().to_string()),
+        _ => None,
+    }
+}
+
+/// Record imported Candy symbols so later calls can be resolved.
+fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
+    match imp.imports() {
+        Some(ast::Imports::Wildcard) => {
+            for c in CANDY {
+                ctx.symbol_map
+                    .entry((*c).to_string())
+                    .or_insert_with(|| (*c).to_string());
+            }
+        }
+        Some(ast::Imports::Items(items)) => {
+            for it in items.iter() {
+                let orig = it.original_name().as_str().to_string();
+                let bound = it.bound_name().as_str().to_string();
+                // Canonicalize the resolved symbol to kebab-case (the `CANDY`
+                // convention) and also accept the alternative naming
+                // convention for the bound name, so both `save_state` and
+                // `save-state` resolve to the same directive.
+                let canon = orig.replace('_', "-");
+                ctx.symbol_map.insert(bound.clone(), canon.clone());
+                ctx.symbol_map.insert(bound.replace('_', "-"), canon);
+            }
+        }
+        None => {
+            // Bare module import (`#import "candy"` / `#import "candy" as c`):
+            // the module object itself is bound to a name, enabling
+            // `candy.mobject(...)` field-access calls. Record the bound alias so
+            // `call_symbol` only treats *that* receiver's Candy fields as Candy.
+            if let Expr::Str(s) = imp.source() {
+                let src = s.get();
+                // Accept the local `candy`, a path `…/candy`, and the published
+                // `@preview/candy:<version>` package (so a real `.tyx` that
+                // imports the published package as a module resolves too).
+                if src == "candy"
+                    || src.ends_with("/candy")
+                    || src.starts_with("@preview/candy:")
+                {
+                    if let Ok(alias) = imp.bare_name() {
+                        ctx.candy_aliases.insert(alias.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract `width` and `height` (in cm) from a `#set page(width: X, height: Y)`
+/// condition. Only the first occurrence is recorded; subsequent `set page`
+/// calls are ignored (the user is responsible for using a consistent page size).
+fn extract_page_size(node: &LinkedNode, ctx: &mut ParseCtx) {
+    let mut width: Option<f64> = None;
+    let mut height: Option<f64> = None;
+    collect_named_lengths(node, &mut |name, cm| match name {
+        "width" => width = Some(cm),
+        "height" => height = Some(cm),
+        _ => {}
+    });
+    if let (Some(w), Some(h)) = (width, height) {
+        ctx.page_size_cm = Some((w, h));
+    }
+}
+
+/// Recursively walk an expression tree, calling `f(name, cm)` for every
+/// `name: <length>` named-arg pair found. Uses the raw syntax node tree
+/// because typst_syntax 0.15's `Expr` enum doesn't expose a `Named` variant
+/// directly — `Named` is a separate AST node reachable via `cast()`.
+fn collect_named_lengths(node: &LinkedNode, f: &mut impl FnMut(&str, f64)) {
+    if let Some(named) = node.get().cast::<ast::Named>() {
+        let name = named.name().as_str();
+        let expr = named.expr();
+        if let Some(cm) = collect_named_lengths_here(expr) {
+            f(name, cm);
+        }
+    }
+    for child in node.children() {
+        collect_named_lengths(&child, f);
+    }
+}
+
+/// Evaluate a single expression as a length in cm (used by page-size and
+/// `scene` width/height extraction). Thin wrapper over [`crate::parser::expr`].
+fn collect_named_lengths_here(e: Expr) -> Option<f64> {
+    crate::parser::expr::expr_length_cm(&e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ast::Action;
+
+    /// Rewrite a test's `#import "candy"` into `#import "@preview/candy:<v>"`,
+    /// auto-fetching the published package version from `typst/typst.toml`.
+    ///
+    /// Project convention: only *test* code needs the Typst package version
+    /// auto-fetched (production code must not). Wrapping every test source with
+    /// this helper guarantees no test hard-codes a candy version.
+    fn with_auto_version(raw: &str) -> String {
+        let v = crate::typst_package_version().expect("typst/typst.toml must declare a `version`");
+        let pkg = format!("@preview/candy:{v}");
+        // `:`-form imports (`#import "candy": *` and renamed imports) keep
+        // their explicit bindings, so just rewrite the package path.
+        let s = raw.replace("#import \"candy\":", &format!("#import \"{pkg}\":"));
+        // Bare module import (`#import "candy"`) must preserve the `candy`
+        // binding name so `#candy.mobject(...)` still resolves after the path
+        // rewrite — bind it explicitly as `candy`.
+        s.replace(
+            "#import \"candy\"\n",
+            &format!("#import \"{pkg}\" as candy\n"),
+        )
+    }
+
+    const DOT: &str = r#"
+#import "candy": *
+#mobject("dot", circle(radius: 1cm, fill: blue))
+#mobject("dot2", rect(width: 1cm, height: 1cm))
+#animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
+#animate("dot2", scale: 1.5, duration: 20)
+#pause(duration: 15)
+#audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
+"#;
+
+    #[test]
+    fn parses_dot_ast() {
+        let tmp = std::env::temp_dir().join("candy_test_dot.tyx");
+        std::fs::write(&tmp, with_auto_version(DOT)).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 3); // 2 animate + pause
+        // play not used here; but dot + dot2 registered
+        assert!(scene.items.contains_key(&Label("dot".into())));
+        assert!(scene.items.contains_key(&Label("dot2".into())));
+        // body captured as raw source, not a string
+        assert_eq!(
+            scene.items[&Label("dot".into())],
+            "circle(radius: 1cm, fill: blue)"
+        );
+        assert_eq!(scene.slides[0].duration_ms, 30);
+        assert_eq!(scene.slides[2].duration_ms, 15);
+        assert_eq!(scene.audio.len(), 1);
+        assert_eq!(scene.audio[0].path, "voice.opus");
+        assert_eq!(scene.audio[0].start_ms, 65); // 30 + 20 + 15 (pause)
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn parses_field_access_import() {
+        // candy imported as a module, called via candy.mobject(...)
+        let src = with_auto_version(
+            r#"
+#import "candy"
+#candy.mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+#candy.animate("box", to: (3cm, 2cm), duration: 20)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_field.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert!(scene.items.contains_key(&Label("box".into())));
+        assert_eq!(
+            scene.items[&Label("box".into())],
+            "rect(width: 2cm, height: 2cm, fill: red)"
+        );
+        assert_eq!(scene.slides.len(), 1);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn parses_box() {
+        let src = with_auto_version(
+            r#"
+#import "candy": animate as anim, mobject as mob
+#mob("box", rect(width: 2cm, height: 2cm, fill: red))
+#anim("box", to: (3cm, 2cm), duration: 20)
+#anim("box", scale: 1.5, duration: 20)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_box.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert!(scene.items.contains_key(&Label("box".into())));
+        assert_eq!(scene.slides[0].actions.len(), 1); // move
+        assert_eq!(scene.slides[1].actions.len(), 1); // scale
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn parses_play_block() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm))
+#play(rect(width: 2cm, height: 1cm, fill: green), duration: 25)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_play.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        // one synthetic block label
+        let blocks: usize = scene
+            .items
+            .keys()
+            .filter(|l| l.0.starts_with("__block_"))
+            .count();
+        assert_eq!(blocks, 1);
+        assert_eq!(scene.slides.len(), 1);
+        assert_eq!(scene.slides[0].duration_ms, 25);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Confirm the shipped `lib.typ` entrypoint is valid standard Typst: it
+    /// re-exports every directive from its submodules, and calling them must
+    /// compile with the `typst` compiler.
+    #[test]
+    fn std_typst_api_compiles() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/src");
+        let tmp = dir.join("__std_api_check.typ");
+        let calls = r#"
+#import "lib.typ": *
+#mobject("dot", circle(radius: 1cm, fill: blue))
+#mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+#animate("dot", to: (4cm, 0pt), duration: 30)
+#animate("box", rotate: 45, opacity: 0.5, easing: "smooth", duration: 20)
+#pause(duration: 15)
+#audio("voice.opus", blocking: false, loop: false, volume: 0.9)
+#play(circle(radius: 1cm), duration: 10)
+"#;
+        std::fs::write(&tmp, calls).unwrap();
+        let out = crate::renderer::compile_file_for_test(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        assert!(out.is_ok(), "std Typst failed to compile: {out:?}");
+    }
+
+    /// Verify the new `rotate` and `opacity` (FadeTo) actions parse correctly.
+    #[test]
+    fn parses_rotate_and_fadeto() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("sq", rect(width: 2cm, height: 2cm))
+#animate("sq", rotate: 90, opacity: 0.3, duration: 25, easing: "cubic-in-out")
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_rotate.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 1);
+        let actions = &scene.slides[0].actions;
+        // rotate + opacity → 2 actions
+        assert_eq!(actions.len(), 2);
+        let has_rotate = actions
+            .iter()
+            .any(|a| matches!(a, Action::Rotate { degrees: 90.0, .. }));
+        let has_fadeto = actions
+            .iter()
+            .any(|a| matches!(a, Action::FadeTo { opacity: 0.3, .. }));
+        assert!(has_rotate, "expected Rotate(90) action, got {actions:?}");
+        assert!(has_fadeto, "expected FadeTo(0.3) action, got {actions:?}");
+        // Easing must propagate to both actions.
+        for a in actions {
+            assert_eq!(a.easing(), crate::core::easing::Easing::CubicInOut);
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Verify the Manim-inspired directives parse to the correct Action variants.
+    #[test]
+    fn parses_manim_directives() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("dot", circle(radius: 1cm))
+#save_state("dot", slot: "home")
+#animate("dot", to: (4cm, 0pt), duration: 20)
+#restore("dot", slot: "home", duration: 20, easing: "smooth")
+#indicate("dot", factor: 1.2, duration: 18)
+#flash("dot", factor: 1.8, duration: 12)
+#wiggle("dot", degrees: 12, duration: 16)
+#disappear("dot")
+#appear("dot")
+#set_color("dot", color: "red", duration: 1)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_manim.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 9, "slides: {:?}", scene.slides);
+
+        // Verify each action variant.
+        assert!(
+            matches!(scene.slides[0].actions[0], Action::SaveState { ref slot, .. } if slot == "home")
+        );
+        assert!(matches!(scene.slides[1].actions[0], Action::MoveTo { .. }));
+        assert!(
+            matches!(scene.slides[2].actions[0], Action::Restore { ref slot, .. } if slot == "home")
+        );
+        assert!(matches!(
+            scene.slides[3].actions[0],
+            Action::Indicate { factor: 1.2, .. }
+        ));
+        assert!(matches!(
+            scene.slides[4].actions[0],
+            Action::Flash { factor: 1.8, .. }
+        ));
+        assert!(matches!(
+            scene.slides[5].actions[0],
+            Action::Wiggle { degrees: 12.0, .. }
+        ));
+        assert!(matches!(scene.slides[6].actions[0], Action::Hide { .. }));
+        assert!(matches!(scene.slides[7].actions[0], Action::Show { .. }));
+        assert!(
+            matches!(scene.slides[8].actions[0], Action::SetColor { ref color, .. } if color == "red")
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Verify `transform(target, to: <content>)` parks the old content on a
+    /// unique synthetic `__xf_<label>_<n>` mobject, keeps `items[target]` as
+    /// the ORIGINAL body, records the content switch, and emits a single
+    /// `Transform` slide.
+    #[test]
+    fn parses_transform() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("eq", [$a + b = c$])
+#transform("eq", to: [$a + b + d = c$], duration: 20, easing: "smooth")
+#mobject("box", rect(width: 2cm, height: 2cm))
+#transform("box", to: circle(radius: 1.5cm, fill: blue))
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_transform.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 2, "slides: {:?}", scene.slides);
+
+        assert_eq!(scene.items[&Label("eq".into())], "[$a + b = c$]");
+        assert_eq!(
+            scene.items[&Label("box".into())],
+            "rect(width: 2cm, height: 2cm)"
+        );
+
+        assert_eq!(scene.items[&Label("__xf_eq_0".into())], "[$a + b = c$]");
+        assert_eq!(
+            scene.items[&Label("__xf_box_1".into())],
+            "rect(width: 2cm, height: 2cm)"
+        );
+
+        assert_eq!(
+            scene.content_timeline[&Label("eq".into())],
+            vec![(1u32, "[$a + b + d = c$]".to_string())]
+        );
+        assert_eq!(
+            scene.content_timeline[&Label("box".into())],
+            vec![(21u32, "circle(radius: 1.5cm, fill: blue)".to_string())]
+        );
+
+        assert!(matches!(
+            &scene.slides[0].actions[..],
+            [Action::Transform { target, .. }] if target.0 == "eq"
+        ));
+        assert!(matches!(
+            &scene.slides[1].actions[..],
+            [Action::Transform { target, .. }] if target.0 == "box"
+        ));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Regression: a sequence of `transform`s must NOT accumulate `scale`, and
+    /// the parked old-content mobject must INHERIT the target's position.
+    #[test]
+    fn transform_keeps_scale_bounded_and_inherits_position() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("shape", rect(width: 3cm, height: 3cm, fill: blue))
+#animate("shape", to: (5cm, 0cm), duration: 30)
+#transform("shape", to: circle(radius: 1.6cm, fill: red), duration: 30)
+#transform("shape", to: rect(width: 1cm), duration: 30)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_transform_sched.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        let frames = crate::core::scheduler::schedule(&scene).unwrap();
+
+        for f in &frames {
+            assert!(f.scale <= 2.0, "scale blew up to {}", f.scale);
+            assert!(f.scale >= 1e-4, "scale shrank to {}", f.scale);
+        }
+
+        let xf: Vec<&FrameData> = frames
+            .iter()
+            .filter(|f| f.target.0.starts_with("__xf_shape"))
+            .collect();
+        assert!(!xf.is_empty(), "old-content mobject missing");
+        for f in &xf {
+            if f.time_ms > 30 {
+                assert!(
+                    (f.x - 5.0).abs() < 1e-6,
+                    "old content x should inherit target (5cm), got {}",
+                    f.x
+                );
+                assert!(
+                    (f.y - 0.0).abs() < 1e-6,
+                    "old content y should inherit target (0cm), got {}",
+                    f.y
+                );
+            }
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Verify the Manim-inspired directives compile as valid standard Typst
+    /// (lib.typ re-exports them from `manim.typ`).
+    #[test]
+    fn std_typst_manim_api_compiles() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/src");
+        let tmp = dir.join("__std_manim_api_check.typ");
+        let calls = r#"
+#import "lib.typ": *
+#mobject("dot", circle(radius: 1cm))
+#save_state("dot", slot: "home")
+#restore("dot", slot: "home", duration: 10, easing: "smooth")
+#indicate("dot", factor: 1.2, duration: 12)
+#flash("dot", factor: 2.0, duration: 10)
+#wiggle("dot", degrees: 10, duration: 14)
+#disappear("dot")
+#appear("dot")
+#set_color("dot", color: "red", duration: 1)
+"#;
+        std::fs::write(&tmp, calls).unwrap();
+        let out = crate::renderer::compile_file_for_test(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        assert!(
+            out.is_ok(),
+            "std Typst failed to compile manim API: {out:?}"
+        );
+    }
+
+    /// Verify nested `#scene` calls build a scene tree.
+    #[test]
+    fn parses_nested_scenes() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#scene(width: 16cm, height: 9cm)[
+  #mobject("a", circle(radius: 1cm))
+  #animate("a", to: (4cm, 0pt), duration: 30)
+  #scene(width: 10cm, height: 6cm)[
+    #mobject("b", rect(width: 1cm))
+    #animate("b", to: (2cm, 0pt), duration: 20)
+  ]
+]
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_nested_scene.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+
+        assert_eq!(scene.scenes.len(), 3, "scenes: {:?}", scene.scenes);
+        assert_eq!(scene.root_scene, Some(0));
+
+        let owner = scene.label_scene_map();
+        assert_eq!(owner[&Label("a".into())], 1, "a → outer scene");
+        assert_eq!(owner[&Label("b".into())], 2, "b → inner scene");
+
+        let inner = scene.scenes.iter().find(|s| s.id == 2).unwrap();
+        assert_eq!((inner.start_ms, inner.end_ms), (30, 50));
+        let outer = scene.scenes.iter().find(|s| s.id == 1).unwrap();
+        assert_eq!((outer.start_ms, outer.end_ms), (0, 50));
+        assert_eq!(inner.page_size, Some((10.0 * PT_PER_CM, 6.0 * PT_PER_CM)));
+
+        assert_eq!(scene.active_scene_at(10), 1);
+        assert_eq!(scene.active_scene_at(40), 2);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // ===================== detection-precision regressions =====================
+
+    /// A field access on a *non-Candy* receiver (`obj.morph`) must NOT be
+    /// parsed as a Candy pseudo-function call: it is ordinary user code.
+    #[test]
+    fn field_access_on_ordinary_object_is_not_candy() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#let obj = (morph: 1)
+#let helper = obj
+#helper.morph()   // method-like call on a user object — NOT candy
+#helper.reveal("x")
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_field_false.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        // No slides or items should be produced by the false-positive calls.
+        assert_eq!(scene.slides.len(), 0, "slides: {:?}", scene.slides);
+        assert!(!scene.items.contains_key(&Label("x".into())));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// A user-defined helper that shadows a Candy name (`#let track = …`) must
+    /// not be parsed as the `track` directive inside its scope.
+    #[test]
+    fn local_let_shadowing_hides_candy_directive() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#let track(n) = n
+{
+  // Inside this block, `track` is the user's function, not candy's keyframe
+  // `track`. The call below must NOT produce a Track slide.
+  #track(5)
+}
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_shadow.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 0, "slides: {:?}", scene.slides);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// A Candy directive shadowed *inside* a block is restored once the block
+    /// exits, so the real Candy `track` works again at the top level.
+    #[test]
+    fn candy_directive_restored_after_shadow_scope() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+{
+  #let track(n) = n
+  #track(5)   // user's `track` inside the block — not candy
+}
+#mobject("a", circle(radius: 1cm))
+#track("a", ((0, (1cm, 0cm, 1, 1, 0)),), duration: 10)   // real candy track (nested-tuple keys)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_shadow_restore.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 1, "slides: {:?}", scene.slides);
+        assert!(matches!(scene.slides[0].actions[0], Action::Track { .. }));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Every candy import in test code must use the auto-fetched `@preview/candy`
+    /// version — never a hard-coded one. This proves `with_auto_version` rewrites
+    /// `#import "candy"` into the versioned published path.
+    #[test]
+    fn test_candy_imports_use_auto_fetched_version() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm))
+"#,
+        );
+        let v = crate::typst_package_version().expect("typst/typst.toml version");
+        assert!(
+            src.contains(&format!("@preview/candy:{v}")),
+            "test import must use the auto-fetched version `@preview/candy:{v}`: {src}"
+        );
+        assert!(
+            !src.contains("#import \"candy\""),
+            "test import must not retain the bare `candy` path: {src}"
+        );
+    }
+}

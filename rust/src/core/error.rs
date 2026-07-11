@@ -13,8 +13,8 @@ pub enum CandyError {
     Io(std::io::Error),
     /// E002 — Invalid `.tyx` syntax.
     Parse(String),
-    /// E003 — `candy-json` missing/invalid (DSL extraction).
-    Dsl(String),
+    /// E003 — `candy-json` missing/invalid (SVG extraction).
+    Svg(String),
     /// E004 — `@label` not found in the Typst layout.
     LabelNotFound(Label),
     /// E005 — Invalid interpolation range (clamped, not fatal).
@@ -31,7 +31,7 @@ impl CandyError {
         match self {
             CandyError::Io(_) => "E001",
             CandyError::Parse(_) => "E002",
-            CandyError::Dsl(_) => "E003",
+            CandyError::Svg(_) => "E003",
             CandyError::LabelNotFound(_) => "E004",
             CandyError::Interp(_) => "E005",
             CandyError::Typst(_) => "E006",
@@ -45,7 +45,7 @@ impl fmt::Display for CandyError {
         match self {
             CandyError::Io(e) => write!(f, "[E001] I/O error: {e}"),
             CandyError::Parse(e) => write!(f, "[E002] Invalid .tyx syntax: {e}"),
-            CandyError::Dsl(e) => write!(f, "[E003] candy-json missing/invalid: {e}"),
+            CandyError::Svg(e) => write!(f, "[E003] candy-json missing/invalid: {e}"),
             CandyError::LabelNotFound(l) => {
                 write!(f, "[E004] label @{} not found in Typst layout", l.0)
             }
@@ -67,6 +67,6 @@ impl From<std::io::Error> for CandyError {
 
 impl From<serde_json::Error> for CandyError {
     fn from(e: serde_json::Error) -> Self {
-        CandyError::Dsl(e.to_string())
+        CandyError::Svg(e.to_string())
     }
 }

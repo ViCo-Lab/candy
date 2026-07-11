@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-scene private metadata, preserved verbatim through the whole pipeline.
+/// Private metadata, preserved verbatim through the whole pipeline.
 /// Contains only easter-egg fields — no functional data lives here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivateMeta {

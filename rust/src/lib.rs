@@ -40,7 +40,7 @@ use rayon::prelude::*;
 use crate::core::ast::{CounterEventKind, Label, Scene};
 use crate::core::interpolator;
 use crate::core::scheduler;
-use crate::parser::extract_dsl_from_svg;
+use crate::parser::extract_scene_from_svg;
 use crate::parser::parse_tyx;
 use crate::renderer::Renderer;
 use crate::renderer::video::{self, Container, EncodedVideo};
@@ -49,15 +49,15 @@ use crate::renderer::video::{self, Container, EncodedVideo};
 ///
 /// Candy v0.1 only accepted a `.tyx` path. The `@preview/candy` Typst package
 /// also supports rendering an SVG with an embedded `candy-json` block, which
-/// `extract_dsl_from_svg` recovers. Exposing both paths from `build()` makes
+/// `extract_scene_from_svg` recovers. Exposing both paths from `build()` makes
 /// the SVG round-trip (Typst → SVG → candy) actually reachable, instead of
-/// leaving `extract_dsl_from_svg` as dead exported code.
+/// leaving `extract_scene_from_svg` as dead exported code.
 #[derive(Debug, Clone)]
 pub enum Input {
     /// A `.tyx` Typst X-sheet (parsed via `parser::parse_tyx`).
     Tyx(std::path::PathBuf),
     /// An SVG rendered by `@preview/candy`, containing a `candy-json` block
-    /// (parsed via `parser::extract_dsl_from_svg`).
+    /// (parsed via `parser::extract_scene_from_svg`).
     Svg(std::path::PathBuf),
 }
 
@@ -66,7 +66,7 @@ impl Input {
     pub fn parse(&self) -> Result<Scene, CandyError> {
         match self {
             Input::Tyx(p) => parse_tyx(p),
-            Input::Svg(p) => extract_dsl_from_svg(p),
+            Input::Svg(p) => extract_scene_from_svg(p),
         }
     }
 
@@ -115,7 +115,7 @@ pub enum OutputFormat {
 /// * `pixel_per_pt`     — rasterization resolution for the video path.
 ///
 /// Backward-compatible wrapper around [`build_input`]: dispatches on the
-/// file extension (`.svg` → SVG round-trip via `extract_dsl_from_svg`;
+/// file extension (`.svg` → SVG round-trip via `extract_scene_from_svg`;
 /// anything else → `.tyx` parser).
 pub fn build(
     input: &Path,
@@ -371,5 +371,98 @@ fn compose_uniform(
         width: tw,
         height: th,
         rgba,
+    }
+}
+
+/// Resolve the path to the `@preview/candy` Typst package manifest
+/// (`typst/typst.toml`) relative to this crate's manifest directory.
+///
+/// The Rust backend and the Typst package live side by side under the repo
+/// root (`rust/` and `typst/`), so the manifest is always
+/// `<crate_root>/../typst/typst.toml`.
+#[cfg(test)]
+fn typst_package_manifest() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/typst.toml")
+}
+
+/// Read the `version` field of a `typst.toml` (or any TOML) file.
+///
+/// This is how test code auto-fetches the published `@preview/candy` version
+/// instead of hard-coding it in assertions (project convention: only test code
+/// needs the Typst package version auto-fetched).
+#[cfg(test)]
+fn read_typst_toml_version(path: &Path) -> Result<String, CandyError> {
+    let text = std::fs::read_to_string(path)?; // E001 on missing file
+    for line in text.lines() {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("version") {
+            // Match the key itself, not a longer identifier like `versions`.
+            match rest.chars().next() {
+                Some('=') | Some(' ') | Some('\t') => {}
+                _ => continue,
+            }
+            if let Some(eq) = rest.find('=') {
+                let val = rest[eq + 1..].trim().trim_matches('"');
+                if !val.is_empty() {
+                    return Ok(val.to_string());
+                }
+            }
+        }
+    }
+    Err(CandyError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "typst.toml: missing `version` field",
+    )))
+}
+
+/// Auto-fetch the published version of the `@preview/candy` Typst package from
+/// `typst/typst.toml`. Test-only helper (see the project convention above).
+#[cfg(test)]
+pub(crate) fn typst_package_version() -> Result<String, CandyError> {
+    read_typst_toml_version(&typst_package_manifest())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn typst_package_version_is_fetched_from_manifest() {
+        // Auto-fetch proof: the version is read from the package manifest,
+        // never hard-coded in the assertion.
+        let v = typst_package_version().expect("typst/typst.toml must exist");
+        assert!(!v.is_empty(), "version must not be empty");
+        // Must look like plain semver: digits and dots only, with a dot.
+        assert!(
+            v.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "version `{v}` is not plain semver"
+        );
+        assert!(v.contains('.'), "version `{v}` should contain a dot");
+    }
+
+    #[test]
+    fn read_typst_toml_version_parses_known_value() {
+        let tmp = std::env::temp_dir().join("candy_test_typst_version.toml");
+        std::fs::write(&tmp, "[package]\nname = \"candy\"\nversion = \"9.8.7\"\n").unwrap();
+        let got = read_typst_toml_version(&tmp).expect("temp toml must parse");
+        assert_eq!(got, "9.8.7");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn read_typst_toml_version_handles_missing_file() {
+        let err = read_typst_toml_version(Path::new("/nonexistent/candy/typst.toml"))
+            .expect_err("missing file must error");
+        assert_eq!(err.code(), "E001");
+    }
+
+    #[test]
+    fn read_typst_toml_version_handles_missing_key() {
+        let tmp = std::env::temp_dir().join("candy_test_typst_noversion.toml");
+        std::fs::write(&tmp, "[package]\nname = \"candy\"\n").unwrap();
+        let err = read_typst_toml_version(&tmp).expect_err("missing version must error");
+        // InvalidData surfaces as E001 (Io), the right bucket for this helper.
+        assert_eq!(err.code(), "E001");
+        std::fs::remove_file(&tmp).ok();
     }
 }

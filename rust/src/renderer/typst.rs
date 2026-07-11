@@ -32,12 +32,18 @@ use typst_library::foundations::{Bytes, Datetime, Duration};
 use typst_library::text::Font;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
-use typst_syntax::{FileId, Source as TypstSource};
+use typst_syntax::ast::{self, Expr};
+use typst_syntax::{FileId, LinkedNode, Source as TypstSource};
 use typst_utils::{LazyHash, Scalar};
 
 use crate::core::ast::{FrameData, Label, Scene, SubPos, Subtitle};
 use crate::core::error::CandyError;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
+
+#[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
+use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
 
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 const PT_PER_CM: f64 = 28.346_456_692_913_385;
@@ -1231,24 +1237,108 @@ fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> String {
     substitute_counters(scene, &body, time_ms)
 }
 
-/// Replace every `ecval(<name>)` (or `ecval("name")`) reference in `body` with
-/// the integer value of counter `name` at `time_ms`, per the scene's scope
-/// shadowing / lifecycle rules. The integer is valid Typst, so the substituted
-/// body still compiles.
+/// Replace every `ecval("name")` (or `ecval(name)`) counter reference in `body`
+/// with the integer value of counter `name` at `time_ms`, per the scene's scope
+/// shadowing / lifecycle rules.
+///
+/// Expansion is **AST-driven**, not naive string replacement: `body` is parsed
+/// into a Typst `SyntaxNode` tree and every *real* `ecval(..)` function-call
+/// node is swapped for an integer literal. This keeps `ecval` a valid AST node
+/// that composes like any other Typst expression (e.g. inside
+/// `rect(width: ecval("n") * 1cm)`) and avoids rewriting substrings that merely
+/// *look* like the call (inside strings, comments, …). The canonical call form
+/// is `ecval("name")` (a quoted string); the bare-ident form `ecval(name)` is
+/// also accepted for backwards compatibility with existing `.tyx` sources.
 fn substitute_counters(scene: &Scene, body: &str, time_ms: u32) -> String {
+    // Fast path: no counter read at all → short-circuit.
+    if !body.contains("ecval") {
+        return body.to_string();
+    }
+    // Parse as *code* (the body is a Typst expression, not a markup document),
+    // so `ecval(..)` parses to a real `FuncCall` node whose source range maps
+    // 1:1 onto `body`.
+    let root = typst_syntax::parse_code(body);
+    let node = LinkedNode::new(&root);
+
+    // Collect (source range → replacement) for every `ecval(..)` call.
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    collect_ecval_edits(&node, scene, time_ms, &mut edits);
+    // Drop any edit whose range is nested inside another (a nested `ecval`),
+    // keeping the innermost node so we never clobber an already-replaced child.
+    let drop: Vec<bool> = edits
+        .iter()
+        .map(|(r, _)| {
+            edits
+                .iter()
+                .any(|(o, _)| o != r && o.start <= r.start && r.end <= o.end)
+        })
+        .collect();
+    let mut kept: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for (keep, e) in drop.into_iter().zip(edits) {
+        if !keep {
+            kept.push(e);
+        }
+    }
+    let mut edits = kept;
+    if edits.is_empty() {
+        return body.to_string();
+    }
+    // Apply right-to-left so earlier edits don't invalidate later offsets.
+    edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
     let mut out = body.to_string();
-    for c in &scene.counters {
-        let val = scene.counter_value_at(&c.name, time_ms).to_string();
-        for pat in [
-            format!("ecval(\"{}\")", c.name),
-            format!("ecval({})", c.name),
-        ] {
-            if out.contains(&pat) {
-                out = out.replace(&pat, &val);
+    for (range, text) in edits {
+        out.replace_range(range, &text);
+    }
+    out
+}
+
+/// Walk `node`, appending an edit that swaps each `ecval(name)` call for its
+/// current integer value (only for counters actually declared in the scene).
+fn collect_ecval_edits(
+    node: &LinkedNode,
+    scene: &Scene,
+    time_ms: u32,
+    edits: &mut Vec<(std::ops::Range<usize>, String)>,
+) {
+    if let Some(call) = node.get().cast::<ast::FuncCall>() {
+        if let Some(name) = ecval_counter_name(&call) {
+            // Only substitute declared counters, mirroring the previous
+            // registry-based behaviour (an unrelated user `ecval` is left
+            // untouched). Unknown counters still resolve to `seed`/0 below.
+            if scene.counters.iter().any(|c| c.name == name) {
+                let val = scene.counter_value_at(&name, time_ms).to_string();
+                edits.push((node.range(), val));
             }
         }
     }
-    out
+    for child in node.children() {
+        collect_ecval_edits(&child, scene, time_ms, edits);
+    }
+}
+
+/// If `call` is an `ecval(..)` read, return the counter name it references.
+fn ecval_counter_name(call: &ast::FuncCall) -> Option<String> {
+    let is_ecval = match call.callee() {
+        Expr::Ident(id) => id.as_str() == "ecval",
+        Expr::FieldAccess(fa) => fa.field().as_str() == "ecval",
+        _ => false,
+    };
+    if !is_ecval {
+        return None;
+    }
+    // The first positional argument is the counter name. A leading named
+    // argument means this isn't the canonical read form → bail.
+    for a in call.args().items() {
+        if let ast::Arg::Pos(p) = a {
+            return match p {
+                Expr::Str(s) => Some(s.get().to_string()),
+                Expr::Ident(i) => Some(i.as_str().to_string()),
+                _ => None,
+            };
+        }
+        break;
+    }
+    None
 }
 
 /// Inset (in cm) from the page edge for the named subtitle anchors.
@@ -2216,15 +2306,20 @@ fn parse_transform_attr(s: &str) -> [f64; 6] {
     m
 }
 
-/// Test helper: compile a Typst source string to SVG (used to confirm the
-/// shipped `lib.typ` is valid standard Typst).
+/// Test helper: compile a `.typ` *file* (not a detached string) to SVG.
+///
+/// This resolves relative `#import "x.typ"` statements against the file's
+/// directory — required to verify the split `lib.typ` entrypoint, which pulls
+/// its directives from sibling submodules.
 #[cfg(test)]
-pub(crate) fn compile_svg_for_test(src: &str) -> Result<String, CandyError> {
-    // Use the same WorldState as the production Renderer: system fonts +
-    // embedded fallbacks + local file resolver. This makes the test compile
-    // identical to `typst compile`.
-    let state = WorldState::new(PathBuf::new());
-    let source = TypstSource::detached(src.to_string());
+pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+    let vpath =
+        VirtualPath::virtualize(&dir, path).expect("test file must sit under the project root");
+    let id = FileId::new(RootedPath::new(VirtualRoot::Project, vpath));
+    let state = WorldState::new(dir);
+    let text = std::fs::read_to_string(path)?; // E001 on missing file
+    let source = TypstSource::new(id, text);
     let world = CandyWorld {
         state: &state,
         main: source,
@@ -2331,6 +2426,66 @@ fn content_timeline_swaps_rendered_body() {
         before, after,
         "content timeline did not change rendered body"
     );
+}
+
+#[test]
+fn substitute_counters_expands_ecval_as_ast_node() {
+    use crate::core::ast::{CounterDef, Slide};
+    use crate::core::easing::Easing;
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+
+    let mut counters = Vec::new();
+    counters.push(CounterDef {
+        name: "r".into(),
+        scope: "0".into(),
+        seed: 10,
+        step: 1,
+        duration_ms: None,
+        easing: Easing::Linear,
+        start_ms: 0,
+    });
+    let scene = Scene {
+        slides: vec![Slide {
+            duration_ms: 100,
+            actions: vec![],
+        }],
+        items: HashMap::new(),
+        content_timeline: HashMap::new(),
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        subtitles: Vec::new(),
+        counters,
+        counter_events: Vec::new(),
+        scopes: Vec::new(),
+        scenes: Vec::new(),
+        root_scene: None,
+        morph_pairs: Vec::new(),
+        groups: HashMap::new(),
+        private_metadata: PrivateMeta::default(),
+    };
+
+    // The canonical `ecval("name")` form: a real AST call expanded to an integer.
+    assert_eq!(
+        substitute_counters(&scene, "circle(radius: ecval(\"r\") * 1pt + 1cm)", 0),
+        "circle(radius: 10 * 1pt + 1cm)"
+    );
+    // A long-lived counter steps once per ms: at t=5 → seed + step·5 = 15.
+    assert_eq!(substitute_counters(&scene, "ecval(\"r\")", 5), "15");
+    // The integer substitution yields valid Typst inside markup too.
+    assert_eq!(
+        substitute_counters(&scene, "text([Count: #ecval(\"r\")])", 5),
+        "text([Count: #15])"
+    );
+    // An undeclared counter is left untouched (matches prior registry behaviour).
+    assert_eq!(
+        substitute_counters(&scene, "ecval(\"missing\")", 0),
+        "ecval(\"missing\")"
+    );
+    // The bare-ident form stays accepted for backwards compatibility.
+    assert_eq!(substitute_counters(&scene, "ecval(r)", 0), "10");
 }
 
 #[test]

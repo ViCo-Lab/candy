@@ -3,10 +3,10 @@
 #scene(width: 16cm, height: 9cm, bg: white)[
 
   // A growing circle whose radius is driven by an easing counter.
-  // `ecval(r)` is substituted per-frame; under standard Typst it resolves to the
-  // seed via the `r` binding, so the first frame renders the correct radius.
-  #let r = ecounter("r", seed: 40, step: 1)
-  #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
+  // `ecval("r")` is a valid AST node substituted per-frame by the renderer with
+  // the live counter value; under standard Typst it resolves to `default` (0).
+  #ecounter("r", seed: 40, step: 1)
+  #mobject("dot", circle(radius: ecval("r") * 1pt + 1cm, fill: blue))
 
   // A square that slides using a custom mathematical easing (`expr:`).
   #mobject("sq", square(size: 1.5cm, fill: red))
@@ -16,7 +16,7 @@
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
 
   // Root-scope subtitle (persists until replaced / scope exit).
-  #subtitle([Long-lived counter: r = #str(ecval(r))], position: "bottom")
+  #subtitle([Long-lived counter: r = #str(ecval("r"))], position: "bottom")
 
   // Pause the counter mid-animation, then resume it.
   #pause(duration: 600)
