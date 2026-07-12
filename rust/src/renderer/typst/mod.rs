@@ -2096,6 +2096,89 @@ fn transform_composes_with_concurrent_animate() {
     std::fs::remove_file(&tmp).ok();
 }
 
+/// Regression: a `#transform` must compose with a concurrent `#animate(x: …)`
+/// translation so the WHOLE formula glides — every fragment's translate must
+/// shift by the *full* translation amount. This pins the positioning fix:
+/// previously each fragment was offset by ~2·glyph-center, so a translation
+/// appeared to "not apply" (and the formula's glyphs scattered toward the
+/// top-left, reading as a ghost of the old layout).
+#[test]
+fn transform_translation_animate_shifts_all_fragments() {
+    fn fragment_translate_xs(src: &str, mid: u32) -> Vec<f64> {
+        let tmp = std::env::temp_dir().join("candy_test_xf_shift.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+        let frames = crate::core::scheduler::schedule(&scene).unwrap();
+        let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+        r.ensure_natural_public().unwrap();
+        let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        // Each fragment group is `<g opacity="…" transform="translate(px, py) …">`.
+        // (Camera/object groups either lack `opacity=` or lack a transform on
+        // that line, so this isolates the per-glyph transform fragments.)
+        let mut xs = Vec::new();
+        for line in svg.lines() {
+            if line.contains("opacity=") && line.contains("transform=\"translate(") {
+                let p = line.find("transform=\"translate(").unwrap();
+                let rest = &line[p + "transform=\"translate(".len()..];
+                if let Some(end) = rest.find(',') {
+                    if let Ok(x) = rest[..end].trim().parse::<f64>() {
+                        xs.push(x);
+                    }
+                }
+            }
+        }
+        xs
+    }
+    // `base`: a plain transform (no translation). `moved`: the SAME
+    // transform, but preceeded by `#animate(x: 5cm)` so the formula is
+    // already shifted when the transform window runs. Because candy runs
+    // `#animate` and `#transform` as *sequential* slides, the animate must
+    // come BEFORE the transform for the translation to be live during the
+    // transform window (at the transform's mid, the animate has already
+    // finished and its x=5cm is inherited as the transform's base offset).
+    let base = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let moved = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #animate(\"eq\", x: 5cm, duration: 60)\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let mid_base = 30u32; // mid of the transform window in `base`
+    let mid_moved = 90u32; // mid of the transform window in `moved`
+    let xs_base = fragment_translate_xs(base, mid_base);
+    let xs_moved = fragment_translate_xs(moved, mid_moved);
+    assert!(!xs_base.is_empty(), "expected fragment translates");
+    // The base (no animation) fragments must sit at coherent, positive
+    // page positions — i.e. the formula's glyphs laid out left→right,
+    // NOT scattered toward the top-left (the ~2·center offset bug that
+    // read as a ghost of the old layout).
+    assert!(
+        xs_base.iter().all(|&x| x > -5.0),
+        "base fragment translates must be coherent/positive, got {:?}",
+        xs_base
+    );
+    assert_eq!(
+        xs_base.len(),
+        xs_moved.len(),
+        "fragment count must match between base and moved"
+    );
+    let shift_pt = 5.0 * PT_PER_CM; // 5cm in pt
+    for (a, b) in xs_base.iter().zip(xs_moved.iter()) {
+        let d = (b - a) - shift_pt;
+        assert!(
+            d.abs() < 2.0,
+            "fragment shift {d:.2}pt != 5cm ({shift_pt:.2}pt): base={a}, moved={b}"
+        );
+    }
+}
+
 /// Regression: a scene whose content overflows its page becomes a **cross-page
 /// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
 /// timeline) but are laid out across the overflow pages, and the renderer plays

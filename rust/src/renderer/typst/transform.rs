@@ -41,6 +41,14 @@ pub(crate) struct GlyphAnim {
     pub(crate) to_y: f64,
     pub(crate) from_op: f64,
     pub(crate) to_op: f64,
+    /// Clip box in the *new* formula's local coords (pt). Used when this fragment
+    /// is drawn from the new formula — matched glyphs handed off at the midpoint,
+    /// and inserted units. For fragments that only ever draw from one formula
+    /// (deleted old / inserted new) this equals the corresponding `bx*..` box.
+    pub(crate) nbx0: f64,
+    pub(crate) nby0: f64,
+    pub(crate) nbx1: f64,
+    pub(crate) nby1: f64,
 }
 
 /// A precomputed per-glyph `Transform` layout for one `#transform(target, to:
@@ -299,6 +307,13 @@ impl Renderer {
                 to_y: ty,
                 from_op: 1.0,
                 to_op: 1.0,
+                // Matched glyph draws from the new formula after the midpoint, so
+                // it needs the *new* glyph's own clip box (not its old box, which
+                // would land on empty space in the new formula).
+                nbx0: new_frags[*n].0.0,
+                nby0: new_frags[*n].0.1,
+                nbx1: new_frags[*n].0.2,
+                nby1: new_frags[*n].0.3,
             });
         }
 
@@ -325,6 +340,10 @@ impl Renderer {
                 to_y: ty,
                 from_op: 1.0,
                 to_op: 0.0,
+                nbx0: old_frags[o].0.0,
+                nby0: old_frags[o].0.1,
+                nbx1: old_frags[o].0.2,
+                nby1: old_frags[o].0.3,
             });
         }
 
@@ -351,6 +370,10 @@ impl Renderer {
                 to_y: ty,
                 from_op: 0.0,
                 to_op: 1.0,
+                nbx0: new_frags[n].0.0,
+                nby0: new_frags[n].0.1,
+                nbx1: new_frags[n].0.2,
+                nby1: new_frags[n].0.3,
             });
         }
         Some(TransformFragmentPlan {
@@ -564,7 +587,7 @@ impl Renderer {
     ) -> Result<(), CandyError> {
         let ppi = pixel_per_pt as f64;
         for p in &self.transform_fragments {
-            let Some((sx, sy, te, scale, rot, _op)) =
+            let Some((sx, sy, te, scale, rot, op_t)) =
                 self.transform_progress(p, states, time_ms)
             else {
                 continue;
@@ -587,7 +610,7 @@ impl Renderer {
                 if op <= 0.001 {
                     continue;
                 }
-                op *= op; // target opacity track
+                op *= op_t; // compose with the target's current opacity track
                 // Matched glyph: hand off old→new at the midpoint so the dead
                 // formula leaves no ghost over the live new glyph.
                 let src = if f.from_op > 0.5 && f.to_op > 0.5 {
@@ -595,14 +618,31 @@ impl Renderer {
                 } else {
                     f.src
                 };
+                // Crop from the *same* formula we draw (old or new): a matched
+                // glyph handed off at the midpoint must crop the new glyph's own
+                // box, not its old box (which would land on empty space in the new
+                // formula and make the glyph vanish).
+                let (bbx0, bby0, bbx1, bby1) = if src == 1 {
+                    (f.nbx0, f.nby0, f.nbx1, f.nby1)
+                } else {
+                    (f.bx0, f.by0, f.bx1, f.by1)
+                };
                 let whole = self.formula_rgba(p, src, pixel_per_pt, pw, ph)?;
-                let crop = crop_formula_rgba(&whole, f.bx0, f.by0, f.bx1, f.by1, pixel_per_pt);
+                let crop = crop_formula_rgba(&whole, bbx0, bby0, bbx1, bby1, pixel_per_pt);
                 // cm (nat + state + interpolation) -> pt -> px
                 let fx_px = (sx + lx) * PT_PER_CM * ppi;
                 let fy_px = (sy + ly) * PT_PER_CM * ppi;
-                // e,f shift the (center-pivoted) affine into the placed top-left.
-                let me = fx_px - (ma * (crop.width as f64 / 2.0) + mc * (crop.height as f64 / 2.0));
-                let mf = fy_px - (mb * (crop.width as f64 / 2.0) + md * (crop.height as f64 / 2.0));
+                // Destination (canvas px) of the source crop's center. The crop's
+                // center is the glyph's center in formula-local px; we want it at the
+                // interpolated page position of the glyph *center* — i.e. the
+                // interpolated top-left plus the (scale*rotate)-transformed offset
+                // from top-left to center. (Previously this subtracted the full
+                // center coordinate, shifting every fragment ~2·center toward the
+                // top-left — the "scattered fragments / ghost" artefact.)
+                let dx_pt = (bbx0 + bbx1) / 2.0 - bbx0; // cx - bbx0
+                let dy_pt = (bby0 + bby1) / 2.0 - bby0; // cy - bby0
+                let me = fx_px + sc * (c * dx_pt - s * dy_pt) * ppi;
+                let mf = fy_px + sc * (s * dx_pt + c * dy_pt) * ppi;
                 composite_over_at_xf(
                     canvas, &crop, op, me, mf, ma, mb, mc, md, w, h,
                 );
@@ -644,7 +684,7 @@ impl Renderer {
         }
         // Pass 2: the clipped, translated <use> for every fragment.
         for (pi, p) in self.transform_fragments.iter().enumerate() {
-            let Some((sx, sy, te, scale, rot, _op)) =
+            let Some((sx, sy, te, scale, rot, op_t)) =
                 self.transform_progress(p, states, time_ms)
             else {
                 continue;
@@ -659,7 +699,7 @@ impl Renderer {
                 if op <= 0.001 {
                     continue;
                 }
-                op *= op; // target opacity track
+                op *= op_t; // compose with the target's current opacity track
                 // Matched glyph: hand off old→new at the midpoint so the dead
                 // formula leaves no ghost over the live new glyph.
                 let grp = if f.from_op > 0.5 && f.to_op > 0.5 {
@@ -669,25 +709,41 @@ impl Renderer {
                 } else {
                     &new_g
                 };
-                // Translate so the fragment (at formula-local bx0,by0) lands at
-                // the interpolated page position (sx+lx, sy+ly) in pt, then
-                // apply the target's current scale/rotation (pivot = glyph center)
-                // so a simultaneous `#animate` composes with the transform.
+                // Crop from the *same* formula we draw (old or new): a matched
+                // glyph handed off at the midpoint must clip the new glyph's own
+                // box, not its old box (which would land on empty space in the
+                // new formula and make the glyph vanish).
+                let (bbx0, bby0, bbx1, bby1) = if *grp == new_g {
+                    (f.nbx0, f.nby0, f.nbx1, f.nby1)
+                } else {
+                    (f.bx0, f.by0, f.bx1, f.by1)
+                };
+                // Translate so the fragment's *center* lands at the interpolated
+                // page position of the glyph center — i.e. the interpolated top-left
+                // (sx+lx, sy+ly) plus the (scale*rotate)-transformed offset from
+                // top-left to center — then pivot scale/rotation about that center so
+                // a simultaneous `#animate` (including translation) composes with the
+                // transform. (Previously this subtracted the full center coordinate,
+                // shifting every fragment ~2·center toward the top-left — the
+                // "scattered fragments / ghost" artefact.)
                 let tx = (sx + lx) * PT_PER_CM;
                 let ty = (sy + ly) * PT_PER_CM;
-                let cx = (f.bx0 + f.bx1) / 2.0;
-                let cy = (f.by0 + f.by1) / 2.0;
-                // center the rotation/scale pivot, then place the box top-left.
-                let px = tx - cx * scale;
-                let py = ty - cy * scale;
+                let cx = (bbx0 + bbx1) / 2.0;
+                let cy = (bby0 + bby1) / 2.0;
+                let r = rot.to_radians();
+                let (s, c) = (r.sin(), r.cos());
+                let dx = cx - bbx0; // center offset from top-left
+                let dy = cy - bby0;
+                let px = tx + scale * (c * dx - s * dy);
+                let py = ty + scale * (s * dx + c * dy);
                 let ncx = -cx;
                 let ncy = -cy;
                 let mtx = format!(
                     "translate({px:.4}, {py:.4}) rotate({rot:.4}) scale({scale:.4}) translate({ncx:.4}, {ncy:.4})",
                     px = px, py = py, rot = rot, scale = scale, ncx = ncx, ncy = ncy,
                 );
-                let bw = (f.bx1 - f.bx0).max(0.0) + 2.0; // pad for stroke/AA
-                let bh = (f.by1 - f.by0).max(0.0) + 2.0;
+                let bw = (bbx1 - bbx0).max(0.0) + 2.0; // pad for stroke/AA
+                let bh = (bby1 - bby0).max(0.0) + 2.0;
                 let cid = format!("tf_{prefix}_{idx}");
                 out.push_str(&format!(
                     "<g opacity=\"{op:.4}\" transform=\"{mtx}\">\n\
@@ -695,8 +751,8 @@ impl Renderer {
                      <use xlink:href=\"#{grp}\" clip-path=\"url(#{cid})\"/>\n</g>\n",
                     op = op,
                     mtx = mtx,
-                    bx0 = f.bx0,
-                    by0 = f.by0,
+                    bx0 = bbx0,
+                    by0 = bby0,
                     bw = bw,
                     bh = bh,
                 ));

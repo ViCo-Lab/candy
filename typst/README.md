@@ -582,6 +582,7 @@ same `.tyx` compiles under plain `typst compile` with the `seed` value.
 | `examples/camera_tour.tyx` | cinematic `#camera` pan/zoom/rotate tour + nested title-card scene + `#transition` |
 | `examples/data_viz.tyx` | animated horizontal bar chart "race" via `#transform` (reused labels) + `#indicate` leader + `#typewriter` |
 | `examples/orbit_demo.tyx` | `#group` ring spin + `#track` orbiting planet + `#camera` push-in (orrery) |
+| `examples/projectile_demo.tyx` | nested title scene + `#track` parabolic flight + `#ecounter`/`#ecval` live timer + `#camera` push-in + `#transform` of the trajectory equation |
 
 See each file in `examples/` for the full, runnable source. Build any of them with:
 
