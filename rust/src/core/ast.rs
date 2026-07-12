@@ -834,8 +834,11 @@ pub struct ScopeInfo {
 ///   only the innermost active scene's content at any frame);
 /// - scenes **respect Typst's lexical scope** — a mobject belongs to the
 ///   innermost scene that encloses it at parse time;
-/// - a scene occupies **one page**; content that would overflow is split into
-///   multiple scenes (auto-split, enforced by the author / warned by candy);
+/// - a scene may **overflow onto multiple pages** (a *cross-page scene*): its
+///   mobjects stay in **one** scene (data shared — same ownership, same timeline)
+///   but are laid out across the overflow pages, and the canvas is the vertical
+///   stack of those pages in page order (nothing is clipped or split into
+///   sub-scenes);
 /// - with **no explicit root scene**, the whole document is one implicit scene
 ///   (id `0`), following the same split rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]

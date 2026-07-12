@@ -75,7 +75,7 @@ use typst_syntax::FileId;
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
 
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
-const PT_PER_CM: f64 = 28.346_456_692_913_385;
+pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
 
 /// Maximum segment length (in Typst points) when bisecting morph outline rings.
 /// Smaller = smoother morph but more points (the plan is sampled per frame, so
@@ -521,8 +521,13 @@ impl Renderer {
         }
 
         let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
+        // Number of pages each scene's natural layout spilled onto. A scene that
+        // overflows its single page becomes a *cross-page scene*: its mobjects
+        // stay in ONE scene (data shared) but are laid out across several pages,
+        // and the canvas is the vertical stack of those pages (page order).
+        let mut scene_page_counts: HashMap<usize, usize> = HashMap::new();
 
-        for (_sid, (pw, ph), labels) in &by_scene {
+        for (sid, (pw, ph), labels) in &by_scene {
             // Native layout pass: each mobject is wrapped in a content-sized,
             // block-level coloured `block` and emitted in plain document flow.
             // Typst's own block flow stacks them top-to-bottom (left-aligned) with
@@ -588,28 +593,38 @@ impl Renderer {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            let page = match doc.pages().first() {
-                Some(p) => p,
-                None => continue,
-            };
-            let svg = typst_svg::svg(page, &SvgOptions::default());
-            // Read each object's natural top-left back from its colour box.
-            for (label, color) in &palette {
-                let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
-                    continue;
-                };
-                // The natural position is exactly where plain Typst lays the
-                // object's content box: the coloured `block` we wrap it in
-                // shrinks to the body, so its fill footprint's top-left *is* the
-                // body's native content-box top-left (`lx, ly`). At render time
-                // the per-frame `#place(top + left, …)` aligns the body's content
-                // box to this anchor, and the body's ink follows its own intrinsic
-                // offset — the same offset native Typst applies. So placing at
-                // `(lx, ly)` reproduces native Typst positioning exactly. Using
-                // `lx - ox` would instead shift every object by its ink offset
-                // (left/up for text), which is the positioning anomaly.
-                let (lx, ly, _, _) = layout_bbox;
-                nat.insert(label.clone(), (lx, ly));
+            // A scene is laid out in plain Typst document flow, so content that
+            // overflows its single page spills onto *subsequent* pages (page 1,
+            // page 2, …), each `ph` tall. We treat this as a **cross-page scene**:
+            // the mobjects stay in ONE scene (data shared — same ownership, same
+            // timeline), but their natural positions are recorded on the page
+            // they actually landed on, offset by `k * ph`. At render time the
+            // scene's canvas is the vertical stack of all its pages (page order),
+            // so every mobject renders in the right place instead of being
+            // clipped off a single page.
+            let pages = doc.pages();
+            let num_pages = pages.len().max(1);
+            scene_page_counts.insert(*sid, num_pages);
+            for (k, page) in pages.iter().enumerate() {
+                let svg = typst_svg::svg(page, &SvgOptions::default());
+                for (label, color) in &palette {
+                    // An object appears on exactly one page, so skip colours we
+                    // have already placed on an earlier page.
+                    if nat.contains_key(label) {
+                        continue;
+                    }
+                    let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
+                        continue;
+                    };
+                    // The natural position is exactly where plain Typst lays the
+                    // object's content box: the coloured `block` we wrap it in
+                    // shrinks to the body, so its fill footprint's top-left *is*
+                    // the body's native content-box top-left (`lx, ly`). Each
+                    // page's SVG resets its origin to that page's top-left, so we
+                    // add `k * ph` to recover the absolute y on the stacked canvas.
+                    let (lx, ly, _, _) = layout_bbox;
+                    nat.insert(label.clone(), (lx, ly + k as f64 * ph));
+                }
             }
         }
 
@@ -621,10 +636,22 @@ impl Renderer {
         self.label_scene = self.scene.label_scene_map();
         let mut sp: HashMap<usize, (f64, f64)> = HashMap::new();
         if self.scene.scenes.is_empty() {
+            // Legacy single-scene document: the whole document is one scene
+            // (id 0). If its content overflowed, stack the pages vertically and
+            // grow the canvas accordingly. `self.page_h` is also updated so the
+            // legacy render path (which reads `self.page_w`/`self.page_h`)
+            // composites onto the tall canvas.
+            let pages = scene_page_counts.get(&0).copied().unwrap_or(1).max(1);
+            self.page_h = self.page_h * pages as f64;
             sp.insert(0, (self.page_w, self.page_h));
         } else {
             for s in &self.scene.scenes {
-                sp.insert(s.id, self.scene.effective_page_pt(s.id));
+                let (pw, ph) = self.scene.effective_page_pt(s.id);
+                let pages = scene_page_counts.get(&s.id).copied().unwrap_or(1).max(1);
+                // Cross-page scene: stack every overflow page under the first, so
+                // the canvas is `ph * pages` tall and mobjects render in page
+                // order (page 1 at top, page 2 below it, …).
+                sp.insert(s.id, (pw, ph * pages as f64));
             }
         }
         self.scene_pages = sp;
@@ -679,349 +706,6 @@ impl Renderer {
 
         self.natural_computed = true;
         Ok(())
-    }
-
-    /// Build the per-glyph transform layout for one inline `#transform` plan.
-    ///
-    /// Renders the whole old and new formulas and extracts each glyph /
-    /// decoration (fraction bar, root, …) as a positioned fragment, using
-    /// Typst's *own* SVG layout — no custom token scanner. Old↔new fragments
-    /// are matched by a stable signature (the glyph's path outline / bar's path)
-    /// via LCS: matched fragments glide, unmatched ones fade. Returns `None`
-    /// (leaving the legacy crossfade intact) if either body yields no
-    /// extractable fragments.
-    fn build_transform_fragments(
-        &self,
-        plan: &crate::core::ast::TransformPlan,
-    ) -> Option<TransformFragmentPlan> {
-        let preamble = imports_preamble(&self.scene);
-        let old_svg = self.render_formula_svg(&plan.old_body, &preamble)?;
-        let new_svg = self.render_formula_svg(&plan.new_body, &preamble)?;
-        let (old_inner, old_frags) = Self::extract_formula(&old_svg)?;
-        let (new_inner, new_frags) = Self::extract_formula(&new_svg)?;
-        if old_frags.is_empty() || new_frags.is_empty() {
-            return None;
-        }
-
-        // Match old ↔ new fragments by signature (identical glyphs / bars).
-        let old_sig: Vec<String> = old_frags.iter().map(|f| f.1.clone()).collect();
-        let new_sig: Vec<String> = new_frags.iter().map(|f| f.1.clone()).collect();
-        let dp = lcs_table(&old_sig, &new_sig);
-        let mut i = 0usize;
-        let mut j = 0usize;
-        let mut matched: Vec<(usize, usize)> = Vec::new();
-        while i < old_sig.len() && j < new_sig.len() {
-            if old_sig[i] == new_sig[j] {
-                matched.push((i, j));
-                i += 1;
-                j += 1;
-            } else if dp[i + 1][j] >= dp[i][j + 1] {
-                i += 1;
-            } else {
-                j += 1;
-            }
-        }
-        let matched_old: std::collections::HashSet<usize> =
-            matched.iter().map(|(o, _)| *o).collect();
-        let matched_new: std::collections::HashSet<usize> =
-            matched.iter().map(|(_, n)| *n).collect();
-
-        let tl = |b: &(f64, f64, f64, f64)| (b.0 / PT_PER_CM, b.1 / PT_PER_CM);
-        let mut anims: Vec<GlyphAnim> = Vec::new();
-        for (o, n) in &matched {
-            let (fx, fy) = tl(&old_frags[*o].0);
-            let (tx, ty) = tl(&new_frags[*n].0);
-            anims.push(GlyphAnim {
-                src: 0,
-                bx0: old_frags[*o].0.0,
-                by0: old_frags[*o].0.1,
-                bx1: old_frags[*o].0.2,
-                by1: old_frags[*o].0.3,
-                from_x: fx,
-                from_y: fy,
-                to_x: tx,
-                to_y: ty,
-                from_op: 1.0,
-                to_op: 1.0,
-            });
-        }
-        for o in 0..old_frags.len() {
-            if matched_old.contains(&o) {
-                continue;
-            }
-            let (fx, fy) = tl(&old_frags[o].0);
-            // Old-only fragment slides toward the nearest matched fragment that
-            // follows it (Manim-style "push out"); absent a match it stays put.
-            let (tx, ty) = matched
-                .iter()
-                .find(|(mo, _)| *mo >= o)
-                .map(|(_, mn)| tl(&new_frags[*mn].0))
-                .or_else(|| matched.last().map(|(_, mn)| tl(&new_frags[*mn].0)))
-                .unwrap_or((fx, fy));
-            anims.push(GlyphAnim {
-                src: 0,
-                bx0: old_frags[o].0.0,
-                by0: old_frags[o].0.1,
-                bx1: old_frags[o].0.2,
-                by1: old_frags[o].0.3,
-                from_x: fx,
-                from_y: fy,
-                to_x: tx,
-                to_y: ty,
-                from_op: 1.0,
-                to_op: 0.0,
-            });
-        }
-        for n in 0..new_frags.len() {
-            if matched_new.contains(&n) {
-                continue;
-            }
-            let (tx, ty) = tl(&new_frags[n].0);
-            // New-only fragment slides in from the nearest matched fragment that
-            // precedes it (Manim-style "insert").
-            let (fx, fy) = matched
-                .iter()
-                .rev()
-                .find(|(_, mn)| *mn <= n)
-                .map(|(mo, _)| tl(&old_frags[*mo].0))
-                .or_else(|| matched.first().map(|(mo, _)| tl(&old_frags[*mo].0)))
-                .unwrap_or((tx, ty));
-            anims.push(GlyphAnim {
-                src: 1,
-                bx0: new_frags[n].0.0,
-                by0: new_frags[n].0.1,
-                bx1: new_frags[n].0.2,
-                by1: new_frags[n].0.3,
-                from_x: fx,
-                from_y: fy,
-                to_x: tx,
-                to_y: ty,
-                from_op: 0.0,
-                to_op: 1.0,
-            });
-        }
-        Some(TransformFragmentPlan {
-            target: plan.target.clone(),
-            old: plan.old.clone(),
-            start_ms: plan.start_ms,
-            end_ms: plan.end_ms,
-            easing: plan.easing.clone(),
-            old_body: plan.old_body.clone(),
-            new_body: plan.new_body.clone(),
-            old_inner,
-            new_inner,
-            anims,
-            formula_cache: Mutex::new(HashMap::new()),
-        })
-    }
-
-    /// Render a body at the page origin (top-left) and return its SVG string.
-    /// Rendering at the origin means each fragment's measured bbox (in page pt)
-    /// is already relative to the formula's top-left — exactly the offset the
-    /// compositor adds to the target mobject's position at render time.
-    fn render_formula_svg(&self, body: &str, preamble: &str) -> Option<String> {
-        let src = place_source(
-            self.page_w,
-            self.page_h,
-            0.0,
-            0.0,
-            100.0,
-            0.0,
-            body,
-            preamble,
-        );
-        let doc = self.compile_cached(&src).ok()?;
-        let page = doc.pages().first()?;
-        Some(typst_svg::svg(page, &SvgOptions::default()))
-    }
-
-    /// Extract every positioned glyph / decoration from a formula's SVG (as
-    /// emitted by `typst_svg`). Returns the SVG's inner markup (kept verbatim
-    /// so the whole formula — `<defs>` included — can be re-embedded later for
-    /// clip+translate compositing) and, for each top-level drawable, its
-    /// absolute bounding box (pt, in the SVG's own coordinate space) plus a
-    /// stable signature used to match the same glyph across the old and new
-    /// formulas.
-    ///
-    /// Typst renders every glyph as `<use xlink:href="#sym">` referencing a
-    /// `<path>` outline inside `<defs>`, and decorations (fraction bars, roots,
-    /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
-    /// applying its (and ancestors') transforms to its path geometry, and sign
-    /// it by the path data so identical glyphs match across formulas.
-    fn extract_formula(svg: &str) -> Option<(String, Vec<((f64, f64, f64, f64), String)>)> {
-        let doc = roxmltree::Document::parse(svg).ok()?;
-        let root = doc.root_element();
-        // Inner markup: everything between `<svg …>` and `</svg>`.
-        let inner = {
-            let open = svg.find("<svg")?;
-            let after = open + svg[open..].find('>')? + 1;
-            let end = svg.rfind("</svg>")?;
-            svg[after..end].to_string()
-        };
-        // Gather symbol path data from <defs> so <use> can resolve outlines.
-        let mut symbols: HashMap<String, String> = HashMap::new();
-        for defs in root.children().filter(|e| e.tag_name().name() == "defs") {
-            for sym in defs.children().filter(|e| e.tag_name().name() == "symbol") {
-                if let Some(id) = sym.attribute("id") {
-                    if let Some(path) = sym.children().find(|e| e.tag_name().name() == "path") {
-                        if let Some(d) = path.attribute("d") {
-                            symbols.insert(id.to_string(), d.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        let mut frags = Vec::new();
-        for child in root.children() {
-            if child.is_element() && child.tag_name().name() != "defs" {
-                collect_formula_leaves(
-                    &child,
-                    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
-                    &symbols,
-                    &mut frags,
-                );
-            }
-        }
-        if frags.is_empty() {
-            None
-        } else {
-            Some((inner, frags))
-        }
-    }
-}
-
-/// Accumulator for path / element bounding boxes (user-space points).
-impl Renderer {
-    /// Render a body at an explicit absolute page position (cm) — used for
-    /// transform glyph fragments. No sprite cache (positions change per frame).
-    fn render_placed_pixels(
-        &self,
-        body: &str,
-        x_cm: f64,
-        y_cm: f64,
-        scale_pct: f64,
-        rotation: f64,
-        pixel_per_pt: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        let preamble = imports_preamble(&self.scene);
-        let placed = place_source(pw, ph, x_cm, y_cm, scale_pct, rotation, body, &preamble);
-        let doc = self.compile_cached(&placed)?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let opts = RenderOptions {
-            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
-            render_bleed: false,
-        };
-        let pix = render(page, &opts);
-        Ok(crate::renderer::RenderedFrame {
-            width: pix.width() as usize,
-            height: pix.height() as usize,
-            rgba: pix.data().to_vec(),
-        })
-    }
-
-    /// Render the whole old (`src == 0`) or new (`src == 1`) formula to a
-    /// page-sized RGBA at the page origin, so each `GlyphAnim` can be cropped
-    /// from it by its `bx*..` box (which is already in page pt). Cached per
-    /// `(src, quantized_ppi)` so the formula is rasterized once per plan.
-    fn formula_rgba(
-        &self,
-        p: &TransformFragmentPlan,
-        src: u8,
-        ppi: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<Arc<crate::renderer::RenderedFrame>, CandyError> {
-        let ppi_q = (ppi * 100.0).round() as u32;
-        let key = (src, ppi_q);
-        if let Some(f) = p.formula_cache.lock().unwrap().get(&key) {
-            return Ok(f.clone());
-        }
-        let body = if src == 0 { &p.old_body } else { &p.new_body };
-        let frame = Arc::new(self.render_placed_pixels(body, 0.0, 0.0, 100.0, 0.0, ppi, pw, ph)?);
-        p.formula_cache.lock().unwrap().insert(key, frame.clone());
-        Ok(frame)
-    }
-
-    /// Whether `label` is hidden by an active per-glyph transform (its `target`
-    /// or `old` mobject), so the renderer can draw the interpolated fragments
-    /// instead. Only plans that actually produced fragments hide their labels.
-    fn transform_hidden(&self, label: &Label, time_ms: u32) -> bool {
-        for p in &self.transform_fragments {
-            if time_ms >= p.start_ms && time_ms < p.end_ms {
-                if &p.target == label || &p.old == label {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Build the interpolated glyph-fragment overlays for the current frame as
-    /// `(opacity, RenderedFrame)` pairs, ready to be composited *with* the
-    /// mobjects (so they are warped by the camera like ordinary objects).
-    ///
-    /// Each `GlyphAnim` is cropped from the whole old/new formula (rasterized
-    /// once at the page origin and cached) by its `bx*..` box, then baked into a
-    /// page-sized transparent frame at its interpolated position. The position
-    /// adds the target mobject's natural offset (`nat`) plus its current
-    /// translation (`state.x/y`) so the transform stays glued to the mobject
-    /// and to the rest of the scene.
-    fn transform_fragment_frames(
-        &self,
-        states: &HashMap<Label, crate::core::ast::FrameData>,
-        time_ms: u32,
-        pixel_per_pt: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<Vec<(f64, crate::renderer::RenderedFrame)>, CandyError> {
-        let mut out: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
-        let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
-        let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
-        for p in &self.transform_fragments {
-            if time_ms < p.start_ms || time_ms >= p.end_ms {
-                continue;
-            }
-            let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
-            let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
-            let (sx, sy) = states
-                .get(&p.target)
-                .map(|s| (nat_cm.0 + s.x, nat_cm.1 + s.y))
-                .unwrap_or(nat_cm);
-            let denom = (p.end_ms - p.start_ms).max(1) as f64;
-            let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
-            let te = (p.easing.resolve())(t);
-            for f in &p.anims {
-                let lx = f.from_x + (f.to_x - f.from_x) * te;
-                let ly = f.from_y + (f.to_y - f.from_y) * te;
-                let op = f.from_op + (f.to_op - f.from_op) * te;
-                if op <= 0.001 {
-                    continue;
-                }
-                let whole = self.formula_rgba(p, f.src, pixel_per_pt, pw, ph)?;
-                let crop = crop_formula_rgba(&whole, f.bx0, f.by0, f.bx1, f.by1, pixel_per_pt);
-                // Bake the fragment into a page-sized transparent frame at its
-                // interpolated position so it composites (and warps under the
-                // camera) exactly like an ordinary mobject.
-                let mut page = vec![0u8; w * h * 4];
-                let fx_px = (sx + lx) * pixel_per_pt as f64;
-                let fy_px = (sy + ly) * pixel_per_pt as f64;
-                composite_over_at(&mut page, &crop, 1.0, fx_px, fy_px, w, h);
-                out.push((
-                    op,
-                    crate::renderer::RenderedFrame {
-                        width: w,
-                        height: h,
-                        rgba: page,
-                    },
-                ));
-            }
-        }
-        Ok(out)
     }
 
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
@@ -1206,14 +890,6 @@ impl Renderer {
             objs.push((st.opacity, frame));
         }
 
-        // Per-glyph transform overlays (Manim-style). Added to `objs` so they
-        // are composited and then warped by the camera together with the other
-        // mobjects — the old content disassembles and the new reassembles.
-        let frag_frames = self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph)?;
-        for (opacity, frame) in frag_frames {
-            objs.push((opacity, frame));
-        }
-
         // Subtitle overlays are collected separately: they must be composited
         // AFTER the global camera warp so they stay pinned at a fixed page
         // position/size regardless of the current view (pan/zoom/rotate).
@@ -1247,6 +923,12 @@ impl Renderer {
         for (opacity, f) in &objs {
             composite_over(&mut canvas, f, *opacity, w, h);
         }
+        // Per-glyph transform overlays (Manim-style), composited directly into
+        // the canvas so they are warped by the camera together with the other
+        // mobjects — and so we never allocate a full-page buffer per fragment
+        // (which made rendering pathologically slow). Fragments are placed with
+        // correct cm→pt→px scaling, so they stay glued to the target mobject.
+        self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph, &mut canvas, w, h)?;
         // Apply the global camera (pan + zoom + rotate) by warping the
         // composited object canvas through the inverse camera transform.
         // Subtitles are deliberately NOT warped here — they are overlaid
@@ -1444,65 +1126,20 @@ impl Renderer {
         }
 
         // Per-glyph transform overlays (Manim-style), drawn INSIDE the camera
-        // group so they move with the view like the other mobjects. Each
-        // fragment is the whole old/new formula (rendered at the page origin by
-        // `extract_formula`) clipped to the fragment's bbox and translated to
-        // its interpolated position. The clip keeps only the fragment's ink;
-        // the translate follows the target mobject (nat + state) so the
-        // transform stays aligned with the rest of the scene.
-        for p in &self.transform_fragments {
-            if time_ms < p.start_ms || time_ms >= p.end_ms {
-                continue;
-            }
-            let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
-            let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
-            let (sx, sy) = states
-                .get(&p.target)
-                .map(|s| (nat_cm.0 + s.x, nat_cm.1 + s.y))
-                .unwrap_or(nat_cm);
-            let denom = (p.end_ms - p.start_ms).max(1) as f64;
-            let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
-            let te = (p.easing.resolve())(t);
-            for (idx, f) in p.anims.iter().enumerate() {
-                let lx = f.from_x + (f.to_x - f.from_x) * te;
-                let ly = f.from_y + (f.to_y - f.from_y) * te;
-                let op = f.from_op + (f.to_op - f.from_op) * te;
-                if op <= 0.001 {
-                    continue;
-                }
-                let mut cid_base = String::new();
-                for c in p.target.0.chars() {
-                    if c.is_alphanumeric() {
-                        cid_base.push(c);
-                    } else {
-                        cid_base.push('_');
-                    }
-                }
-                let cid = format!("tf_{}_{}", cid_base, idx);
-                // Localize the whole-formula markup's ids (e.g. `glyph0`) with a
-                // per-fragment prefix so the old and new formulas — which both
-                // define `glyph0`, … — don't collide when embedded in one SVG.
-                let raw_inner = if f.src == 0 {
-                    &p.old_inner
-                } else {
-                    &p.new_inner
-                };
-                let inner = localize_formula_ids(raw_inner, &cid);
-                // Translate so the fragment (at formula-local bx0,by0) lands at
-                // the interpolated page position (sx+lx, sy+ly) in pt.
-                let tx = (sx + lx) * PT_PER_CM - f.bx0;
-                let ty = (sy + ly) * PT_PER_CM - f.by0;
-                let bw = (f.bx1 - f.bx0).max(0.0);
-                let bh = (f.by1 - f.by0).max(0.0);
-                out.push_str(&format!(
-                    "<g opacity=\"{op:.4}\" transform=\"translate({tx:.4}, {ty:.4})\">\n\
-                     <clipPath id=\"{cid}\"><rect x=\"{bx0:.4}\" y=\"{by0:.4}\" width=\"{bw:.4}\" height=\"{bh:.4}\"/></clipPath>\n\
-                     <g clip-path=\"url(#{cid})\">\n{inner}\n</g>\n</g>\n",
-                    bx0 = f.bx0,
-                    by0 = f.by0,
-                ));
-            }
-        }
+        // group so they move with the view like the other mobjects.
+        //
+        // For each active plan we embed the whole old/new formula exactly ONCE
+        // (its inner markup, with symbol ids localized under a per-plan prefix
+        // and wrapped in a single `<g id=…>` inside `<defs>`), then draw each
+        // fragment as a clipped `<use>` of that group. This keeps the SVG small
+        // (the formula is rasterized once, not once per fragment) and avoids
+        // glyph-id collisions between the old and new formulas. The clip + the
+        // translate follow the target mobject (nat + state) so the transform
+        // stays aligned with the rest of the scene. Embedding the formula once
+        // (instead of repeating the full markup inside every fragment's clip)
+        // is also what prevents neighbouring glyphs from leaking through a
+        // slightly-off clip box — the "residual garbage" artefact.
+        out.push_str(&self.transform_overlay_svg(&states, time_ms));
 
         // Close the camera group BEFORE drawing subtitles so the captions are
         // not transformed by the camera — they stay pinned at a fixed page
@@ -2334,6 +1971,103 @@ fn transform_target_renders_after_window() {
     assert!(
         nested >= 2,
         "after window target must render (nested svg count={nested})"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: the per-glyph transform overlay must embed each old/new formula
+/// exactly ONCE in `<defs>` and reference it via clipped `<use>` elements — not
+/// repeat the whole formula markup inside every fragment's clip (which let
+/// neighbouring glyphs leak through a slightly-off clip box: the "residual
+/// garbage" artefact). This pins the restored SVG rendering path.
+#[test]
+fn transform_overlay_uses_defs_and_use_in_svg() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_defs.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Mid window: the transform is active, so fragments must be drawn.
+    let mid = 30u32;
+    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    // The formula is embedded once per plan as a `<g id="tf_eq_0_old">` /
+    // `<g id="tf_eq_0_new">` inside `<defs>`.
+    assert!(
+        svg.contains("<g id=\"tf_eq_0_old\">"),
+        "old formula must be embedded once in defs"
+    );
+    assert!(
+        svg.contains("<g id=\"tf_eq_0_new\">"),
+        "new formula must be embedded once in defs"
+    );
+    // Every fragment is a clipped `<use>` referencing that defs group — never a
+    // re-embedded full formula inside the clip.
+    let uses = svg.matches("<use xlink:href=\"#tf_eq_0_").count();
+    assert!(
+        uses >= 7,
+        "expected >=7 clipped <use> fragments, got {uses}"
+    );
+    assert!(
+        !svg.contains("clip-path=\"url(#tf_eq_0_0)\"><g "),
+        "fragments must not re-embed the full formula inside the clip"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: a scene whose content overflows its page becomes a **cross-page
+/// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
+/// timeline) but are laid out across the overflow pages, and the canvas is the
+/// vertical stack of those pages in page order. The rendered SVG must therefore
+/// be taller than a single page and exactly a multiple of the page height (not
+/// clipped to one page, and not split into separate sub-scenes).
+#[test]
+fn overflowing_scene_stacks_pages_in_order() {
+    // A short (2cm-tall) page with six 1cm-tall blocks overflows onto several
+    // pages.
+    let src = "#import \"candy\": *\n\
+               #scene(width: 10cm, height: 2cm)[\n\
+               #mobject(\"a\", rect(width: 5cm, height: 1cm))\n\
+               #mobject(\"b\", rect(width: 5cm, height: 1cm))\n\
+               #mobject(\"c\", rect(width: 5cm, height: 1cm))\n\
+               #mobject(\"d\", rect(width: 5cm, height: 1cm))\n\
+               #mobject(\"e\", rect(width: 5cm, height: 1cm))\n\
+               #mobject(\"f\", rect(width: 5cm, height: 1cm))\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xpage.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    let svg = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    // Single-page height in pt: 2cm * PT_PER_CM.
+    let page_h_pt = 2.0 * crate::renderer::typst::PT_PER_CM;
+    // Parse the root `<svg height="…">`.
+    let h_attr = svg
+        .lines()
+        .find(|l| l.contains("<svg"))
+        .and_then(|l| {
+            let s = l.find("height=\"").unwrap();
+            let start = s + "height=\"".len();
+            let end = l[start..].find('"').unwrap();
+            l[start..start + end].parse::<f64>().ok()
+        })
+        .expect("svg height attribute");
+    // Must have overflowed onto more than one page and stacked them exactly.
+    assert!(
+        h_attr > page_h_pt + 1.0,
+        "cross-page scene must stack overflow pages (height {h_attr} > {page_h_pt})"
+    );
+    assert!(
+        ((h_attr / page_h_pt).round() - h_attr / page_h_pt).abs() < 1e-6,
+        "canvas height must be an exact multiple of the page height (got {h_attr} / {page_h_pt})"
     );
     std::fs::remove_file(&tmp).ok();
 }

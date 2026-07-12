@@ -1,12 +1,24 @@
-//! Per-glyph `#transform` plan types and the Typst source builders for placing
-//! a single mobject body (and for morph outlines).
+//! Per-glyph `#transform` plan types, the Typst source builders for placing a
+//! single mobject body (and for morph outlines), and the whole per-glyph
+//! transform engine: building the fragment layout (`build_transform_fragments`),
+//! rasterizing/compositing it into the pixel path (`transform_fragment_frames`),
+//! and emitting the interpolated SVG overlay (`transform_overlay_svg`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::core::ast::Label;
+use typst_render::{RenderOptions, render};
+use typst_svg::SvgOptions;
+use typst_utils::Scalar;
+
+use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
+use crate::core::error::CandyError;
 use crate::renderer::RenderedFrame;
+use crate::renderer::typst::{
+    PT_PER_CM, Renderer, collect_formula_leaves, composite_over_at, crop_formula_rgba,
+    imports_preamble, localize_formula_ids,
+};
 
 /// One animated glyph/decoration in a per-glyph `transform`. The fragment is
 /// cropped from the *whole* old or new formula render (so it keeps Typst's
@@ -154,5 +166,593 @@ pub(crate) fn place_source(
             "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
              #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#rotate(origin: top + left, {rotation}deg)[#{body}]]]\n"
         )
+    }
+}
+
+/// One extracted graphical unit of a formula (a glyph outline, a fraction bar,
+/// a root, …) — the "atom" the transform splits content into. Carries the
+/// unit's shape signature (its path data, so identical glyphs match across the
+/// old and new formula) and its center (pt), used for proximity matching.
+struct ShapeUnit {
+    sig: String,
+    cx: f64,
+    cy: f64,
+}
+
+impl ShapeUnit {
+    /// Build a unit from an `extract_formula` fragment `((x0,y0,x1,y1), sig)`.
+    fn from_frag(frag: &((f64, f64, f64, f64), String)) -> Self {
+        let (x0, y0, x1, y1) = frag.0;
+        ShapeUnit {
+            sig: frag.1.clone(),
+            cx: (x0 + x1) * 0.5,
+            cy: (y0 + y1) * 0.5,
+        }
+    }
+}
+
+/// Squared Euclidean distance between two centers (pt). Squared is enough for
+/// nearest-neighbour comparisons and avoids a `sqrt` per candidate.
+fn dist2(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let dx = ax - bx;
+    let dy = ay - by;
+    dx * dx + dy * dy
+}
+
+/// Match old ↔ new graphical units by shape identity + geometric proximity
+/// (Manim `TransformMatchingShapes`). Units with the same signature are paired
+/// greedily by ascending center distance, so each surviving glyph glides to its
+/// nearest same-shaped counterpart (identical glyphs no longer cross). Returns
+/// `(old_index, new_index)` pairs. The pairing is deterministic: candidate
+/// pairs are sorted by `(distance, old_index, new_index)`.
+fn match_shapes(old: &[ShapeUnit], new: &[ShapeUnit]) -> Vec<(usize, usize)> {
+    // Build all same-signature candidate pairs with their center distance.
+    let mut cands: Vec<(f64, usize, usize)> = Vec::new();
+    for (oi, o) in old.iter().enumerate() {
+        for (ni, n) in new.iter().enumerate() {
+            if o.sig == n.sig {
+                cands.push((dist2(o.cx, o.cy, n.cx, n.cy), oi, ni));
+            }
+        }
+    }
+    // Greedy assignment: shortest pairs first, one-to-one.
+    cands.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+    let mut used_old = vec![false; old.len()];
+    let mut used_new = vec![false; new.len()];
+    let mut matched: Vec<(usize, usize)> = Vec::new();
+    for (_, oi, ni) in cands {
+        if used_old[oi] || used_new[ni] {
+            continue;
+        }
+        used_old[oi] = true;
+        used_new[ni] = true;
+        matched.push((oi, ni));
+    }
+    // Emit in old-index order so downstream draw order is stable.
+    matched.sort_by(|a, b| a.0.cmp(&b.0));
+    matched
+}
+
+/// Find, among the matched pairs, the one whose *old* unit is geometrically
+/// nearest to `(cx, cy)`, and project it through `pick` (typically to the pair's
+/// new position). Used to give a deleted old unit a sensible collapse target.
+fn nearest_matched(
+    cx: f64,
+    cy: f64,
+    matched: &[(usize, usize)],
+    old: &[ShapeUnit],
+    pick: impl Fn(&(usize, usize)) -> (f64, f64),
+) -> Option<(f64, f64)> {
+    matched
+        .iter()
+        .min_by(|a, b| {
+            let da = dist2(cx, cy, old[a.0].cx, old[a.0].cy);
+            let db = dist2(cx, cy, old[b.0].cx, old[b.0].cy);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(pick)
+}
+
+/// Mirror of [`nearest_matched`] keyed on the pair's *new* unit — used to give
+/// an inserted new unit a sensible emergence origin (its nearest survivor's old
+/// position).
+fn nearest_matched_new(
+    cx: f64,
+    cy: f64,
+    matched: &[(usize, usize)],
+    new: &[ShapeUnit],
+    pick: impl Fn(&(usize, usize)) -> (f64, f64),
+) -> Option<(f64, f64)> {
+    matched
+        .iter()
+        .min_by(|a, b| {
+            let da = dist2(cx, cy, new[a.1].cx, new[a.1].cy);
+            let db = dist2(cx, cy, new[b.1].cx, new[b.1].cy);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(pick)
+}
+
+/// Per-glyph `#transform` engine, implemented on [`Renderer`]. Split out of
+/// `mod.rs` so the renderer's core (natural layout, per-frame compositing,
+/// camera, scenes) stays free of the transform-specific plumbing.
+impl Renderer {
+    /// Sanitize a label into an SVG-id-safe prefix (`[A-Za-z0-9_]`), suffixed
+    /// with the plan index so two transforms on the same target never collide.
+    fn transform_id_prefix(&self, target: &Label, plan_idx: usize) -> String {
+        let mut base = String::new();
+        for c in target.0.chars() {
+            if c.is_alphanumeric() {
+                base.push(c);
+            } else {
+                base.push('_');
+            }
+        }
+        format!("{base}_{plan_idx}")
+    }
+
+    /// Build the per-glyph transform layout for one inline `#transform` plan.
+    ///
+    /// Renders the whole old and new formulas and extracts each glyph /
+    /// decoration (fraction bar, root, …) as a positioned graphical unit, using
+    /// Typst's *own* SVG layout — no custom token scanner (smart splitting: one
+    /// unit per real shape). Old↔new units are then matched by shape identity +
+    /// geometric proximity ([`match_shapes`], Manim `TransformMatchingShapes`
+    /// style): surviving units glide smoothly to their nearest same-shaped
+    /// counterpart (smart positioning), deleted units fade out into the nearest
+    /// survivor, inserted units fade in from the nearest survivor. Returns
+    /// `None` (leaving the legacy crossfade intact) if either body yields no
+    /// extractable units.
+    pub(crate) fn build_transform_fragments(
+        &self,
+        plan: &crate::core::ast::TransformPlan,
+    ) -> Option<TransformFragmentPlan> {
+        let preamble = imports_preamble(&self.scene);
+        let old_svg = self.render_formula_svg(&plan.old_body, &preamble)?;
+        let new_svg = self.render_formula_svg(&plan.new_body, &preamble)?;
+        let (old_inner, old_frags) = Self::extract_formula(&old_svg)?;
+        let (new_inner, new_frags) = Self::extract_formula(&new_svg)?;
+        if old_frags.is_empty() || new_frags.is_empty() {
+            return None;
+        }
+
+        // Smart matching (Manim `TransformMatchingShapes` style): shapes are
+        // already split per graphical unit by `extract_formula` (each glyph
+        // outline / fraction bar / root is its own leaf). We now pair old↔new
+        // units *by shape identity + geometric proximity* rather than by
+        // left-to-right source order, so repeated glyphs travel the shortest
+        // path to their counterpart and never needlessly cross.
+        let old_u: Vec<ShapeUnit> = old_frags.iter().map(ShapeUnit::from_frag).collect();
+        let new_u: Vec<ShapeUnit> = new_frags.iter().map(ShapeUnit::from_frag).collect();
+        let matched = match_shapes(&old_u, &new_u);
+        let matched_old: std::collections::HashSet<usize> =
+            matched.iter().map(|(o, _)| *o).collect();
+        let matched_new: std::collections::HashSet<usize> =
+            matched.iter().map(|(_, n)| *n).collect();
+
+        // Anchors for the fade halves: a deleted old unit collapses toward the
+        // new counterpart of its geometrically nearest *matched* old neighbour,
+        // and an inserted new unit emerges from the old counterpart of its
+        // nearest *matched* new neighbour. This makes insertions/deletions grow
+        // out of / dissolve into the surrounding surviving content (smart
+        // positioning) instead of jumping to an arbitrary sequence neighbour.
+        let tl = |b: &(f64, f64, f64, f64)| (b.0 / PT_PER_CM, b.1 / PT_PER_CM);
+        let mut anims: Vec<GlyphAnim> = Vec::new();
+
+        // Matched units glide smoothly, staying fully opaque.
+        for (o, n) in &matched {
+            let (fx, fy) = tl(&old_frags[*o].0);
+            let (tx, ty) = tl(&new_frags[*n].0);
+            anims.push(GlyphAnim {
+                src: 0,
+                bx0: old_frags[*o].0.0,
+                by0: old_frags[*o].0.1,
+                bx1: old_frags[*o].0.2,
+                by1: old_frags[*o].0.3,
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_op: 1.0,
+                to_op: 1.0,
+            });
+        }
+
+        // Deleted old units fade out, drifting toward the new position of their
+        // nearest surviving old neighbour (or their own spot if none matched).
+        for (o, u) in old_u.iter().enumerate() {
+            if matched_old.contains(&o) {
+                continue;
+            }
+            let (fx, fy) = tl(&old_frags[o].0);
+            let (tx, ty) = nearest_matched(u.cx, u.cy, &matched, &old_u, |&(_, n)| {
+                tl(&new_frags[n].0)
+            })
+            .unwrap_or((fx, fy));
+            anims.push(GlyphAnim {
+                src: 0,
+                bx0: old_frags[o].0.0,
+                by0: old_frags[o].0.1,
+                bx1: old_frags[o].0.2,
+                by1: old_frags[o].0.3,
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_op: 1.0,
+                to_op: 0.0,
+            });
+        }
+
+        // Inserted new units fade in, emerging from the old position of their
+        // nearest surviving new neighbour (or their own spot if none matched).
+        for (n, u) in new_u.iter().enumerate() {
+            if matched_new.contains(&n) {
+                continue;
+            }
+            let (tx, ty) = tl(&new_frags[n].0);
+            let (fx, fy) = nearest_matched_new(u.cx, u.cy, &matched, &new_u, |&(o, _)| {
+                tl(&old_frags[o].0)
+            })
+            .unwrap_or((tx, ty));
+            anims.push(GlyphAnim {
+                src: 1,
+                bx0: new_frags[n].0.0,
+                by0: new_frags[n].0.1,
+                bx1: new_frags[n].0.2,
+                by1: new_frags[n].0.3,
+                from_x: fx,
+                from_y: fy,
+                to_x: tx,
+                to_y: ty,
+                from_op: 0.0,
+                to_op: 1.0,
+            });
+        }
+        Some(TransformFragmentPlan {
+            target: plan.target.clone(),
+            old: plan.old.clone(),
+            start_ms: plan.start_ms,
+            end_ms: plan.end_ms,
+            easing: plan.easing.clone(),
+            old_body: plan.old_body.clone(),
+            new_body: plan.new_body.clone(),
+            old_inner,
+            new_inner,
+            anims,
+            formula_cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Render a body at the page origin (top-left) and return its SVG string.
+    /// Rendering at the origin means each fragment's measured bbox (in page pt)
+    /// is already relative to the formula's top-left — exactly the offset the
+    /// compositor adds to the target mobject's position at render time.
+    fn render_formula_svg(&self, body: &str, preamble: &str) -> Option<String> {
+        let src = place_source(self.page_w, self.page_h, 0.0, 0.0, 100.0, 0.0, body, preamble);
+        let doc = self.compile_cached(&src).ok()?;
+        let page = doc.pages().first()?;
+        Some(typst_svg::svg(page, &SvgOptions::default()))
+    }
+
+    /// Extract every positioned glyph / decoration from a formula's SVG (as
+    /// emitted by `typst_svg`). Returns the SVG's inner markup (kept verbatim
+    /// so the whole formula — `<defs>` included — can be re-embedded later for
+    /// clip+translate compositing) and, for each top-level drawable, its
+    /// absolute bounding box (pt, in the SVG's own coordinate space) plus a
+    /// stable signature used to match the same glyph across the old and new
+    /// formulas.
+    ///
+    /// Typst renders every glyph as `<use xlink:href="#sym">` referencing a
+    /// `<path>` outline inside `<defs>`, and decorations (fraction bars, roots,
+    /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
+    /// applying its (and ancestors') transforms to its path geometry, and sign
+    /// it by the path data so identical glyphs match across formulas.
+    fn extract_formula(svg: &str) -> Option<(String, Vec<((f64, f64, f64, f64), String)>)> {
+        let doc = roxmltree::Document::parse(svg).ok()?;
+        let root = doc.root_element();
+        // Inner markup: everything between `<svg …>` and `</svg>`.
+        let inner = {
+            let open = svg.find("<svg")?;
+            let after = open + svg[open..].find('>')? + 1;
+            let end = svg.rfind("</svg>")?;
+            svg[after..end].to_string()
+        };
+        // Gather symbol path data from <defs> so <use> can resolve outlines.
+        let mut symbols: HashMap<String, String> = HashMap::new();
+        for defs in root.children().filter(|e| e.tag_name().name() == "defs") {
+            for sym in defs.children().filter(|e| e.tag_name().name() == "symbol") {
+                if let Some(id) = sym.attribute("id") {
+                    if let Some(path) = sym.children().find(|e| e.tag_name().name() == "path") {
+                        if let Some(d) = path.attribute("d") {
+                            symbols.insert(id.to_string(), d.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let mut frags = Vec::new();
+        for child in root.children() {
+            if child.is_element() && child.tag_name().name() != "defs" {
+                collect_formula_leaves(
+                    &child,
+                    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                    &symbols,
+                    &mut frags,
+                );
+            }
+        }
+        if frags.is_empty() {
+            None
+        } else {
+            Some((inner, frags))
+        }
+    }
+
+    /// Render a body at an explicit absolute page position (cm) — used for
+    /// transform glyph fragments. No sprite cache (positions change per frame).
+    fn render_placed_pixels(
+        &self,
+        body: &str,
+        x_cm: f64,
+        y_cm: f64,
+        scale_pct: f64,
+        rotation: f64,
+        pixel_per_pt: f32,
+        pw: f64,
+        ph: f64,
+    ) -> Result<RenderedFrame, CandyError> {
+        let preamble = imports_preamble(&self.scene);
+        let placed = place_source(pw, ph, x_cm, y_cm, scale_pct, rotation, body, &preamble);
+        let doc = self.compile_cached(&placed)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let opts = RenderOptions {
+            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
+            render_bleed: false,
+        };
+        let pix = render(page, &opts);
+        Ok(RenderedFrame {
+            width: pix.width() as usize,
+            height: pix.height() as usize,
+            rgba: pix.data().to_vec(),
+        })
+    }
+
+    /// Render the whole old (`src == 0`) or new (`src == 1`) formula to a
+    /// page-sized RGBA at the page origin, so each `GlyphAnim` can be cropped
+    /// from it by its `bx*..` box (which is already in page pt). Cached per
+    /// `(src, quantized_ppi)` so the formula is rasterized once per plan.
+    fn formula_rgba(
+        &self,
+        p: &TransformFragmentPlan,
+        src: u8,
+        ppi: f32,
+        pw: f64,
+        ph: f64,
+    ) -> Result<Arc<RenderedFrame>, CandyError> {
+        let ppi_q = (ppi * 100.0).round() as u32;
+        let key = (src, ppi_q);
+        if let Some(f) = p.formula_cache.lock().unwrap().get(&key) {
+            return Ok(f.clone());
+        }
+        let body = if src == 0 { &p.old_body } else { &p.new_body };
+        let frame = Arc::new(self.render_placed_pixels(body, 0.0, 0.0, 100.0, 0.0, ppi, pw, ph)?);
+        p.formula_cache.lock().unwrap().insert(key, frame.clone());
+        Ok(frame)
+    }
+
+    /// Whether `label` is hidden by an active per-glyph transform (its `target`
+    /// or `old` mobject), so the renderer can draw the interpolated fragments
+    /// instead. Only plans that actually produced fragments hide their labels.
+    pub(crate) fn transform_hidden(&self, label: &Label, time_ms: u32) -> bool {
+        for p in &self.transform_fragments {
+            if time_ms >= p.start_ms && time_ms < p.end_ms && (&p.target == label || &p.old == label)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Interpolated transform state for the plan `p` at `time_ms`: the target
+    /// mobject's current top-left (cm) and the eased progress `te`. Returns
+    /// `None` when the frame is outside the plan window.
+    fn transform_progress(
+        &self,
+        p: &TransformFragmentPlan,
+        states: &HashMap<Label, FrameData>,
+        time_ms: u32,
+    ) -> Option<(f64, f64, f64)> {
+        if time_ms < p.start_ms || time_ms >= p.end_ms {
+            return None;
+        }
+        let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
+        let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+        let (sx, sy) = states
+            .get(&p.target)
+            .map(|s| (nat_cm.0 + s.x, nat_cm.1 + s.y))
+            .unwrap_or(nat_cm);
+        let denom = (p.end_ms - p.start_ms).max(1) as f64;
+        let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
+        let te = (p.easing.resolve())(t);
+        Some((sx, sy, te))
+    }
+
+    /// Build the interpolated glyph-fragment overlays for the current frame and
+    /// composite them *directly* into `canvas` (so they are warped by the camera
+    /// together with the other mobjects, and we never allocate a full-page
+    /// buffer per fragment — which made rendering pathologically slow).
+    ///
+    /// Each `GlyphAnim` is cropped from the whole old/new formula (rasterized
+    /// once at the page origin and cached) by its `bx*..` box, then composited at
+    /// its interpolated position. The position adds the target mobject's natural
+    /// offset (`nat`) plus its current translation (`state.x/y`) so the transform
+    /// stays glued to the mobject and to the rest of the scene. The cm→pt→px
+    /// scaling (`* PT_PER_CM * ppi`) is essential: dropping `PT_PER_CM` would
+    /// place every fragment ~28× too close to the origin, leaving stray glyphs
+    /// scattered over the canvas (the "residual garbage" artefact).
+    pub(crate) fn transform_fragment_frames(
+        &self,
+        states: &HashMap<Label, FrameData>,
+        time_ms: u32,
+        pixel_per_pt: f32,
+        pw: f64,
+        ph: f64,
+        canvas: &mut [u8],
+        w: usize,
+        h: usize,
+    ) -> Result<(), CandyError> {
+        let ppi = pixel_per_pt as f64;
+        for p in &self.transform_fragments {
+            let Some((sx, sy, te)) = self.transform_progress(p, states, time_ms) else {
+                continue;
+            };
+            for f in &p.anims {
+                let lx = f.from_x + (f.to_x - f.from_x) * te;
+                let ly = f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_op + (f.to_op - f.from_op) * te;
+                if op <= 0.001 {
+                    continue;
+                }
+                let whole = self.formula_rgba(p, f.src, pixel_per_pt, pw, ph)?;
+                let crop = crop_formula_rgba(&whole, f.bx0, f.by0, f.bx1, f.by1, pixel_per_pt);
+                // cm (nat + state + interpolation) -> pt -> px
+                let fx_px = (sx + lx) * PT_PER_CM * ppi;
+                let fy_px = (sy + ly) * PT_PER_CM * ppi;
+                composite_over_at(canvas, &crop, op, fx_px, fy_px, w, h);
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit the per-glyph transform SVG overlay for the current frame.
+    ///
+    /// For each active plan the whole old/new formula is embedded exactly ONCE
+    /// (its inner markup, with symbol ids localized under a per-plan prefix and
+    /// wrapped in a single `<g id=…>` inside `<defs>`), then each fragment is
+    /// drawn as a clipped `<use>` of that group. Embedding the formula once
+    /// (instead of repeating the markup inside every fragment's clip) keeps the
+    /// SVG small and prevents neighbouring glyphs from leaking through a
+    /// slightly-off clip box (the "residual garbage" artefact). The clip + the
+    /// translate follow the target mobject (nat + state) so the transform stays
+    /// aligned with the rest of the scene.
+    pub(crate) fn transform_overlay_svg(
+        &self,
+        states: &HashMap<Label, FrameData>,
+        time_ms: u32,
+    ) -> String {
+        let mut out = String::new();
+        // Pass 1: symbol definitions (one <defs> per active plan).
+        for (pi, p) in self.transform_fragments.iter().enumerate() {
+            if time_ms < p.start_ms || time_ms >= p.end_ms {
+                continue;
+            }
+            let prefix = self.transform_id_prefix(&p.target, pi);
+            let old_g = format!("tf_{prefix}_old");
+            let new_g = format!("tf_{prefix}_new");
+            out.push_str(&format!(
+                "<defs><g id=\"{old_g}\">{old}</g><g id=\"{new_g}\">{new}</g></defs>\n",
+                old = localize_formula_ids(&p.old_inner, &old_g),
+                new = localize_formula_ids(&p.new_inner, &new_g),
+            ));
+        }
+        // Pass 2: the clipped, translated <use> for every fragment.
+        for (pi, p) in self.transform_fragments.iter().enumerate() {
+            let Some((sx, sy, te)) = self.transform_progress(p, states, time_ms) else {
+                continue;
+            };
+            let prefix = self.transform_id_prefix(&p.target, pi);
+            let old_g = format!("tf_{prefix}_old");
+            let new_g = format!("tf_{prefix}_new");
+            for (idx, f) in p.anims.iter().enumerate() {
+                let lx = f.from_x + (f.to_x - f.from_x) * te;
+                let ly = f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_op + (f.to_op - f.from_op) * te;
+                if op <= 0.001 {
+                    continue;
+                }
+                let grp = if f.src == 0 { &old_g } else { &new_g };
+                // Translate so the fragment (at formula-local bx0,by0) lands at
+                // the interpolated page position (sx+lx, sy+ly) in pt.
+                let tx = (sx + lx) * PT_PER_CM - f.bx0;
+                let ty = (sy + ly) * PT_PER_CM - f.by0;
+                let bw = (f.bx1 - f.bx0).max(0.0);
+                let bh = (f.by1 - f.by0).max(0.0);
+                let cid = format!("tf_{prefix}_{idx}");
+                out.push_str(&format!(
+                    "<g opacity=\"{op:.4}\" transform=\"translate({tx:.4}, {ty:.4})\">\n\
+                     <clipPath id=\"{cid}\"><rect x=\"{bx0:.4}\" y=\"{by0:.4}\" width=\"{bw:.4}\" height=\"{bh:.4}\"/></clipPath>\n\
+                     <use xlink:href=\"#{grp}\" clip-path=\"url(#{cid})\"/>\n</g>\n",
+                    bx0 = f.bx0,
+                    by0 = f.by0,
+                ));
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShapeUnit, match_shapes};
+
+    fn unit(sig: &str, cx: f64, cy: f64) -> ShapeUnit {
+        ShapeUnit {
+            sig: sig.to_string(),
+            cx,
+            cy,
+        }
+    }
+
+    /// Repeated identical glyphs must be paired by geometric proximity, not by
+    /// source order. Old `x`s at 0 and 100 with new `x`s at 110 and 5 must pair
+    /// (0↔5) and (100↔110) — the shortest total travel — even though the naive
+    /// order-based pairing would be (0↔110), (100↔5).
+    #[test]
+    fn match_shapes_pairs_by_proximity_not_order() {
+        let old = vec![unit("x", 0.0, 0.0), unit("x", 100.0, 0.0)];
+        let new = vec![unit("x", 110.0, 0.0), unit("x", 5.0, 0.0)];
+        let mut m = match_shapes(&old, &new);
+        m.sort();
+        assert_eq!(m, vec![(0, 1), (1, 0)], "expected nearest-neighbour pairing");
+    }
+
+    /// Only same-signature units are ever paired; a differing glyph is left
+    /// unmatched (to be faded), and the matched count equals the per-signature
+    /// multiset intersection size.
+    #[test]
+    fn match_shapes_respects_signature_and_multiset_count() {
+        // old: a, +, b, =, c   new: a, +, b, +, d, =, c
+        let old = vec![
+            unit("a", 0.0, 0.0),
+            unit("+", 10.0, 0.0),
+            unit("b", 20.0, 0.0),
+            unit("=", 30.0, 0.0),
+            unit("c", 40.0, 0.0),
+        ];
+        let new = vec![
+            unit("a", 0.0, 0.0),
+            unit("+", 10.0, 0.0),
+            unit("b", 20.0, 0.0),
+            unit("+", 25.0, 0.0),
+            unit("d", 30.0, 0.0),
+            unit("=", 40.0, 0.0),
+            unit("c", 50.0, 0.0),
+        ];
+        let m = match_shapes(&old, &new);
+        // 5 old units all have a same-signature counterpart -> 5 matched.
+        assert_eq!(m.len(), 5, "matched: {m:?}");
+        // The single old '+' must pair with the nearest new '+' (index 1 @10),
+        // not the farther one (index 3 @25).
+        let plus = m.iter().find(|(o, _)| *o == 1).unwrap();
+        assert_eq!(plus.1, 1, "old '+' should pair with nearest new '+'");
     }
 }

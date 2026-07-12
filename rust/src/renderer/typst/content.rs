@@ -192,25 +192,6 @@ fn subtitle_place_expr(sub: &Subtitle, margin: f64) -> String {
     }
 }
 
-/// Longest-common-subsequence length table for token alignment. `dp[i][j]` is
-/// the LCS length of `a[i..]` and `b[j..]`. Used to match old/new glyph tokens
-/// so common runs stay put while only the differing tokens fade in/out.
-pub(crate) fn lcs_table(a: &[String], b: &[String]) -> Vec<Vec<usize>> {
-    let n = a.len();
-    let m = b.len();
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            if a[i] == b[j] {
-                dp[i][j] = dp[i + 1][j + 1] + 1;
-            } else {
-                dp[i][j] = dp[i + 1][j].max(dp[i][j + 1]);
-            }
-        }
-    }
-    dp
-}
-
 /// Compile a subtitle's body to a single-page Typst document, placed at the
 /// subtitle's resolved anchor and with `ecval(...)` counters substituted.
 pub(crate) fn subtitle_doc(

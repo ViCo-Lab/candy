@@ -53,13 +53,17 @@ semantics enforced by the pipeline:
   `play` / transform is attributed to `ctx.current_scene` (the innermost enclosing
   scene) via `ctx.label_scene`. Entering a child scene pushes `current_scene` onto
   a stack; leaving it restores the parent.
-- **One page per scene** — a scene's `page_size` (its `width`/`height`, read from
-  the *direct* named args only) defines the canvas of every frame in that scene.
+- **Per-page canvas** — a scene's `page_size` (its `width`/`height`, read from the
+  *direct* named args only) defines the size of *each* page in that scene.
   `Scene::effective_page_pt(scene_id)` inherits the size from the nearest ancestor
   that declares one, then the 16cm × 9cm default.
-- **Auto-split** — content overflowing a scene's page is **warned** (not hard-split)
-  by the renderer's `ensure_natural()` overflow check, signalling that it should be
-  broken into additional scenes.
+- **Cross-page scene** — content overflowing a scene's page spills onto subsequent
+  pages. The mobjects stay in **one** scene (data shared: same ownership, same
+  timeline), but are laid out across the overflow pages and the canvas is the
+  vertical stack of those pages in page order, so nothing is clipped off a single
+  page and the scene is *not* split into separate sub-scenes. `ensure_natural()`
+  reads every page of the natural-layout pass and offsets each mobject's natural
+  y by `k * page_h` (page index `k`).
 - **Implicit root** — when `scenes` is empty (no `scene` call), the whole document
   is one implicit scene (id `0`) whose page is the root page size; this path is
   backward-compatible with v0.1 (no `scenes` field). The renderer falls back to

@@ -95,8 +95,10 @@ scene. Without `#scene`, candy defaults to 16 cm × 9 cm.
   active scene at each frame time, so the child visually replaces the parent.
 - **Typst scope** — a mobject / `play` / `subtitle` belongs to the innermost `scene`
   whose body encloses it (the scope in which it is evaluated).
-- **One page per scene** — a scene occupies exactly one page; its `width`/`height`
-  set the frame size. Content overflowing the page is warned about.
+- **Cross-page scene** — a scene's `width`/`height` set the size of *each* page.
+  Content overflowing the page spills onto subsequent pages; the mobjects stay in
+  one scene (shared data) but the canvas becomes the vertical stack of all pages
+  in page order, so nothing is clipped or split into sub-scenes.
 - **Auto-split** — content spanning multiple pages is automatically split into
   multiple scenes (one per page) when no explicit root `scene` wraps it.
 - **Implicit root** — with no `scene` call, the entire document is one implicit root
