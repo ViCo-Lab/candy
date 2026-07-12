@@ -836,9 +836,11 @@ pub struct ScopeInfo {
 ///   innermost scene that encloses it at parse time;
 /// - a scene may **overflow onto multiple pages** (a *cross-page scene*): its
 ///   mobjects stay in **one** scene (data shared — same ownership, same timeline)
-///   but are laid out across the overflow pages, and the canvas is the vertical
-///   stack of those pages in page order (nothing is clipped or split into
-///   sub-scenes);
+///   but are laid out across the overflow pages, and the renderer plays those
+///   pages **in sequence** on a single-page canvas (it does NOT grow the canvas);
+///   each page has its own timeline and the other pages stay frozen until the
+///   current page finishes and the renderer auto-advances (nothing is clipped or
+///   split into sub-scenes);
 /// - with **no explicit root scene**, the whole document is one implicit scene
 ///   (id `0`), following the same split rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]

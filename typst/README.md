@@ -97,8 +97,10 @@ scene. Without `#scene`, candy defaults to 16 cm × 9 cm.
   whose body encloses it (the scope in which it is evaluated).
 - **Cross-page scene** — a scene's `width`/`height` set the size of *each* page.
   Content overflowing the page spills onto subsequent pages; the mobjects stay in
-  one scene (shared data) but the canvas becomes the vertical stack of all pages
-  in page order, so nothing is clipped or split into sub-scenes.
+  one scene (shared data) but the renderer plays the pages **in sequence** on a
+  single-page canvas (the canvas does *not* grow). Each page has its own timeline
+  and the other pages stay frozen until the current page finishes and the renderer
+  auto-advances, so nothing is clipped or split into sub-scenes.
 - **Auto-split** — content spanning multiple pages is automatically split into
   multiple scenes (one per page) when no explicit root `scene` wraps it.
 - **Implicit root** — with no `scene` call, the entire document is one implicit root

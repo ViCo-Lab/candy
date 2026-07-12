@@ -663,12 +663,11 @@ impl Renderer {
             sp.insert(0, (self.page_w, self.page_h));
         } else {
             for s in &self.scene.scenes {
+                // Each scene's canvas is exactly one page (its `width`/`height`).
+                // Overflow pages play in sequence on this single-page canvas; they
+                // do NOT stack vertically (see [`pages`]).
                 let (pw, ph) = self.scene.effective_page_pt(s.id);
-                let pages = scene_page_counts.get(&s.id).copied().unwrap_or(1).max(1);
-                // Cross-page scene: stack every overflow page under the first, so
-                // the canvas is `ph * pages` tall and mobjects render in page
-                // order (page 1 at top, page 2 below it, …).
-                sp.insert(s.id, (pw, ph * pages as f64));
+                sp.insert(s.id, (pw, ph));
             }
         }
         self.scene_pages = sp;
@@ -2099,12 +2098,13 @@ fn transform_composes_with_concurrent_animate() {
 
 /// Regression: a scene whose content overflows its page becomes a **cross-page
 /// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
-/// timeline) but are laid out across the overflow pages, and the canvas is the
-/// vertical stack of those pages in page order. The rendered SVG must therefore
-/// be taller than a single page and exactly a multiple of the page height (not
-/// clipped to one page, and not split into separate sub-scenes).
+/// timeline) but are laid out across the overflow pages, and the renderer plays
+/// the pages **in sequence** on a single-page canvas (it does NOT grow the
+/// canvas). The rendered SVG must therefore be exactly one page tall (not
+/// stacked), and only the current page's mobjects are drawn — so the first
+/// frame shows fewer than all of them; the rest play on later pages.
 #[test]
-fn overflowing_scene_stacks_pages_in_order() {
+fn overflowing_scene_plays_pages_in_sequence() {
     // A short (2cm-tall) page with six 1cm-tall blocks overflows onto several
     // pages.
     let src = "#import \"candy\": *\n\
@@ -2136,14 +2136,17 @@ fn overflowing_scene_stacks_pages_in_order() {
             l[start..start + end].parse::<f64>().ok()
         })
         .expect("svg height attribute");
-    // Must have overflowed onto more than one page and stacked them exactly.
+    // The canvas must stay exactly ONE page tall — not stacked, not grown.
     assert!(
-        h_attr > page_h_pt + 1.0,
-        "cross-page scene must stack overflow pages (height {h_attr} > {page_h_pt})"
+        (h_attr - page_h_pt).abs() < 1.0,
+        "cross-page scene canvas must stay a single page (height {h_attr} ≈ {page_h_pt}), not stacked"
     );
+    // And the first frame must draw only the current page's mobjects (fewer than
+    // all six), proving sequential page playback rather than one giant canvas.
+    let drawn = svg.matches("<g opacity=").count();
     assert!(
-        ((h_attr / page_h_pt).round() - h_attr / page_h_pt).abs() < 1e-6,
-        "canvas height must be an exact multiple of the page height (got {h_attr} / {page_h_pt})"
+        drawn > 0 && drawn < 6,
+        "first frame should show only the current page's mobjects (drew {drawn} of 6)"
     );
     std::fs::remove_file(&tmp).ok();
 }
