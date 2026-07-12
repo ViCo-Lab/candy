@@ -85,6 +85,34 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
         root.end_ms = ctx.cursor;
     }
+    // Scenes behave like slides: a scene stays on stage from its `start_ms`
+    // until the next sibling scene begins (or until the end of the document,
+    // for the last scene). Without this, a scene's interval ends the moment its
+    // own animation window ends, so its content would vanish the instant the
+    // timeline moved past it — and, worse, when no explicit scene contained the
+    // current time the *root* scene became active and every explicit scene's
+    // content leaked onto the canvas at once (scenes overlapping each other).
+    // Extending each scene to the next sibling keeps scenes mutually exclusive
+    // (no overlap) while still letting a scene's content persist for the rest
+    // of the timeline. `active_scene_at` already returns the *deepest* enclosing
+    // scene, so nested scenes keep hiding their parents.
+    let doc_end = ctx.cursor;
+    for i in 0..ctx.scenes.len() {
+        let (sid, parent, start) = {
+            let s = &ctx.scenes[i];
+            (s.id, s.parent, s.start_ms)
+        };
+        let next_start = ctx
+            .scenes
+            .iter()
+            .filter(|o| o.id != sid && o.parent == parent && o.start_ms >= start)
+            .map(|o| o.start_ms)
+            .min();
+        let new_end = next_start.unwrap_or(doc_end);
+        if ctx.scenes[i].end_ms < new_end {
+            ctx.scenes[i].end_ms = new_end;
+        }
+    }
     // Attribute every declared label to its owning scene in *declaration*
     // order (`label_order` is recorded the first time each label is registered).
     // This keeps the natural top-to-bottom flow layout and the paint z-order
@@ -909,6 +937,56 @@ mod tests {
 
         assert_eq!(scene.active_scene_at(10), 1);
         assert_eq!(scene.active_scene_at(40), 2);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Regression: sibling `#scene` calls must be *sequential, mutually
+    /// exclusive* slides — at any moment exactly one is the active scene, and
+    /// the timeline never falls back to the root scene while a sibling covers
+    /// it. This is what prevents scenes from all rendering on top of each other
+    /// ("scene pollution / overlap"). Each scene's interval is also extended to
+    /// the next sibling's start (or the document end) so a scene persists until
+    /// replaced.
+    #[test]
+    fn sibling_scenes_are_sequential_and_mutually_exclusive() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#scene(width: 16cm, height: 9cm)[
+  #mobject("a", circle(radius: 1cm))
+  #pause(duration: 50)
+]
+#scene(width: 16cm, height: 9cm)[
+  #mobject("b", rect(width: 1cm))
+  #pause(duration: 50)
+]
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_sibling_scene.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+
+        assert_eq!(scene.scenes.len(), 3, "root + 2 siblings: {:?}", scene.scenes);
+        let owner = scene.label_scene_map();
+        assert_eq!(owner[&Label("a".into())], 1, "a → scene 1");
+        assert_eq!(owner[&Label("b".into())], 2, "b → scene 2");
+
+        let s1 = scene.scenes.iter().find(|s| s.id == 1).unwrap();
+        let s2 = scene.scenes.iter().find(|s| s.id == 2).unwrap();
+        // Sequential: scene 1 ends exactly where scene 2 begins (no overlap).
+        assert_eq!(
+            s1.end_ms, s2.start_ms,
+            "sibling scenes must not overlap: {:?} {:?}",
+            s1, s2
+        );
+        // During scene 1's window only scene 1 is active (never the root).
+        assert_eq!(scene.active_scene_at(10), 1);
+        assert_ne!(scene.active_scene_at(10), 0, "root must not leak over scene 1");
+        // During scene 2's window only scene 2 is active.
+        assert_eq!(scene.active_scene_at(60), 2);
+        assert_ne!(scene.active_scene_at(60), 0, "root must not leak over scene 2");
+        // Scene 2 (the last) persists to the document end, not just its content.
+        assert_eq!(s2.end_ms, 100, "last scene extends to doc end: {:?}", s2);
         std::fs::remove_file(&tmp).ok();
     }
 

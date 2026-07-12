@@ -34,7 +34,7 @@ use std::path::Path;
 use crate::core::error::CandyError;
 use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
-use crate::renderer::container;
+use crate::renderer::encode::container;
 
 /// Video codec selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +144,7 @@ impl Codec {
 ///
 /// For self-contained codecs (Av1, H264, H265-without-ffmpeg), this runs the
 /// in-process encoder. For ffmpeg codecs (X264, X265, VAAPI, VideoToolbox,
-/// QSV), use [`crate::renderer::ffmpeg::encode_via_ffmpeg`] instead — that
+/// QSV), use [`crate::renderer::encode::ffmpeg::encode_via_ffmpeg`] instead — that
 /// function returns already-muxed bytes and bypasses this path entirely.
 pub fn encode_frames(
     frames: &[RenderedFrame],
@@ -174,32 +174,32 @@ pub fn encode_frames(
         // H.264 is the default self-contained codec. If openh264 fails for any
         // reason, transparently fall back to AV1 (rav1e) so a valid,
         // self-contained video is still produced.
-        Codec::H264 => match crate::renderer::h264::encode(&composed, fps) {
+        Codec::H264 => match crate::renderer::encode::h264::encode(&composed, fps) {
             Ok(v) => Ok(v),
             Err(e) => {
                 eprintln!(
                     "warn: [{}] H.264 encode failed, falling back to AV1: {e}",
                     e.code()
                 );
-                crate::renderer::rav1e::encode(&composed, fps)
+                crate::renderer::encode::rav1e::encode(&composed, fps)
             }
         },
         // AV1 (opt-in via `--codec av1`). `rav1e` 0.8.1 can panic on some frame
         // geometries; `encode` already retries in all-intra mode, and only if
         // that also fails do we fall back to H.264.
-        Codec::Av1 => match crate::renderer::rav1e::encode(&composed, fps) {
+        Codec::Av1 => match crate::renderer::encode::rav1e::encode(&composed, fps) {
             Ok(v) => Ok(v),
             Err(e) => {
                 eprintln!(
                     "warn: [{}] AV1 encode failed, falling back to H.264: {e}",
                     e.code()
                 );
-                crate::renderer::h264::encode(&composed, fps)
+                crate::renderer::encode::h264::encode(&composed, fps)
             }
         },
         Codec::H265 => {
             // Try ffmpeg + x265 first; if ffmpeg is not available, return E007.
-            if crate::renderer::ffmpeg::find_ffmpeg().is_some() {
+            if crate::renderer::encode::ffmpeg::find_ffmpeg().is_some() {
                 // This path returns muxed bytes, so callers must use the
                 // ffmpeg path directly. Here we return an error to signal
                 // the caller should use encode_via_ffmpeg instead.

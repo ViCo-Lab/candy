@@ -43,7 +43,7 @@ use crate::core::scheduler;
 use crate::parser::extract_scene_from_svg;
 use crate::parser::parse_tyx;
 use crate::renderer::Renderer;
-use crate::renderer::video::{self, Container, EncodedVideo};
+use crate::renderer::encode::{self, Container, EncodedVideo};
 
 /// Input source for the `build` pipeline.
 ///
@@ -248,10 +248,10 @@ pub fn build_input_with_gpu(
     #[cfg(not(feature = "gpu"))]
     let _gpu_ok = false;
     #[cfg(feature = "gpu")]
-    let mut gpu_renderer: Option<crate::renderer::gpu::GpuRenderer> = None;
+    let mut gpu_renderer: Option<crate::renderer::raster::gpu::GpuRenderer> = None;
     #[cfg(feature = "gpu")]
     if gpu_ok {
-        match crate::renderer::gpu::GpuRenderer::new() {
+        match crate::renderer::raster::gpu::GpuRenderer::new() {
             Ok(g) => {
                 eprintln!("info: GPU rasterization enabled (vello + wgpu)");
                 gpu_renderer = Some(g);
@@ -294,7 +294,7 @@ pub fn build_input_with_gpu(
 
     // Draft: persist the RGBA frames under `.candy/` for inspection.
     std::fs::create_dir_all(intermediate_dir)?;
-    video::write_rgba_draft(&probe, intermediate_dir, "frames")?;
+    encode::write_rgba_draft(&probe, intermediate_dir, "frames")?;
 
     // Step 6: encode + mux.
     //
@@ -304,7 +304,7 @@ pub fn build_input_with_gpu(
     // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
     // back to E007.
     let bytes: Vec<u8> = if codec.uses_ffmpeg()
-        || (codec == Codec::H265 && crate::renderer::ffmpeg::find_ffmpeg().is_some())
+        || (codec == Codec::H265 && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some())
     {
         // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
         let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
@@ -312,7 +312,7 @@ pub fn build_input_with_gpu(
         let tw = max_w.max(16).next_multiple_of(2);
         let th = max_h.max(16).next_multiple_of(2);
         let composed: Vec<_> = probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
-        match crate::renderer::ffmpeg::encode_via_ffmpeg(&composed, fps, codec, container) {
+        match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(&composed, fps, codec, container) {
             Ok(bytes) => bytes,
             Err(e) => {
                 eprintln!(
@@ -328,7 +328,7 @@ pub fn build_input_with_gpu(
         }
     } else {
         // Self-contained path: rav1e/openh264 + candy's muxer.
-        let video: EncodedVideo = match video::encode_frames(&probe, fps, codec) {
+        let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!(
@@ -342,8 +342,8 @@ pub fn build_input_with_gpu(
                 return Err(e);
             }
         };
-        let audio = video::collect_audio(&scene.audio, fps);
-        video::mux(&video, audio.as_ref(), container)?
+        let audio = encode::collect_audio(&scene.audio, fps);
+        encode::mux(&video, audio.as_ref(), container)?
     };
 
     if let Some(parent) = output.parent() {

@@ -8,14 +8,10 @@
 //!   FFmpeg, no `x264`/`x265` CLI, no system commands.
 
 pub mod audio;
-pub mod container;
+pub mod encode;
 #[cfg(feature = "gpu")]
-pub mod gpu;
-pub mod h264;
-pub mod rav1e;
+pub mod raster;
 pub mod typst;
-pub mod video;
-pub mod ffmpeg;
 
 /// A single rasterized animation frame (RGBA8, row-major).
 #[derive(Clone)]
@@ -28,4 +24,4 @@ pub struct RenderedFrame {
 pub use typst::Renderer;
 #[cfg(test)]
 pub(crate) use typst::compile_file_for_test;
-pub use video::{encode_frames, mux, collect_audio, Codec, Container, EncodedVideo};
+pub use encode::{encode_frames, mux, collect_audio, Codec, Container, EncodedVideo};

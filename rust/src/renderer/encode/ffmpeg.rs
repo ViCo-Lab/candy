@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::CandyError;
 use crate::renderer::RenderedFrame;
-use crate::renderer::video::{Codec, Container};
+use crate::renderer::encode::{Codec, Container};
 
 /// Monotonic counter for unique ffmpeg temp-file names (avoids collisions
 /// when multiple candy processes run concurrently).

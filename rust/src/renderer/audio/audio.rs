@@ -265,7 +265,7 @@ pub fn transcode_via_ffmpeg(
     input_path: &str,
     target_codec: AudioCodec,
 ) -> Option<std::path::PathBuf> {
-    let ffmpeg = crate::renderer::ffmpeg::find_ffmpeg()?;
+    let ffmpeg = crate::renderer::encode::ffmpeg::find_ffmpeg()?;
     let (codec_name, ext) = match target_codec {
         AudioCodec::Opus => ("libopus", "opus"),
         AudioCodec::Aac => ("aac", "aac"),

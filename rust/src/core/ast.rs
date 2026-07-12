@@ -566,22 +566,6 @@ impl Scene {
         best.or(self.root_scene).unwrap_or(0)
     }
 
-    /// Whether `ancestor` is an ancestor of `descendant` in the scene tree
-    /// (including the case `ancestor == descendant`). Used by the renderer's
-    /// auto-hide rule: a scene is hidden only when one of its *descendants* is
-    /// the active scene — so when the root scene is active, every mobject stays
-    /// visible regardless of which scene owns it.
-    pub fn scene_is_ancestor(&self, ancestor: usize, descendant: usize) -> bool {
-        let mut cur = Some(descendant);
-        while let Some(id) = cur {
-            if id == ancestor {
-                return true;
-            }
-            cur = self.scenes.iter().find(|s| s.id == id).and_then(|s| s.parent);
-        }
-        false
-    }
-
     /// Resolve the effective canvas size (in Typst points) for `scene_id`,
     /// inheriting from the nearest ancestor that declares a page size, then
     /// the root scene, then the 16:9 default. A scene that declares no

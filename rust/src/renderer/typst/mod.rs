@@ -1183,13 +1183,16 @@ impl Renderer {
 
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
-            // Parent auto-hide: a label is hidden only when its owner scene is a
-            // proper ancestor of the active scene (a child scene is active, so
-            // its ancestors are hidden). When the root scene is active, every
-            // mobject stays visible regardless of which scene owns it.
+            // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
+            // the active scene (`label_scene[label] == active`). This is what
+            // makes scenes behave like independent slides — entering a child
+            // scene hides its parent, and when the root scene is active only the
+            // root's own mobjects are drawn (a child scene's content does NOT
+            // leak onto the root canvas). Mobjects not attributed to any scene
+            // (legacy / global) are kept visible.
             if !self.scene.scenes.is_empty() {
                 let owner = self.label_scene.get(*label).copied().unwrap_or(active);
-                if owner != active && self.scene.scene_is_ancestor(owner, active) {
+                if owner != active {
                     continue;
                 }
             }
@@ -1308,7 +1311,7 @@ impl Renderer {
     /// (modulo GPU rasterization differences like anti-aliasing quality), so
     /// the downstream video encoder consumes it unchanged.
     ///
-    /// Pass a reusable [`crate::renderer::gpu::GpuRenderer`] — constructing a
+    /// Pass a reusable [`crate::renderer::raster::gpu::GpuRenderer`] — constructing a
     /// wgpu device is expensive, so it should be created once and reused
     /// across every frame in the animation.
     #[cfg(feature = "gpu")]
@@ -1317,7 +1320,7 @@ impl Renderer {
         time_ms: u32,
         all_frames: &[FrameData],
         pixel_per_pt: f32,
-        gpu: &mut crate::renderer::gpu::GpuRenderer,
+        gpu: &mut crate::renderer::raster::gpu::GpuRenderer,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
         // 1. Produce the composite SVG for this frame (with opacity baked in).
         let svg_bytes = self.render_frame_at(time_ms, all_frames)?;
@@ -1414,13 +1417,16 @@ impl Renderer {
         }
 
         for label in labels {
-            // Parent auto-hide: a label is hidden only when its owner scene is a
-            // proper ancestor of the active scene (a child scene is active, so
-            // its ancestors are hidden). When the root scene is active, every
-            // mobject stays visible regardless of which scene owns it.
+            // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
+            // the active scene (`label_scene[label] == active`). This is what
+            // makes scenes behave like independent slides — entering a child
+            // scene hides its parent, and when the root scene is active only the
+            // root's own mobjects are drawn (a child scene's content does NOT
+            // leak onto the root canvas). Mobjects not attributed to any scene
+            // (legacy / global) are kept visible.
             if !self.scene.scenes.is_empty() {
                 let owner = self.label_scene.get(label).copied().unwrap_or(active);
-                if owner != active && self.scene.scene_is_ancestor(owner, active) {
+                if owner != active {
                     continue;
                 }
             }
@@ -2305,6 +2311,7 @@ fn transform_target_renders_after_window() {
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_after.tyx");
     std::fs::write(&tmp, src).unwrap();
@@ -2316,9 +2323,12 @@ fn transform_target_renders_after_window() {
     let mid = 30u32;
     let svg_mid = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
     assert!(svg_mid.contains("<svg"), "mid-window svg empty");
-    // After window (past end_ms): target shows new content — must contain a
-    // nested `<svg` for the rendered glyphs, not just the background rect.
-    let after = 200u32;
+    // After window (past the transform's end_ms, still inside the document): the
+    // target shows its new content — must contain a nested `<svg` for the
+    // rendered glyphs, not just the background rect. Scenes are mutually
+    // exclusive slides, so this also verifies the scene stays on stage (its
+    // interval is extended to the document end) and the target is not hidden.
+    let after = 90u32;
     let svg_after = String::from_utf8(r.render_frame_at(after, &frames).unwrap()).unwrap();
     let nested = svg_after.matches("<svg").count();
     assert!(
