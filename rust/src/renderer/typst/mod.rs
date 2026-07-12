@@ -663,9 +663,12 @@ impl Renderer {
             sp.insert(0, (self.page_w, self.page_h));
         } else {
             for s in &self.scene.scenes {
-                // Each scene's canvas is exactly one page (its `width`/`height`).
-                // Overflow pages play in sequence, they do not stack vertically.
-                sp.insert(s.id, self.scene.effective_page_pt(s.id));
+                let (pw, ph) = self.scene.effective_page_pt(s.id);
+                let pages = scene_page_counts.get(&s.id).copied().unwrap_or(1).max(1);
+                // Cross-page scene: stack every overflow page under the first, so
+                // the canvas is `ph * pages` tall and mobjects render in page
+                // order (page 1 at top, page 2 below it, …).
+                sp.insert(s.id, (pw, ph * pages as f64));
             }
         }
         self.scene_pages = sp;
@@ -2052,6 +2055,44 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
     assert!(
         !svg.contains("clip-path=\"url(#tf_eq_0_0)\"><g "),
         "fragments must not re-embed the full formula inside the clip"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: a per-glyph `transform` must compose with *other* `#animate`
+/// tracks on the same target (e.g. the formula glides AND scales/rotates at
+/// once). The fragment overlay's `<g transform>` must therefore carry the
+/// target's current `scale(` / `rotate(` so the glyphs inherit the extra
+/// animation instead of ignoring it (previously the transform only read the
+/// target's x/y translation and dropped scale/rotation, so any simultaneous
+/// move/scale/rotate on the transformed label silently did nothing).
+#[test]
+fn transform_composes_with_concurrent_animate() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #animate(\"eq\", scale: 2.0, rotation: 30deg, duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_compose.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Mid window: the transform is active AND the concurrent scale/rotate is
+    // part-way through, so every fragment group must carry both transforms
+    // (the transform inherits the target's live scale/rotation, not just x/y).
+    let mid = 30u32;
+    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    let groups = svg.matches("<g opacity=").count();
+    assert!(groups > 0, "expected fragment groups in overlay");
+    let scaled = svg.matches("scale(").count();
+    let rotated = svg.matches("rotate(").count();
+    assert!(
+        scaled > 0 && rotated > 0,
+        "fragments must inherit concurrent scale/rotate (scale={scaled}, rotate={rotated})"
     );
     std::fs::remove_file(&tmp).ok();
 }
