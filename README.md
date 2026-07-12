@@ -17,7 +17,9 @@ and encoding backend. Inspired by 3Blue1Brown's
 - Audio muxing for Opus (`.opus`/`.ogg` → MKV/WebM) and AAC (`.aac` → MP4).
 - Smooth **object transitions** (Manim-style `Transform`): morph a mobject into
   new inline content — including **formulas** — via `#transform`, keeping the
-  original label reusable; `#morph` / `#fade-transform` crossfade two mobjects.
+  original label reusable. For inline content the transform is glyph-by-glyph
+  (the old equation disassembles and reassembles into the new one); `#morph` /
+  `#fade-transform` crossfade two mobjects.
 - **Progressive text reveal** (`#reveal` / `#typewriter`) that types a string
   mobject in word- or character-by-word while its layout box stays reserved — so
   later mobjects never jump when the text appears.
@@ -55,9 +57,9 @@ them into per-frame Typst documents that are rendered and (optionally) encoded.
   animation unit (block-level, controllable like a mobject).
 - `#transform(target, to: <content>, duration: N, easing:..)` — Manim-style
   `Transform` / `ReplacementTransform`: smoothly morph `target`'s content into
-  the new inline `content` (a shape or a formula such as `[$a + b + d = c$]`);
-  the original `target` label keeps the new content, so you can keep animating
-  it. See `examples/transform_demo.tyx`.
+  the new inline `content` (a shape or a formula such as `[$a + b + d = c$]`).
+  For formulas/text this is glyph-by-glyph; the original `target` label keeps the
+  new content, so you can keep animating it. See `examples/transform_demo.tyx`.
 - `#morph(from, to, duration: N, easing:..)` / `#fade-transform(from, to, ..)` —
   crossfade two pre-registered mobjects (simplified `Transform` variant).
 

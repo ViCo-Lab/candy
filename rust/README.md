@@ -307,6 +307,16 @@ See [Error model](#error-model-e001e007) below.
   SVG (draft); `render_frame_pixels_par` produces RGBA8 pixels (data-parallel via rayon).
   `ensure_natural_public()` pre-computes the natural layout once so the parallel loop can
   share the `WorldState` via `Arc`.
+  - **Per-glyph `#transform`** (inline content): `build_transform_fragments` renders the
+    whole old and new bodies to SVG and `extract_formula` pulls every glyph/decoration
+    (fraction bars, roots, …) out as a positioned fragment via Typst's *own* SVG layout
+    (no custom token scanner). Old↔new fragments are matched by outline signature via LCS
+    into `GlyphAnim`s stored in `transform_fragments: Vec<TransformFragmentPlan>`; during
+    the window matched fragments glide, removed ones fade/slide out, and inserted ones
+    fade/slide in — so the content disassembles and reassembles glyph-by-glyph instead of
+    dissolving as one block. `tokenize_math` keeps fractions (`a/b`, `\frac{a}{b}`) intact
+    so the bar renders correctly. Shape transforms fall back to the crossfade + scale
+    morph.
 - `renderer::gpu` (feature `gpu`) — `GpuRenderer` rasterizes frames on the GPU via vello
   + wgpu (`render_frame_pixels_gpu`). Serial (single device); falls back to CPU if no
   adapter is found.

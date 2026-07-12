@@ -1,126 +1,134 @@
 [package]
-# Published to crates.io as `candy-animation` (the name `candy` is taken),
-# but the library crate and binary both keep the id `candy` (see [lib]/[[bin]]
-# below) so existing `use candy::...` imports and the `candy` CLI are unchanged.
-name = "candy-animation"
-version = "0.1.0"
-edition = "2024"
-description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
-license = "MIT"
-readme = "README.md"
-repository = "https://github.com/ViCo-Lab/candy"
-keywords = ["animation", "typst", "graphics", "manim", "video"]
-categories = ["graphics", "multimedia::video", "command-line-utilities"]
+    # Published to crates.io as `candy-animation` (the name `candy` is taken),
+    # but the library crate and binary both keep the id `candy` (see [lib]/[[bin]]
+    # below) so existing `use candy::...` imports and the `candy` CLI are unchanged.
+    name        = "candy-animation"
+    version     = "0.1.0"
+    edition     = "2024"
+    description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
+    license     = "MIT"
+    readme      = "README.md"
+    repository  = "https://github.com/ViCo-Lab/candy"
+    keywords    = ["animation", "typst", "graphics", "manim", "video"]
+    categories  = ["graphics", "multimedia::video", "command-line-utilities"]
 
-[package.metadata.candy]
-codename = "Ribose"
+    [package.metadata.candy]
+        codename = "Ribose"
 
 [lib]
-name = "candy"
-path = "src/lib.rs"
+    name = "candy"
+    path = "src/lib.rs"
 
 [[bin]]
-name = "candy"
-path = "src/main.rs"
+    name = "candy"
+    path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+    clap       = { version = "4", features = ["derive"] }
+    serde      = { version = "1", features = ["derive"] }
+    serde_json = "1"
 
-# Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
-# The internal typst crates are pulled in explicitly so we can build an in-memory
-# `World` to compile `.tyx` sources in-process.
-typst = "0.15"
-typst-render = "0.15"
-typst-svg = "0.15"
-typst-library = "0.15"
-typst-layout = "0.15"
-typst-syntax = "0.15"
-typst-utils = "0.15"
+    # Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
+    # The internal typst crates are pulled in explicitly so we can build an in-memory
+    # `World` to compile `.tyx` sources in-process.
+    typst         = "0.15"
+    typst-render  = "0.15"
+    typst-svg     = "0.15"
+    typst-library = "0.15"
+    typst-layout  = "0.15"
+    typst-syntax  = "0.15"
+    typst-utils   = "0.15"
 
-# typst-kit provides the same font discovery and package resolution that the
-# official `typst` CLI uses, so candy's in-process World behaves identically to
-# `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
-# NOTE: typst-kit's own `system-downloader` feature is intentionally NOT enabled
-# here. It pulls in `ureq` + `native-tls` + `openssl-sys`, which links the
-# *system* OpenSSL and breaks cross-compilation (no target-arch `libssl-dev` in
-# the cross container) and requires an OpenSSL dev package + perl on every host.
-# Instead, candy supplies its own `Downloader` (see `src/renderer/typst.rs`)
-# backed by `ureq` with the pure-Rust `rustls` TLS backend, so @preview fetch
-# needs no OpenSSL, no perl and no native library on any platform (host or
-# cross). `system-files` is what actually wires package resolution into the
-# World; the downloader implementation is candy's own.
-typst-kit = { version = "0.15", features = [
-    "embedded-fonts",
-    "scan-fonts",
-    "system-files",
-] }
+    # typst-kit provides the same font discovery and package resolution that the
+    # official `typst` CLI uses, so candy's in-process World behaves identically to
+    # `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
+    # NOTE: typst-kit's own `system-downloader` feature is intentionally NOT enabled
+    # here. It pulls in `ureq` + `native-tls` + `openssl-sys`, which links the
+    # *system* OpenSSL and breaks cross-compilation (no target-arch `libssl-dev` in
+    # the cross container) and requires an OpenSSL dev package + perl on every host.
+    # Instead, candy supplies its own `Downloader` (see `src/renderer/typst.rs`)
+    # backed by `ureq` with the pure-Rust `rustls` TLS backend, so @preview fetch
+    # needs no OpenSSL, no perl and no native library on any platform (host or
+    # cross). `system-files` is what actually wires package resolution into the
+    # World; the downloader implementation is candy's own.
+    typst-kit = { version = "0.15", features = [
+        "embedded-fonts",
+        "scan-fonts",
+        "system-files",
+    ] }
 
-# HTTP client for candy's @preview package downloader. The `tls` feature uses
-# the pure-Rust `rustls` + `webpki-roots` (bundled CA roots) backend — no
-# OpenSSL, no `native-tls`, no system cert store, no perl. This replaces
-# typst-kit's `native-tls`-based downloader.
-ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+    # HTTP client for candy's @preview package downloader. The `tls` feature uses
+    # the pure-Rust `rustls` + `webpki-roots` (bundled CA roots) backend — no
+    # OpenSSL, no `native-tls`, no system cert store, no perl. This replaces
+    # typst-kit's `native-tls`-based downloader.
+    ureq = { version = "2", default-features = false, features = [
+        "tls",
+        "gzip",
+    ] }
 
-# Mature keyframe / easing library. candy's `Easing` enum delegates its math
-# to `keyframe::functions::*` so we get well-tested implementations of the
-# standard ease curves (linear, quadratic, cubic, sine, circular, exponential,
-# smoothstep, bezier) for free, and only hand-roll the Manim-specific curves
-# (there_and_back, wiggle, lingering) that keyframe doesn't ship.
-keyframe = "1.1"
+    # Mature keyframe / easing library. candy's `Easing` enum delegates its math
+    # to `keyframe::functions::*` so we get well-tested implementations of the
+    # standard ease curves (linear, quadratic, cubic, sine, circular, exponential,
+    # smoothstep, bezier) for free, and only hand-roll the Manim-specific curves
+    # (there_and_back, wiggle, lingering) that keyframe doesn't ship.
+    keyframe = "1.1"
 
-# Lightweight AV1 encoding backend (no FFmpeg, pure Rust).
-# `default-features = false` disables the nasm assembly backend so it builds
-# with the portable Rust/C implementation on any host.
-# 0.8.1 is the latest published release (no 0.8.2 / 0.9 exists yet); the
-# rav1e encoder is made robust against its 0.8.1 tiling-panic via an
-# inter→all-intra retry in `src/renderer/rav1e.rs`.
-rav1e = { version = "0.8.1", default-features = false }
+    # Lightweight AV1 encoding backend (no FFmpeg, pure Rust).
+    # `default-features = false` disables the nasm assembly backend so it builds
+    # with the portable Rust/C implementation on any host.
+    # 0.8.1 is the latest published release (no 0.8.2 / 0.9 exists yet); the
+    # rav1e encoder is made robust against its 0.8.1 tiling-panic via an
+    # inter→all-intra retry in `src/renderer/rav1e.rs`.
+    rav1e = { version = "0.8.1", default-features = false }
 
-# In-process H.264 encoder. `openh264` links the system `libopenh264` library
-# at build time but performs all encoding in-process — candy never spawns a
-# system command (no `x264`/`x265`/FFmpeg CLI).
-openh264 = "0.9.7"
+    # In-process H.264 encoder. `openh264` links the system `libopenh264` library
+    # at build time but performs all encoding in-process — candy never spawns a
+    # system command (no `x264`/`x265`/FFmpeg CLI).
+    openh264 = "0.9.7"
 
-# Optional GPU rasterization via vello (GPU compute 2D renderer) + wgpu.
-# Disabled by default — enable with `--features gpu`. When active, the
-# `--gpu` CLI flag rasterizes SVG frames on the GPU instead of via
-# `typst-render` (CPU). Falls back to CPU automatically if no GPU device.
-#
-# Version pinning is critical here: `vello_svg` 0.9.x depends on `vello`
-# ^0.7, and `vello` 0.7's GPU `Renderer` is gated behind vello's own `wgpu`
-# feature — so we must match `vello` 0.7 (NOT 0.8/0.9) and enable that
-# feature. `vello` 0.7 in turn requires `wgpu` ^27. Mixing a newer `vello`
-# or `wgpu` with `vello_svg` produces incompatible `Scene`/`Renderer` types
-# from two different crate versions and fails to compile.
-vello = { version = "0.7", features = ["wgpu"], optional = true }
-wgpu = { version = "27", optional = true }
-vello_svg = { version = "0.9", optional = true }
-# Lightweight blocking executor for wgpu's async device-creation API.
-pollster = { version = "1.0.0", optional = true }
+    # Optional GPU rasterization via vello (GPU compute 2D renderer) + wgpu.
+    # Disabled by default — enable with `--features gpu`. When active, the
+    # `--gpu` CLI flag rasterizes SVG frames on the GPU instead of via
+    # `typst-render` (CPU). Falls back to CPU automatically if no GPU device.
+    #
+    # Version pinning is critical here: `vello_svg` 0.9.x depends on `vello`
+    # ^0.7, and `vello` 0.7's GPU `Renderer` is gated behind vello's own `wgpu`
+    # feature — so we must match `vello` 0.7 (NOT 0.8/0.9) and enable that
+    # feature. `vello` 0.7 in turn requires `wgpu` ^27. Mixing a newer `vello`
+    # or `wgpu` with `vello_svg` produces incompatible `Scene`/`Renderer` types
+    # from two different crate versions and fails to compile.
+    vello     = { version = "0.7", features = ["wgpu"], optional = true }
+    wgpu      = { version = "27", optional = true }
+    vello_svg = { version = "0.9", optional = true }
+    # Lightweight blocking executor for wgpu's async device-creation API.
+    pollster = { version = "1.0.1", optional = true }
 
-# Parallel frame rasterization (data-parallel over animation frames).
-rayon = "1"
+    # Minimal, zero-dependency XML DOM used to walk the SVG Typst emits for a
+    # formula and extract each glyph / decoration (fraction bar, root, …) as a
+    # positioned fragment. This lets the per-glyph `transform` use Typst's *real*
+    # layout (exact positions, correct script sizes, true fraction bars) instead
+    # of a hand-rolled token scanner.
+    roxmltree = "0.21.1"
 
-# Shape morphing: earcut triangulation (port of Flubber's triangulate.js)
-# and glyph outline extraction for text morphing.
-earcutr = "0.5"
-ab_glyph = "0.2"
+    # Parallel frame rasterization (data-parallel over animation frames).
+    rayon = "1"
+
+    # Shape morphing: earcut triangulation (port of Flubber's triangulate.js)
+    # and glyph outline extraction for text morphing.
+    earcutr  = "0.5"
+    ab_glyph = "0.2"
 
 [features]
-# AV1/H.264 video encoding. The build is fully self-contained: encoders run
-# in-process and containers (MP4 / Matroska) are written by candy itself, so no
-# external tool (FFmpeg, x264, x265) is ever invoked.
-default = ["video", "system-downloader"]
-video = []
-# GPU-accelerated frame rasterization via vello + wgpu. Off by default because
-# it pulls in heavy native GPU deps; enable with `--features gpu`.
-gpu = ["dep:vello", "dep:wgpu", "dep:vello_svg", "dep:pollster"]
-# @preview package download at render time. Enabled by default — when on,
-# `#import "@preview/cetz"` works without a prior `typst compile`. Disable
-# with `--no-default-features` for a fully offline build (packages must then
-# be pre-cached).
-system-downloader = []
-
-[dev-dependencies]
+    # AV1/H.264 video encoding. The build is fully self-contained: encoders run
+    # in-process and containers (MP4 / Matroska) are written by candy itself, so no
+    # external tool (FFmpeg, x264, x265) is ever invoked.
+    default = ["video", "system-downloader"]
+    video   = []
+    # GPU-accelerated frame rasterization via vello + wgpu. Off by default because
+    # it pulls in heavy native GPU deps; enable with `--features gpu`.
+    gpu = ["dep:vello", "dep:wgpu", "dep:vello_svg", "dep:pollster"]
+    # @preview package download at render time. Enabled by default — when on,
+    # `#import "@preview/cetz"` works without a prior `typst compile`. Disable
+    # with `--no-default-features` for a fully offline build (packages must then
+    # be pre-cached).
+    system-downloader = []

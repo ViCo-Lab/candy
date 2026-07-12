@@ -54,19 +54,52 @@ const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// the per-frame cost is linear in the point count — 3pt is a good balance).
 const MORPH_MAX_SEGMENT: f64 = 3.0;
 
-/// A precomputed per-glyph `Transform` layout: the matched / unmatched glyph
-/// fragments of one `#transform(target, to: …)` call, in absolute page
-/// coordinates (cm). Built once in `ensure_natural`; sampled per frame by the
-/// render paths.
+/// One animated glyph/decoration in a per-glyph `transform`. The fragment is
+/// cropped from the *whole* old or new formula render (so it keeps Typst's
+/// exact metrics — script sizes, true fraction bars, …) and moved from
+/// `(from_x, from_y)` to `(to_x, to_y)` (body-relative cm) while its opacity
+/// goes `from_op → to_op`.
+struct GlyphAnim {
+    /// Which formula to crop from: `0` = old, `1` = new.
+    src: u8,
+    /// Source clip box, in the formula's local coords (pt; the formula is
+    /// rendered at page origin so local == page coords).
+    bx0: f64,
+    by0: f64,
+    bx1: f64,
+    by1: f64,
+    /// Interpolated target top-left, body-relative (cm).
+    from_x: f64,
+    from_y: f64,
+    to_x: f64,
+    to_y: f64,
+    from_op: f64,
+    to_op: f64,
+}
+
+/// A precomputed per-glyph `Transform` layout for one `#transform(target, to:
+/// …)` call whose old/new bodies are inline content (formula / text). Built
+/// once in `ensure_natural` by rendering the whole old and new formulas and
+/// extracting each glyph/decoration as a positioned fragment (via Typst's own
+/// SVG layout — no custom parser). During `[start_ms, end_ms)` the render
+/// paths composite the interpolated fragments *over* `target` so the old
+/// content disassembles and reassembles into the new content (Manim-style).
 struct TransformFragmentPlan {
     target: Label,
     old: Label,
     start_ms: u32,
     end_ms: u32,
     easing: crate::core::easing::Easing,
-    /// Glyph fragments. Each carries its old-position `(from_x, from_y)` and
-    /// new-position `(to_x, to_y)` (page cm), plus the opacity endpoints.
-    frags: Vec<crate::core::ast::CharFragment>,
+    /// Raw bodies (used by the pixel path to rasterize the whole formulas).
+    old_body: String,
+    new_body: String,
+    /// SVG inner markup of the old / new formulas (used by the SVG path).
+    old_inner: String,
+    new_inner: String,
+    /// Per-glyph animation fragments.
+    anims: Vec<GlyphAnim>,
+    /// Pixel-path cache of whole-formula RGBA, keyed by `(which: 0/1, ppi_q)`.
+    formula_cache: Mutex<HashMap<(u8, u32), Arc<crate::renderer::RenderedFrame>>>,
 }
 
 /// A no-op downloader used when the `system-downloader` feature is disabled.
@@ -809,23 +842,11 @@ impl Renderer {
         // crossfade, which is left intact).
         let plans = self.scene.transform_plans.clone();
         for plan in &plans {
-            match self.compute_transform_fragments(plan) {
-                Ok(frags) if !frags.is_empty() => {
-                    self.transform_fragments.push(TransformFragmentPlan {
-                        target: plan.target.clone(),
-                        old: plan.old.clone(),
-                        start_ms: plan.start_ms,
-                        end_ms: plan.end_ms,
-                        easing: plan.easing.clone(),
-                        frags,
-                    });
-                }
-                Ok(_frags) => {
-                    // No fragments: leave the legacy crossfade intact.
-                }
-                Err(_) => {
-                    // Fragment computation failed: leave the legacy crossfade intact.
-                }
+            // Render the whole old/new formulas and extract each glyph /
+            // decoration as a positioned fragment (Typst's own layout). On
+            // failure we keep the legacy crossfade intact.
+            if let Some(tf) = self.build_transform_fragments(plan) {
+                self.transform_fragments.push(tf);
             }
         }
 
@@ -833,35 +854,37 @@ impl Renderer {
         Ok(())
     }
 
-    /// Split an inline body (`[…]` or `$[…]$`) into glyph fragments and lay
-    /// them out at their absolute page positions, matched (LCS) between the old
-    /// and new content. Returns the `CharFragment`s (page-cm positions) for the
-    /// renderer to interpolate per frame. Empty if the body can't be split.
-    fn compute_transform_fragments(
+    /// Build the per-glyph transform layout for one inline `#transform` plan.
+    ///
+    /// Renders the whole old and new formulas and extracts each glyph /
+    /// decoration (fraction bar, root, …) as a positioned fragment, using
+    /// Typst's *own* SVG layout — no custom token scanner. Old↔new fragments
+    /// are matched by a stable signature (the glyph's path outline / bar's path)
+    /// via LCS: matched fragments glide, unmatched ones fade. Returns `None`
+    /// (leaving the legacy crossfade intact) if either body yields no
+    /// extractable fragments.
+    fn build_transform_fragments(
         &self,
         plan: &crate::core::ast::TransformPlan,
-    ) -> Result<Vec<crate::core::ast::CharFragment>, CandyError> {
-        let Some((old_math, old_tok)) = tokenize_inline(&plan.old_body) else {
-            return Ok(Vec::new());
-        };
-        let Some((new_math, new_tok)) = tokenize_inline(&plan.new_body) else {
-            return Ok(Vec::new());
-        };
-        let (w_old, h_old) = self.measure_whole(&plan.old_body)?;
-        let (w_new, h_new) = self.measure_whole(&plan.new_body)?;
-        let old_pos = self.layout_tokens(old_math, &old_tok, w_old, h_old)?;
-        let new_pos = self.layout_tokens(new_math, &new_tok, w_new, h_new)?;
+    ) -> Option<TransformFragmentPlan> {
+        let preamble = imports_preamble(&self.scene);
+        let old_svg = self.render_formula_svg(&plan.old_body, &preamble)?;
+        let new_svg = self.render_formula_svg(&plan.new_body, &preamble)?;
+        let (old_inner, old_frags) = Self::extract_formula(&old_svg)?;
+        let (new_inner, new_frags) = Self::extract_formula(&new_svg)?;
+        if old_frags.is_empty() || new_frags.is_empty() {
+            return None;
+        }
 
-        let old_wrapped: Vec<String> = old_tok.iter().map(|t| wrap_token(old_math, t)).collect();
-        let new_wrapped: Vec<String> = new_tok.iter().map(|t| wrap_token(new_math, t)).collect();
-
-        // LCS-align old ↔ new tokens; matched pairs glide, unmatched fade.
-        let dp = lcs_table(&old_tok, &new_tok);
+        // Match old ↔ new fragments by signature (identical glyphs / bars).
+        let old_sig: Vec<String> = old_frags.iter().map(|f| f.1.clone()).collect();
+        let new_sig: Vec<String> = new_frags.iter().map(|f| f.1.clone()).collect();
+        let dp = lcs_table(&old_sig, &new_sig);
         let mut i = 0usize;
         let mut j = 0usize;
         let mut matched: Vec<(usize, usize)> = Vec::new();
-        while i < old_tok.len() && j < new_tok.len() {
-            if old_tok[i] == new_tok[j] {
+        while i < old_sig.len() && j < new_sig.len() {
+            if old_sig[i] == new_sig[j] {
                 matched.push((i, j));
                 i += 1;
                 j += 1;
@@ -876,176 +899,545 @@ impl Renderer {
         let matched_new: std::collections::HashSet<usize> =
             matched.iter().map(|(_, n)| *n).collect();
 
-        let mut frags: Vec<crate::core::ast::CharFragment> = Vec::new();
+        let tl = |b: &(f64, f64, f64, f64)| (b.0 / PT_PER_CM, b.1 / PT_PER_CM);
+        let mut anims: Vec<GlyphAnim> = Vec::new();
         for (o, n) in &matched {
-            let (fx, fy) = old_pos[*o];
-            let (tx, ty) = new_pos[*n];
-            frags.push(crate::core::ast::CharFragment {
-                body: old_wrapped[*o].clone(),
+            let (fx, fy) = tl(&old_frags[*o].0);
+            let (tx, ty) = tl(&new_frags[*n].0);
+            anims.push(GlyphAnim {
+                src: 0,
+                bx0: old_frags[*o].0.0,
+                by0: old_frags[*o].0.1,
+                bx1: old_frags[*o].0.2,
+                by1: old_frags[*o].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
                 to_y: ty,
-                from_opacity: 1.0,
-                to_opacity: 1.0,
+                from_op: 1.0,
+                to_op: 1.0,
             });
         }
-        for o in 0..old_tok.len() {
+        for o in 0..old_frags.len() {
             if matched_old.contains(&o) {
                 continue;
             }
-            let (fx, fy) = old_pos[o];
-            // Old-only token slides toward the nearest matched token that follows
-            // it in the old sequence (or the last matched token if it is the
-            // rightmost). This produces a Manim-style "push out" effect.
+            let (fx, fy) = tl(&old_frags[o].0);
+            // Old-only fragment slides toward the nearest matched fragment that
+            // follows it (Manim-style "push out"); absent a match it stays put.
             let (tx, ty) = matched
                 .iter()
                 .find(|(mo, _)| *mo >= o)
-                .map(|(_, mn)| new_pos[*mn])
-                .or_else(|| matched.last().map(|(_, mn)| new_pos[*mn]))
+                .map(|(_, mn)| tl(&new_frags[*mn].0))
+                .or_else(|| matched.last().map(|(_, mn)| tl(&new_frags[*mn].0)))
                 .unwrap_or((fx, fy));
-            frags.push(crate::core::ast::CharFragment {
-                body: old_wrapped[o].clone(),
+            anims.push(GlyphAnim {
+                src: 0,
+                bx0: old_frags[o].0.0,
+                by0: old_frags[o].0.1,
+                bx1: old_frags[o].0.2,
+                by1: old_frags[o].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
                 to_y: ty,
-                from_opacity: 1.0,
-                to_opacity: 0.0,
+                from_op: 1.0,
+                to_op: 0.0,
             });
         }
-        for n in 0..new_tok.len() {
+        for n in 0..new_frags.len() {
             if matched_new.contains(&n) {
                 continue;
             }
-            let (tx, ty) = new_pos[n];
-            // New-only token slides in from the nearest matched token that
-            // precedes it in the new sequence (or the first matched token if it
-            // is the leftmost). This produces a Manim-style "insert" effect.
+            let (tx, ty) = tl(&new_frags[n].0);
+            // New-only fragment slides in from the nearest matched fragment that
+            // precedes it (Manim-style "insert").
             let (fx, fy) = matched
                 .iter()
                 .rev()
                 .find(|(_, mn)| *mn <= n)
-                .map(|(mo, _)| old_pos[*mo])
-                .or_else(|| matched.first().map(|(mo, _)| old_pos[*mo]))
+                .map(|(mo, _)| tl(&old_frags[*mo].0))
+                .or_else(|| matched.first().map(|(mo, _)| tl(&old_frags[*mo].0)))
                 .unwrap_or((tx, ty));
-            frags.push(crate::core::ast::CharFragment {
-                body: new_wrapped[n].clone(),
+            anims.push(GlyphAnim {
+                src: 1,
+                bx0: new_frags[n].0.0,
+                by0: new_frags[n].0.1,
+                bx1: new_frags[n].0.2,
+                by1: new_frags[n].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
                 to_y: ty,
-                from_opacity: 0.0,
-                to_opacity: 1.0,
+                from_op: 0.0,
+                to_op: 1.0,
             });
         }
-        Ok(frags)
+        Some(TransformFragmentPlan {
+            target: plan.target.clone(),
+            old: plan.old.clone(),
+            start_ms: plan.start_ms,
+            end_ms: plan.end_ms,
+            easing: plan.easing.clone(),
+            old_body: plan.old_body.clone(),
+            new_body: plan.new_body.clone(),
+            old_inner,
+            new_inner,
+            anims,
+            formula_cache: Mutex::new(HashMap::new()),
+        })
     }
 
-    /// Lay out `tokens` left-to-right as offsets (cm) from the top-left of the
-    /// body, distributing the slack between the measured zero-gap row width and
-    /// the real body width (`w_real`, `h_real` in pt) as uniform gaps so the
-    /// fragment positions match the real formula's glyph positions. The offsets
-    /// are later added to the target mobject's current position at render time.
-    fn layout_tokens(
-        &self,
-        is_math: bool,
-        tokens: &[String],
-        w_real: f64,
-        _h_real: f64,
-    ) -> Result<Vec<(f64, f64)>, CandyError> {
-        let layouts = self.measure_token_layouts(is_math, tokens)?;
-        let n = layouts.len();
-        if n == 0 {
-            return Ok(Vec::new());
-        }
-        let w_row: f64 = layouts.iter().map(|l| l.2).sum();
-        let gap = if n > 1 {
-            ((w_real - w_row) / (n as f64 - 1.0)).max(0.0)
-        } else {
-            0.0
-        };
-        let x0 = layouts[0].0;
-        let y0 = layouts[0].1;
-        let mut x = x0;
-        let mut out = Vec::with_capacity(n);
-        for l in &layouts {
-            let x_rel = x - x0;
-            let y_rel = l.1 - y0;
-            out.push((x_rel / PT_PER_CM, y_rel / PT_PER_CM));
-            x += l.2 + gap;
-        }
-        Ok(out)
-    }
-
-    /// Measure each token's `(x_left, y_top, width, height)` (pt, relative to
-    /// the row's first token) by rendering them as colored boxes in a zero-gap
-    /// horizontal stack.
-    fn measure_token_layouts(
-        &self,
-        is_math: bool,
-        tokens: &[String],
-    ) -> Result<Vec<(f64, f64, f64, f64)>, CandyError> {
-        if tokens.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
-        for (i, t) in tokens.iter().enumerate() {
-            let color = distinct_color(i);
-            let wrapped = wrap_token(is_math, t);
-            // NOTE: this runs *inside* `#stack(...)`, i.e. already in code mode,
-            // so the function call must be `box(...)` (no leading `#`).
-            parts.push(format!(
-                "box(inset: 0pt, fill: rgb(\"{color}\"))[{wrapped}]"
-            ));
-        }
-        let inner = parts.join(", ");
-        let src = format!(
-            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
-             #set text(fill: black)\n\
-             #stack(dir: ltr, spacing: 0pt, {inner})\n"
+    /// Render a body at the page origin (top-left) and return its SVG string.
+    /// Rendering at the origin means each fragment's measured bbox (in page pt)
+    /// is already relative to the formula's top-left — exactly the offset the
+    /// compositor adds to the target mobject's position at render time.
+    fn render_formula_svg(&self, body: &str, preamble: &str) -> Option<String> {
+        let src = place_source(
+            self.page_w,
+            self.page_h,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            body,
+            preamble,
         );
-        let doc = self.compile_cached(&src)?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        let mut out = Vec::with_capacity(tokens.len());
-        for i in 0..tokens.len() {
-            let color = distinct_color(i);
-            match bbox_of_svg_with_fill(&svg, &color) {
-                Some((min_x, min_y, max_x, max_y)) => {
-                    out.push((min_x, min_y, max_x - min_x, max_y - min_y));
+        let doc = self.compile_cached(&src).ok()?;
+        let page = doc.pages().first()?;
+        Some(typst_svg::svg(page, &SvgOptions::default()))
+    }
+
+    /// Extract every positioned glyph / decoration from a formula's SVG (as
+    /// emitted by `typst_svg`). Returns the SVG's inner markup (kept verbatim
+    /// so the whole formula — `<defs>` included — can be re-embedded later for
+    /// clip+translate compositing) and, for each top-level drawable, its
+    /// absolute bounding box (pt, in the SVG's own coordinate space) plus a
+    /// stable signature used to match the same glyph across the old and new
+    /// formulas.
+    ///
+    /// Typst renders every glyph as `<use xlink:href="#sym">` referencing a
+    /// `<path>` outline inside `<defs>`, and decorations (fraction bars, roots,
+    /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
+    /// applying its (and ancestors') transforms to its path geometry, and sign
+    /// it by the path data so identical glyphs match across formulas.
+    fn extract_formula(svg: &str) -> Option<(String, Vec<((f64, f64, f64, f64), String)>)> {
+        let doc = roxmltree::Document::parse(svg).ok()?;
+        let root = doc.root_element();
+        // Inner markup: everything between `<svg …>` and `</svg>`.
+        let inner = {
+            let open = svg.find("<svg")?;
+            let after = open + svg[open..].find('>')? + 1;
+            let end = svg.rfind("</svg>")?;
+            svg[after..end].to_string()
+        };
+        // Gather symbol path data from <defs> so <use> can resolve outlines.
+        let mut symbols: HashMap<String, String> = HashMap::new();
+        for defs in root.children().filter(|e| e.tag_name().name() == "defs") {
+            for sym in defs.children().filter(|e| e.tag_name().name() == "symbol") {
+                if let Some(id) = sym.attribute("id") {
+                    if let Some(path) = sym.children().find(|e| e.tag_name().name() == "path") {
+                        if let Some(d) = path.attribute("d") {
+                            symbols.insert(id.to_string(), d.to_string());
+                        }
+                    }
                 }
-                None => out.push((0.0, 0.0, 0.0, 0.0)),
             }
         }
-        Ok(out)
-    }
-
-    /// Measure the real (zero-gap-free) width/height (pt) of a whole body by
-    /// rendering it as a single colored box.
-    fn measure_whole(&self, body: &str) -> Result<(f64, f64), CandyError> {
-        let color = "#ff00aa";
-        let src = format!(
-            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
-             #set text(fill: black)\n\
-             #box(inset: 0pt, fill: rgb(\"{color}\"))["
-        );
-        let src = format!("{src}#{body}]\n");
-        let doc = self.compile_cached(&src)?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        match bbox_of_svg_with_fill(&svg, color) {
-            Some((min_x, min_y, max_x, max_y)) => Ok((max_x - min_x, max_y - min_y)),
-            None => Ok((0.0, 0.0)),
+        let mut frags = Vec::new();
+        for child in root.children() {
+            if child.is_element() && child.tag_name().name() != "defs" {
+                collect_formula_leaves(
+                    &child,
+                    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                    &symbols,
+                    &mut frags,
+                );
+            }
+        }
+        if frags.is_empty() {
+            None
+        } else {
+            Some((inner, frags))
         }
     }
+}
 
+/// Accumulator for path / element bounding boxes (user-space points).
+struct SvgBBox {
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+    has: bool,
+}
+
+impl SvgBBox {
+    fn new() -> Self {
+        SvgBBox {
+            minx: 0.0,
+            miny: 0.0,
+            maxx: 0.0,
+            maxy: 0.0,
+            has: false,
+        }
+    }
+    fn add(&mut self, x: f64, y: f64) {
+        if !self.has {
+            self.minx = x;
+            self.miny = y;
+            self.maxx = x;
+            self.maxy = y;
+            self.has = true;
+        } else {
+            self.minx = self.minx.min(x);
+            self.miny = self.miny.min(y);
+            self.maxx = self.maxx.max(x);
+            self.maxy = self.maxy.max(y);
+        }
+    }
+    fn union(&mut self, o: &SvgBBox) {
+        if !o.has {
+            return;
+        }
+        if !self.has {
+            *self = SvgBBox {
+                minx: o.minx,
+                miny: o.miny,
+                maxx: o.maxx,
+                maxy: o.maxy,
+                has: true,
+            };
+            return;
+        }
+        self.minx = self.minx.min(o.minx);
+        self.miny = self.miny.min(o.miny);
+        self.maxx = self.maxx.max(o.maxx);
+        self.maxy = self.maxy.max(o.maxy);
+    }
+}
+
+/// A 2-D affine transform in SVG `matrix(a b c d e f)` form:
+/// `x' = a*x + c*y + e`, `y' = b*x + d*y + f`.
+type Xf = (f64, f64, f64, f64, f64, f64);
+
+/// Parse an SVG `transform` attribute (`matrix(…)` / `translate(…)`).
+fn parse_transform(s: &str) -> Xf {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("matrix(") {
+        let inner = &rest[..rest.find(')').unwrap_or(rest.len())];
+        let nums: Vec<f64> = inner
+            .split_whitespace()
+            .filter_map(|x| x.parse::<f64>().ok())
+            .collect();
+        if nums.len() >= 6 {
+            return (nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]);
+        }
+    } else if let Some(rest) = s.strip_prefix("translate(") {
+        let inner = &rest[..rest.find(')').unwrap_or(rest.len())];
+        let nums: Vec<f64> = inner
+            .split(|c| c == ' ' || c == ',')
+            .filter_map(|x| x.parse::<f64>().ok())
+            .collect();
+        let tx = nums.first().copied().unwrap_or(0.0);
+        let ty = nums.get(1).copied().unwrap_or(0.0);
+        return (1.0, 0.0, 0.0, 1.0, tx, ty);
+    }
+    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+}
+
+/// Compose two transforms: `combine(parent, child)` applies `child` first,
+/// then `parent` (i.e. parent ∘ child).
+fn combine(m1: Xf, m2: Xf) -> Xf {
+    let (a1, b1, c1, d1, e1, f1) = m1;
+    let (a2, b2, c2, d2, e2, f2) = m2;
+    (
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    )
+}
+
+/// Transform an axis-aligned rect's two corners and return their bbox.
+fn xf_rect(t: Xf, r: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (a, b, c, d, e, f) = t;
+    let p1 = (a * r.0 + c * r.1 + e, b * r.0 + d * r.1 + f);
+    let p2 = (a * r.2 + c * r.3 + e, b * r.2 + d * r.3 + f);
+    (
+        p1.0.min(p2.0),
+        p1.1.min(p2.1),
+        p1.0.max(p2.0),
+        p1.1.max(p2.1),
+    )
+}
+
+/// Recursively collect leaf drawables (glyph `<use>` / decoration `<path>`) from
+/// a formula's SVG, flattening `<g>` groups so each glyph / bar becomes its own
+/// fragment. `acc` is the transform accumulated from ancestor groups.
+fn collect_formula_leaves(
+    node: &roxmltree::Node,
+    acc: Xf,
+    symbols: &HashMap<String, String>,
+    out: &mut Vec<((f64, f64, f64, f64), String)>,
+) {
+    let tag = node.tag_name().name();
+    match tag {
+        "use" => {
+            if let Some(href) = node
+                .attribute("xlink:href")
+                .or_else(|| node.attribute("href"))
+            {
+                let id = href.trim_start_matches('#');
+                if let Some(d) = symbols.get(id) {
+                    let t = combine(acc, parse_transform(node.attribute("transform").unwrap_or("")));
+                    let lb = path_bbox(d).unwrap_or((0.0, 0.0, 0.0, 0.0));
+                    out.push((xf_rect(t, lb), d.to_string()));
+                }
+            }
+        }
+        "path" => {
+            if let Some(d) = node.attribute("d") {
+                let t = combine(acc, parse_transform(node.attribute("transform").unwrap_or("")));
+                if let Some(lb) = path_bbox(d) {
+                    out.push((xf_rect(t, lb), d.to_string()));
+                }
+            }
+        }
+        "g" => {
+            let t = combine(acc, parse_transform(node.attribute("transform").unwrap_or("")));
+            for child in node.children() {
+                if child.is_element() {
+                    collect_formula_leaves(&child, t, symbols, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Lift a bbox tuple into an `SvgBBox` for `union`.
+fn bbox_of(r: (f64, f64, f64, f64)) -> SvgBBox {
+    SvgBBox {
+        minx: r.0,
+        miny: r.1,
+        maxx: r.2,
+        maxy: r.3,
+        has: true,
+    }
+}
+
+/// Bounding box of an SVG path's geometry (pt). Control points of curves are
+/// included so the box is never smaller than the true ink.
+fn path_bbox(d: &str) -> Option<(f64, f64, f64, f64)> {
+    let b = d.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    let mut cmd = ' ';
+    let mut cx = 0.0f64;
+    let mut cy = 0.0f64;
+    let mut sx = 0.0f64;
+    let mut sy = 0.0f64;
+    let mut bb = SvgBBox::new();
+    let mut first = true;
+    while i < n {
+        while i < n
+            && (b[i] == b' ' || b[i] == b',' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
+        {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        let c = b[i] as char;
+        if c.is_ascii_alphabetic() {
+            cmd = c;
+            i += 1;
+        }
+        match cmd {
+            'M' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx = x;
+                cy = y;
+                bb.add(x, y);
+                if first {
+                    sx = x;
+                    sy = y;
+                    first = false;
+                }
+                cmd = 'L';
+            }
+            'm' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx += x;
+                cy += y;
+                bb.add(cx, cy);
+                if first {
+                    sx = cx;
+                    sy = cy;
+                    first = false;
+                }
+                cmd = 'l';
+            }
+            'L' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx = x;
+                cy = y;
+                bb.add(x, y);
+            }
+            'l' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx += x;
+                cy += y;
+                bb.add(cx, cy);
+            }
+            'H' => {
+                let x = read_num(b, &mut i);
+                cx = x;
+                bb.add(cx, cy);
+            }
+            'h' => {
+                cx += read_num(b, &mut i);
+                bb.add(cx, cy);
+            }
+            'V' => {
+                let y = read_num(b, &mut i);
+                cy = y;
+                bb.add(cx, cy);
+            }
+            'v' => {
+                cy += read_num(b, &mut i);
+                bb.add(cx, cy);
+            }
+            'C' => {
+                let (c1x, c1y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (c2x, c2y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(c1x, c1y);
+                bb.add(c2x, c2y);
+                bb.add(x, y);
+                cx = x;
+                cy = y;
+            }
+            'c' => {
+                let (c1x, c1y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (c2x, c2y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(cx + c1x, cy + c1y);
+                bb.add(cx + c2x, cy + c2y);
+                bb.add(cx + x, cy + y);
+                cx += x;
+                cy += y;
+            }
+            'S' => {
+                let (c2x, c2y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(c2x, c2y);
+                bb.add(x, y);
+                cx = x;
+                cy = y;
+            }
+            's' => {
+                let (c2x, c2y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(cx + c2x, cy + c2y);
+                bb.add(cx + x, cy + y);
+                cx += x;
+                cy += y;
+            }
+            'Q' => {
+                let (c1x, c1y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(c1x, c1y);
+                bb.add(x, y);
+                cx = x;
+                cy = y;
+            }
+            'q' => {
+                let (c1x, c1y) = (read_num(b, &mut i), read_num(b, &mut i));
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                bb.add(cx + c1x, cy + c1y);
+                bb.add(cx + x, cy + y);
+                cx += x;
+                cy += y;
+            }
+            'T' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx = x;
+                cy = y;
+                bb.add(x, y);
+            }
+            't' => {
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                cx += x;
+                cy += y;
+                bb.add(cx, cy);
+            }
+            'A' | 'a' => {
+                let _rx = read_num(b, &mut i);
+                let _ry = read_num(b, &mut i);
+                let _rot = read_num(b, &mut i);
+                let _large = read_num(b, &mut i);
+                let _sweep = read_num(b, &mut i);
+                let (x, y) = (read_num(b, &mut i), read_num(b, &mut i));
+                if cmd == 'a' {
+                    cx += x;
+                    cy += y;
+                } else {
+                    cx = x;
+                    cy = y;
+                }
+                bb.add(cx, cy);
+            }
+            'Z' | 'z' => {
+                cx = sx;
+                cy = sy;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    if bb.has {
+        Some((bb.minx, bb.miny, bb.maxx, bb.maxy))
+    } else {
+        None
+    }
+}
+
+/// Parse a single SVG path number (advancing `i` past it).
+fn read_num(b: &[u8], i: &mut usize) -> f64 {
+    let n = b.len();
+    while *i < n
+        && (b[*i] == b' ' || b[*i] == b',' || b[*i] == b'\t' || b[*i] == b'\n' || b[*i] == b'\r')
+    {
+        *i += 1;
+    }
+    let start = *i;
+    if *i < n && (b[*i] == b'-' || b[*i] == b'+') {
+        *i += 1;
+    }
+    while *i < n
+        && (b[*i].is_ascii_digit()
+            || b[*i] == b'.'
+            || b[*i] == b'e'
+            || b[*i] == b'E'
+            || ((b[*i] == b'-' || b[*i] == b'+') && *i > start))
+    {
+        *i += 1;
+    }
+    if *i == start {
+        return 0.0;
+    }
+    std::str::from_utf8(&b[start..*i])
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+impl Renderer {
     /// Render a body at an explicit absolute page position (cm) — used for
     /// transform glyph fragments. No sprite cache (positions change per frame).
     fn render_placed_pixels(
@@ -1078,28 +1470,27 @@ impl Renderer {
         })
     }
 
-    /// Render a body at an explicit absolute page position (cm) to a full-page
-    /// SVG string — used for transform glyph fragments in the SVG path.
-    fn render_placed_svg(
+    /// Render the whole old (`src == 0`) or new (`src == 1`) formula to a
+    /// page-sized RGBA at the page origin, so each `GlyphAnim` can be cropped
+    /// from it by its `bx*..` box (which is already in page pt). Cached per
+    /// `(src, quantized_ppi)` so the formula is rasterized once per plan.
+    fn formula_rgba(
         &self,
-        body: &str,
-        x_cm: f64,
-        y_cm: f64,
-        scale_pct: f64,
-        rotation: f64,
-        page_w: f64,
-        page_h: f64,
-    ) -> Result<String, CandyError> {
-        let preamble = imports_preamble(&self.scene);
-        let src = place_source(
-            page_w, page_h, x_cm, y_cm, scale_pct, rotation, body, &preamble,
-        );
-        let doc = self.compile_cached(&src)?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        Ok(typst_svg::svg(page, &SvgOptions::default()))
+        p: &TransformFragmentPlan,
+        src: u8,
+        ppi: f32,
+        pw: f64,
+        ph: f64,
+    ) -> Result<Arc<crate::renderer::RenderedFrame>, CandyError> {
+        let ppi_q = (ppi * 100.0).round() as u32;
+        let key = (src, ppi_q);
+        if let Some(f) = p.formula_cache.lock().unwrap().get(&key) {
+            return Ok(f.clone());
+        }
+        let body = if src == 0 { &p.old_body } else { &p.new_body };
+        let frame = Arc::new(self.render_placed_pixels(body, 0.0, 0.0, 100.0, 0.0, ppi, pw, ph)?);
+        p.formula_cache.lock().unwrap().insert(key, frame.clone());
+        Ok(frame)
     }
 
     /// Whether `label` is hidden by an active per-glyph transform (its `target`
@@ -1119,9 +1510,13 @@ impl Renderer {
     /// Build the interpolated glyph-fragment overlays for the current frame as
     /// `(opacity, RenderedFrame)` pairs, ready to be composited *with* the
     /// mobjects (so they are warped by the camera like ordinary objects).
-    /// The fragment offsets stored in `CharFragment` are relative to the
-    /// target mobject's body top-left; at render time we add the target's
-    /// current position so the morph follows the mobject's translation.
+    ///
+    /// Each `GlyphAnim` is cropped from the whole old/new formula (rasterized
+    /// once at the page origin and cached) by its `bx*..` box, then baked into a
+    /// page-sized transparent frame at its interpolated position. The position
+    /// adds the target mobject's natural offset (`nat`) plus its current
+    /// translation (`state.x/y`) so the transform stays glued to the mobject
+    /// and to the rest of the scene.
     fn transform_fragment_frames(
         &self,
         states: &HashMap<Label, crate::core::ast::FrameData>,
@@ -1131,27 +1526,45 @@ impl Renderer {
         ph: f64,
     ) -> Result<Vec<(f64, crate::renderer::RenderedFrame)>, CandyError> {
         let mut out: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
+        let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
+        let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
         for p in &self.transform_fragments {
             if time_ms < p.start_ms || time_ms >= p.end_ms {
                 continue;
             }
-            let (base_x, base_y) = states
+            let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
+            let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+            let (sx, sy) = states
                 .get(&p.target)
-                .map(|s| (s.x, s.y))
-                .unwrap_or((0.0, 0.0));
+                .map(|s| (nat_cm.0 + s.x, nat_cm.1 + s.y))
+                .unwrap_or(nat_cm);
             let denom = (p.end_ms - p.start_ms).max(1) as f64;
             let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
             let te = (p.easing.resolve())(t);
-            for f in &p.frags {
-                let x = base_x + f.from_x + (f.to_x - f.from_x) * te;
-                let y = base_y + f.from_y + (f.to_y - f.from_y) * te;
-                let op = f.from_opacity + (f.to_opacity - f.from_opacity) * te;
+            for f in &p.anims {
+                let lx = f.from_x + (f.to_x - f.from_x) * te;
+                let ly = f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_op + (f.to_op - f.from_op) * te;
                 if op <= 0.001 {
                     continue;
                 }
-                let frame =
-                    self.render_placed_pixels(&f.body, x, y, 100.0, 0.0, pixel_per_pt, pw, ph)?;
-                out.push((op, frame));
+                let whole = self.formula_rgba(p, f.src, pixel_per_pt, pw, ph)?;
+                let crop = crop_formula_rgba(&whole, f.bx0, f.by0, f.bx1, f.by1, pixel_per_pt);
+                // Bake the fragment into a page-sized transparent frame at its
+                // interpolated position so it composites (and warps under the
+                // camera) exactly like an ordinary mobject.
+                let mut page = vec![0u8; w * h * 4];
+                let fx_px = (sx + lx) * pixel_per_pt as f64;
+                let fy_px = (sy + ly) * pixel_per_pt as f64;
+                composite_over_at(&mut page, &crop, 1.0, fx_px, fy_px, w, h);
+                out.push((
+                    op,
+                    crate::renderer::RenderedFrame {
+                        width: w,
+                        height: h,
+                        rgba: page,
+                    },
+                ));
             }
         }
         Ok(out)
@@ -1418,7 +1831,7 @@ impl Renderer {
     pub(crate) fn transform_plans_debug(&self) -> Vec<(String, usize, u32, u32)> {
         self.transform_fragments
             .iter()
-            .map(|p| (p.target.0.clone(), p.frags.len(), p.start_ms, p.end_ms))
+            .map(|p| (p.target.0.clone(), p.anims.len(), p.start_ms, p.end_ms))
             .collect()
     }
 
@@ -1428,7 +1841,7 @@ impl Renderer {
         self.transform_fragments
             .iter()
             .filter(|p| time_ms >= p.start_ms && time_ms < p.end_ms)
-            .map(|p| p.frags.len())
+            .map(|p| p.anims.len())
             .sum()
     }
 
@@ -1572,28 +1985,62 @@ impl Renderer {
 
         // Per-glyph transform overlays (Manim-style), drawn INSIDE the camera
         // group so they move with the view like the other mobjects. Each
-        // fragment is a full-page SVG placed at its interpolated position
-        // relative to the target mobject's current translation.
+        // fragment is the whole old/new formula (rendered at the page origin by
+        // `extract_formula`) clipped to the fragment's bbox and translated to
+        // its interpolated position. The clip keeps only the fragment's ink;
+        // the translate follows the target mobject (nat + state) so the
+        // transform stays aligned with the rest of the scene.
         for p in &self.transform_fragments {
             if time_ms < p.start_ms || time_ms >= p.end_ms {
                 continue;
             }
-            let (base_x, base_y) = states
+            let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
+            let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+            let (sx, sy) = states
                 .get(&p.target)
-                .map(|s| (s.x, s.y))
-                .unwrap_or((0.0, 0.0));
+                .map(|s| (nat_cm.0 + s.x, nat_cm.1 + s.y))
+                .unwrap_or(nat_cm);
             let denom = (p.end_ms - p.start_ms).max(1) as f64;
             let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
             let te = (p.easing.resolve())(t);
-            for f in &p.frags {
-                let x = base_x + f.from_x + (f.to_x - f.from_x) * te;
-                let y = base_y + f.from_y + (f.to_y - f.from_y) * te;
-                let op = f.from_opacity + (f.to_opacity - f.from_opacity) * te;
+            for (idx, f) in p.anims.iter().enumerate() {
+                let lx = f.from_x + (f.to_x - f.from_x) * te;
+                let ly = f.from_y + (f.to_y - f.from_y) * te;
+                let op = f.from_op + (f.to_op - f.from_op) * te;
                 if op <= 0.001 {
                     continue;
                 }
-                let svg = self.render_placed_svg(&f.body, x, y, 100.0, 0.0, pw, ph)?;
-                out.push_str(&format!("<g opacity=\"{op}\">\n{svg}\n</g>\n"));
+                let mut cid_base = String::new();
+                for c in p.target.0.chars() {
+                    if c.is_alphanumeric() {
+                        cid_base.push(c);
+                    } else {
+                        cid_base.push('_');
+                    }
+                }
+                let cid = format!("tf_{}_{}", cid_base, idx);
+                // Localize the whole-formula markup's ids (e.g. `glyph0`) with a
+                // per-fragment prefix so the old and new formulas — which both
+                // define `glyph0`, … — don't collide when embedded in one SVG.
+                let raw_inner = if f.src == 0 {
+                    &p.old_inner
+                } else {
+                    &p.new_inner
+                };
+                let inner = localize_formula_ids(raw_inner, &cid);
+                // Translate so the fragment (at formula-local bx0,by0) lands at
+                // the interpolated page position (sx+lx, sy+ly) in pt.
+                let tx = (sx + lx) * PT_PER_CM - f.bx0;
+                let ty = (sy + ly) * PT_PER_CM - f.by0;
+                let bw = (f.bx1 - f.bx0).max(0.0);
+                let bh = (f.by1 - f.by0).max(0.0);
+                out.push_str(&format!(
+                    "<g opacity=\"{op:.4}\" transform=\"translate({tx:.4}, {ty:.4})\">\n\
+                     <clipPath id=\"{cid}\"><rect x=\"{bx0:.4}\" y=\"{by0:.4}\" width=\"{bw:.4}\" height=\"{bh:.4}\"/></clipPath>\n\
+                     <g clip-path=\"url(#{cid})\">\n{inner}\n</g>\n</g>\n",
+                    bx0 = f.bx0,
+                    by0 = f.by0,
+                ));
             }
         }
 
@@ -1978,89 +2425,6 @@ fn subtitle_place_expr(sub: &Subtitle, margin: f64) -> String {
     }
 }
 
-/// Wrap a single glyph token into a renderable Typst body: math tokens become
-/// `$[tok]$`, text tokens become `[tok]`.
-fn wrap_token(is_math: bool, tok: &str) -> String {
-    if is_math {
-        format!("${tok}$")
-    } else {
-        format!("[{tok}]")
-    }
-}
-
-/// Split an inline body (`[…]` or `$[…]$`) into glyph tokens. Returns
-/// `(is_math, tokens)` where `tokens` are the inner content strings (operators,
-/// identifiers, words). Returns `None` if the body can't be split into tokens.
-fn tokenize_inline(body: &str) -> Option<(bool, Vec<String>)> {
-    let b = body.trim();
-    let inner = b
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(b)
-        .trim();
-    if inner.starts_with('$') {
-        // Math mode: strip the leading `$` and trailing `$`, then split into
-        // identifier runs (e.g. `sin`, `eq`, `x1`) and single-char operators /
-        // symbols, with whitespace as a delimiter.
-        let m = inner.strip_prefix('$').unwrap_or(inner);
-        let m = m.strip_suffix('$').unwrap_or(m).trim();
-        let toks = tokenize_math(m);
-        if toks.is_empty() {
-            return None;
-        }
-        return Some((true, toks));
-    }
-    // Plain text: split into words.
-    let toks: Vec<String> = inner.split_whitespace().map(|s| s.to_string()).collect();
-    if toks.is_empty() {
-        return None;
-    }
-    Some((false, toks))
-}
-
-/// Split a math-mode string into glyph tokens: consecutive alphanumerics form
-/// one token (so `sin`, `eq`, `x1` stay whole), each other char is its own
-/// token, and whitespace is a delimiter.
-fn tokenize_math(s: &str) -> Vec<String> {
-    let mut toks: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_alnum: Option<bool> = None;
-    for c in s.chars() {
-        if c.is_whitespace() {
-            if !cur.is_empty() {
-                toks.push(std::mem::take(&mut cur));
-                cur_alnum = None;
-            }
-            continue;
-        }
-        let alnum = c.is_alphanumeric();
-        match cur_alnum {
-            Some(prev) if prev == alnum => cur.push(c),
-            _ => {
-                if !cur.is_empty() {
-                    toks.push(std::mem::take(&mut cur));
-                }
-                cur.push(c);
-                cur_alnum = Some(alnum);
-            }
-        }
-    }
-    if !cur.is_empty() {
-        toks.push(cur);
-    }
-    toks
-}
-
-/// A deterministic, pairwise-distinct color for the i-th measurement box
-/// (avoids collisions with black/white so `bbox_of_svg_with_fill` finds it).
-fn distinct_color(i: usize) -> String {
-    let h = (i as f64 * 0.61803398875) % 1.0;
-    let r = ((h * 255.0).round() as u32) & 0xff;
-    let g = (((h + 0.33) % 1.0) * 255.0).round() as u32 & 0xff;
-    let b = (((h + 0.66) % 1.0) * 255.0).round() as u32 & 0xff;
-    format!("#{r:02x}{g:02x}{b:02x}")
-}
-
 /// Longest-common-subsequence length table for token alignment. `dp[i][j]` is
 /// the LCS length of `a[i..]` and `b[j..]`. Used to match old/new glyph tokens
 /// so common runs stay put while only the differing tokens fade in/out.
@@ -2250,6 +2614,118 @@ fn composite_over(
             dst[di + 3] = 255;
         }
     }
+}
+
+/// Like `composite_over` but pastes `src` at an explicit pixel offset `(ox, oy)`
+/// (may be negative / partially off-canvas) instead of the top-left.
+fn composite_over_at(
+    dst: &mut [u8],
+    src: &crate::renderer::RenderedFrame,
+    opacity: f64,
+    ox: f64,
+    oy: f64,
+    w: usize,
+    h: usize,
+) {
+    let op = opacity.clamp(0.0, 1.0);
+    let ox = ox.round() as i64;
+    let oy = oy.round() as i64;
+    for y in 0..src.height as i64 {
+        let dy = oy + y;
+        if dy < 0 || dy >= h as i64 {
+            continue;
+        }
+        for x in 0..src.width as i64 {
+            let dx = ox + x;
+            if dx < 0 || dx >= w as i64 {
+                continue;
+            }
+            let di = (dy * w as i64 + dx) as usize * 4;
+            let si = (y * src.width as i64 + x) as usize * 4;
+            let sa = (src.rgba[si + 3] as f32 / 255.0) * op as f32;
+            if sa <= 0.0 {
+                continue;
+            }
+            for c in 0..3 {
+                let s = src.rgba[si + c] as f32;
+                let d = dst[di + c] as f32;
+                dst[di + c] = (s * sa + d * (1.0 - sa)).round() as u8;
+            }
+            dst[di + 3] = 255;
+        }
+    }
+}
+
+/// Crop a rectangular region (in Typst pt, page coords) out of a page-sized
+/// `RenderedFrame`, returning a small RGBA whose top-left is the crop's top-left.
+fn crop_formula_rgba(
+    whole: &crate::renderer::RenderedFrame,
+    bx0: f64,
+    by0: f64,
+    bx1: f64,
+    by1: f64,
+    ppi: f32,
+) -> crate::renderer::RenderedFrame {
+    let px0 = (bx0 * ppi as f64).round() as i64;
+    let py0 = (by0 * ppi as f64).round() as i64;
+    let px1 = (bx1 * ppi as f64).ceil() as i64;
+    let py1 = (by1 * ppi as f64).ceil() as i64;
+    let w = (px1 - px0).max(1) as usize;
+    let h = (py1 - py0).max(1) as usize;
+    let sw = whole.width as i64;
+    let sh = whole.height as i64;
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h as i64 {
+        let sy = py0 + y;
+        if sy < 0 || sy >= sh {
+            continue;
+        }
+        for x in 0..w as i64 {
+            let sx = px0 + x;
+            if sx < 0 || sx >= sw {
+                continue;
+            }
+            let di = ((y * w as i64 + x) * 4) as usize;
+            let si = ((sy * sw + sx) * 4) as usize;
+            out[di..di + 4].copy_from_slice(&whole.rgba[si..si + 4]);
+        }
+    }
+    crate::renderer::RenderedFrame {
+        width: w,
+        height: h,
+        rgba: out,
+    }
+}
+
+/// Rewrite every `id="X"` in `markup` to `id="{prefix}X"` and every
+/// `xlink:href="#X"` / `href="#X"` to the prefixed form, so two formulas that
+/// both define `glyph0`, … can be embedded in the same SVG document without
+/// their symbol definitions colliding.
+fn localize_formula_ids(markup: &str, prefix: &str) -> String {
+    // Collect all ids defined in this markup.
+    let mut ids: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(pos) = markup[i..].find("id=\"") {
+        let start = i + pos + 4;
+        if let Some(end) = markup[start..].find('"') {
+            ids.push(markup[start..start + end].to_string());
+            i = start + end + 1;
+        } else {
+            break;
+        }
+    }
+    // Longest first so an id that is a prefix of another is rewritten after it.
+    ids.sort_by(|a, b| b.len().cmp(&a.len()));
+    let mut out = markup.to_string();
+    for id in &ids {
+        out = out.replace(&format!("id=\"{id}\""), &format!("id=\"{prefix}{id}\""));
+        out = out.replace(
+            &format!("xlink:href=\"#{id}\""),
+            &format!("xlink:href=\"#{prefix}{id}\""),
+        );
+        out = out.replace(&format!("href=\"#{id}\""), &format!("href=\"#{prefix}{id}\""));
+    }
+    out
 }
 
 /// Synthetic label used by `#camera` (a global pan/zoom/rotate transform).

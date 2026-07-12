@@ -335,6 +335,21 @@ Morph a **single** mobject's content into new inline content — candy's Manim-s
 **original `target` label keeps the new content**, so you can keep animating it
 afterwards.
 
+For **inline content** (formulas and text) the transform is **glyph-by-glyph**, not a
+whole-block dissolve. Candy renders the old and new bodies with Typst's own SVG layout
+and extracts every glyph and decoration (fraction bars, roots, …) as a positioned
+fragment, then matches old↔new fragments by their outline signature (longest common
+subsequence). During the window:
+
+- **matched** fragments *glide* from their old slot to their new slot,
+- **removed** fragments *fade and slide out* toward the next kept glyph,
+- **inserted** fragments *fade and slide in* from the previous kept glyph,
+
+so the old equation visibly disassembles and reassembles into the new one. Fractions
+(`a/b`, `\frac{a}{b}`) are kept intact as a single token so the fraction bar renders
+correctly (stacked numerator/denominator, not a bare slash). For **shapes** (non-inline
+content) the transform falls back to a crossfade + scale morph.
+
 ```typst
 #mobject("eq", [$a + b = c$])
 #transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
