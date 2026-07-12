@@ -30,6 +30,11 @@
 //! * [`camera`] — the global `#camera` pan/zoom/rotate transform + warp.
 //! * [`composite`] — alpha compositing ("over"), offset paste, formula crop,
 //!   and formula-id localization for the per-glyph transform path.
+//! * [`morph`] — shape-`#morph` rendering helpers: ring localization, SVG
+//!   color → Typst conversion, and `polygon(...)` source generation.
+//! * [`pages`] — cross-page scene playback: the per-scene page schedule that
+//!   maps global time to the active page (sequential page playback with frozen
+//!   timelines for the not-yet-active pages).
 //! * [`transform`] — per-glyph `#transform` plan types and the body placement
 //!   source builder.
 
@@ -38,6 +43,8 @@ pub(crate) mod composite;
 pub(crate) mod content;
 pub(crate) mod matrix;
 pub(crate) mod svg;
+pub(crate) mod morph;
+pub(crate) mod pages;
 pub(crate) mod transform;
 pub(crate) mod world;
 
@@ -46,6 +53,8 @@ pub(crate) mod world;
 pub(crate) use self::camera::*;
 pub(crate) use self::composite::*;
 pub(crate) use self::content::*;
+pub(crate) use self::morph::*;
+pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
@@ -109,6 +118,10 @@ pub struct Renderer {
     scene_pages: HashMap<usize, (f64, f64)>,
     /// label -> owning scene id (for parent auto-hide).
     label_scene: HashMap<Label, usize>,
+    /// Cross-page scene playback scheduler: maps global time to the active page
+    /// per scene and records which page each mobject's natural layout landed on.
+    /// See [`pages`].
+    pages: PageScheduler,
     /// Precomputed outline interpolators for `#morph` pairs, keyed by
     /// `(from, to)`. Built once in `ensure_natural` (the expensive part:
     /// render both bodies to SVG, extract + align their outline rings). Each
@@ -173,6 +186,7 @@ impl Renderer {
             natural_computed: false,
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
+            pages: PageScheduler::empty(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
             body_cache: Mutex::new(HashMap::new()),
@@ -524,8 +538,11 @@ impl Renderer {
         // Number of pages each scene's natural layout spilled onto. A scene that
         // overflows its single page becomes a *cross-page scene*: its mobjects
         // stay in ONE scene (data shared) but are laid out across several pages,
-        // and the canvas is the vertical stack of those pages (page order).
+        // and the renderer plays the pages in sequence (see [`pages`]).
         let mut scene_page_counts: HashMap<usize, usize> = HashMap::new();
+        // label -> the page (0-based) its natural layout landed on. Fed to the
+        // page scheduler so it can partition each scene's timeline by page.
+        let mut page_of: HashMap<Label, usize> = HashMap::new();
 
         for (sid, (pw, ph), labels) in &by_scene {
             // Native layout pass: each mobject is wrapped in a content-sized,
@@ -597,11 +614,12 @@ impl Renderer {
             // overflows its single page spills onto *subsequent* pages (page 1,
             // page 2, …), each `ph` tall. We treat this as a **cross-page scene**:
             // the mobjects stay in ONE scene (data shared — same ownership, same
-            // timeline), but their natural positions are recorded on the page
-            // they actually landed on, offset by `k * ph`. At render time the
-            // scene's canvas is the vertical stack of all its pages (page order),
-            // so every mobject renders in the right place instead of being
-            // clipped off a single page.
+            // timeline), but they are laid out across the overflow pages and the
+            // renderer plays the pages **in sequence** on a single-page canvas
+            // (it does NOT grow the canvas). Each mobject keeps its position
+            // *within* the page it landed on (page-local `ly`), and is only drawn
+            // while that page is the active one — so the other pages' timelines
+            // stay frozen until this page finishes and the renderer auto-advances.
             let pages = doc.pages();
             let num_pages = pages.len().max(1);
             scene_page_counts.insert(*sid, num_pages);
@@ -621,9 +639,11 @@ impl Renderer {
                     // shrinks to the body, so its fill footprint's top-left *is*
                     // the body's native content-box top-left (`lx, ly`). Each
                     // page's SVG resets its origin to that page's top-left, so we
-                    // add `k * ph` to recover the absolute y on the stacked canvas.
+                    // record the position *within* the page (page-local `ly`) and
+                    // remember which page `k` the mobject landed on.
                     let (lx, ly, _, _) = layout_bbox;
-                    nat.insert(label.clone(), (lx, ly + k as f64 * ph));
+                    nat.insert(label.clone(), (lx, ly));
+                    page_of.insert(label.clone(), k);
                 }
             }
         }
@@ -637,24 +657,24 @@ impl Renderer {
         let mut sp: HashMap<usize, (f64, f64)> = HashMap::new();
         if self.scene.scenes.is_empty() {
             // Legacy single-scene document: the whole document is one scene
-            // (id 0). If its content overflowed, stack the pages vertically and
-            // grow the canvas accordingly. `self.page_h` is also updated so the
-            // legacy render path (which reads `self.page_w`/`self.page_h`)
-            // composites onto the tall canvas.
-            let pages = scene_page_counts.get(&0).copied().unwrap_or(1).max(1);
-            self.page_h = self.page_h * pages as f64;
+            // (id 0). The canvas is a *single* page — overflowing content does
+            // NOT grow the canvas; it becomes additional pages that play in
+            // sequence (see `page_schedules`).
             sp.insert(0, (self.page_w, self.page_h));
         } else {
             for s in &self.scene.scenes {
-                let (pw, ph) = self.scene.effective_page_pt(s.id);
-                let pages = scene_page_counts.get(&s.id).copied().unwrap_or(1).max(1);
-                // Cross-page scene: stack every overflow page under the first, so
-                // the canvas is `ph * pages` tall and mobjects render in page
-                // order (page 1 at top, page 2 below it, …).
-                sp.insert(s.id, (pw, ph * pages as f64));
+                // Each scene's canvas is exactly one page (its `width`/`height`).
+                // Overflow pages play in sequence, they do not stack vertically.
+                sp.insert(s.id, self.scene.effective_page_pt(s.id));
             }
         }
         self.scene_pages = sp;
+
+        // Build the cross-page scene playback scheduler. This partitions each
+        // scene's timeline into page-segments (see [`pages`]): each page has its
+        // own independent timeline, and the renderer auto-advances from one page
+        // to the next once the current page's content has finished playing.
+        self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
 
         // Precompute morph plans (the expensive part) exactly once. For each
         // `#morph(from, to)` pair we render both bodies to SVG, extract their
@@ -852,6 +872,13 @@ impl Renderer {
         } else {
             self.scene.active_scene_at(time_ms)
         };
+        // Cross-page scene: the page currently playing. Only mobjects on this
+        // page are drawn; the other pages' timelines stay frozen until this page
+        // finishes and the renderer auto-advances to the next page.
+        // Cross-page scene: the page currently playing. Only mobjects on this
+        // page are drawn; the other pages' timelines stay frozen until this page
+        // finishes and the renderer auto-advances to the next page.
+        let active_page = self.pages.active_page_of(active, time_ms);
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
@@ -877,6 +904,14 @@ impl Renderer {
             if !self.scene.scenes.is_empty() {
                 let owner = self.label_scene.get(*label).copied().unwrap_or(active);
                 if owner != active {
+                    continue;
+                }
+            }
+            // Cross-page gate: skip mobjects that belong to a different page.
+            // Their timeline is frozen (not drawn) until the renderer advances
+            // to their page.
+            if let Some(p) = self.pages.page_of(label) {
+                if p != active_page {
                     continue;
                 }
             }
@@ -1058,6 +1093,10 @@ impl Renderer {
         } else {
             self.scene.active_scene_at(time_ms)
         };
+        // Cross-page scene: the page currently playing. Only mobjects on this
+        // page are drawn; the other pages' timelines stay frozen until this page
+        // finishes and the renderer auto-advances to the next page.
+        let active_page = self.pages.active_page_of(active, time_ms);
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
@@ -1109,6 +1148,14 @@ impl Renderer {
             if !self.scene.scenes.is_empty() {
                 let owner = self.label_scene.get(label).copied().unwrap_or(active);
                 if owner != active {
+                    continue;
+                }
+            }
+            // Cross-page gate: skip mobjects that belong to a different page.
+            // Their timeline is frozen (not drawn) until the renderer advances
+            // to their page.
+            if let Some(p) = self.pages.page_of(label) {
+                if p != active_page {
                     continue;
                 }
             }
@@ -1335,18 +1382,6 @@ impl Renderer {
     }
 }
 
-/// Build the Typst source that places a single mobject body at `(x_cm, y_cm)`
-/// from the top-left corner, scaled by `scale_pct`% and rotated by `rotation`
-/// degrees (clockwise, around the object's top-left origin).
-///
-/// When `rotation == 0.0` the `rotate(..)` wrapper is omitted, keeping the
-/// generated source minimal for the common case (and matching the v0.1 output
-/// exactly, so existing SVG drafts are byte-identical when no rotation is
-/// applied).
-/// Build a Typst preamble that re-declares every `@preview`/package import
-/// captured from the source `.tyx`, so the detached per-object compile snippets
-/// (which would otherwise lose the binding) can reference package symbols used
-/// inside mobject bodies.
 #[cfg(test)]
 pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();

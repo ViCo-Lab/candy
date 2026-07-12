@@ -717,6 +717,10 @@ fn rotate(from: &mut Ring, to: &[Point]) {
         if sse < best_sse {
             best_sse = sse;
             best_offset = offset;
+            // An exact alignment can't be improved upon — stop early.
+            if best_sse <= 1e-12 {
+                break;
+            }
         }
     }
     if best_offset > 0 {
@@ -747,8 +751,20 @@ pub fn interpolate_ring(mut from: Ring, mut to: Ring, max_segment_length: f64) -
     // we pad the shorter ring one point at a time until both match the
     // pre-equalization maximum, and truncate defensively if a ring overshot.
     let target = from.len().max(to.len());
+    // Bulk-equalize in a single O(n) pass instead of one point at a time
+    // (the old loop was O(n²)). `add_points` may drift by ±1 point due to
+    // floating-point accumulation in its arc-length stepping, so the bounded
+    // fixup loops below still guarantee the counts land exactly on `target`.
+    if from.len() < target {
+        let extra = target - from.len();
+        add_points(&mut from, extra);
+    }
     while from.len() < target {
         add_points(&mut from, 1);
+    }
+    if to.len() < target {
+        let extra = target - to.len();
+        add_points(&mut to, extra);
     }
     while to.len() < target {
         add_points(&mut to, 1);
