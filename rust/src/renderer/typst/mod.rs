@@ -203,9 +203,13 @@ impl Renderer {
             main: source,
         };
         let warned = typst::compile::<PagedDocument>(&world);
-        warned
-            .output
-            .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
+        match warned.output {
+            Ok(d) => Ok(d),
+            Err(errs) => {
+                eprintln!("DEBUG-COMPILE-RAW:\n{src:?}\n---END ({errs:?})---");
+                Err(CandyError::Typst(format!("{:?}", errs)))
+            }
+        }
     }
 
     /// Compile a Typst source, memoized by the exact source string.
@@ -222,7 +226,16 @@ impl Renderer {
         if let Some(doc) = self.body_cache.lock().unwrap().get(src) {
             return Ok(doc.clone());
         }
-        let doc = Arc::new(self.compile(src)?);
+        let doc = match self.compile(src) {
+            Ok(d) => d,
+            Err(e) => {
+                if src.contains('$') || src.contains("9fb3ff") {
+                    eprintln!("DEBUG-COMPILE-FAIL:\n{src}\n---END ({e:?})---");
+                }
+                return Err(e);
+            }
+        };
+        let doc = Arc::new(doc);
         self.body_cache
             .lock()
             .unwrap()
@@ -596,7 +609,7 @@ impl Renderer {
                 // vertically with the others), while the unique fill colour lets
                 // us recover its footprint from the single rendered SVG.
                 blocks.push_str(&format!(
-                    "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ {body} }}]"
+                    "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ ({body}) }}]"
                 ));
             }
             if blocks.is_empty() {
@@ -1337,7 +1350,7 @@ impl Renderer {
             format!("{preamble}\n")
         };
         let src = format!(
-            "{pre}#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: none)\n#{body}\n",
+            "{pre}#set page(width: {w}pt, height: {h}pt, margin: 0pt, fill: none)\n#{{ ({body}) }}\n",
             w = self.page_w,
             h = self.page_h,
         );

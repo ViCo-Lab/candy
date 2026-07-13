@@ -94,24 +94,29 @@ pub(crate) fn place_source(
     body: &str,
     preamble: &str,
 ) -> String {
-    // The body is a raw Typst expression (e.g. "rect(width: 2cm, fill: red)")
-    // captured from the .tyx source. Inside a content block `[...]`, function
-    // calls MUST be prefixed with `#` — otherwise Typst treats them as plain
-    // text. We add the `#` here so the body renders as an object, not text.
+    // The body is a raw Typst *expression* (e.g. "rect(width: 2cm, fill: red)")
+    // recovered from the source AST node. We wrap it in a code block
+    // `#{{ (body) }}` so it is evaluated as Typst *code*, not markup:
+    //   · a body containing a string with `#` (e.g. `rgb("#9fb3ff")`) is safe —
+    //     in markup mode the `#` would re-enter code mode and corrupt the source;
+    //   · the surrounding parentheses let a multi-line body (e.g. `a\n + b`)
+    //     stay a single expression — Typst treats newlines as separators inside
+    //     a code block, but not inside parentheses.
     let pre = if preamble.is_empty() {
         String::new()
     } else {
         format!("{preamble}\n")
     };
     if rotation.abs() < 1e-9 {
-        format!(
+        let out = format!(
             "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#{body}]]\n"
-        )
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#{{ ({body}) }}]]\n"
+        );
+        out
     } else {
         format!(
             "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#rotate(origin: top + left, {rotation}deg)[#{body}]]]\n"
+             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#rotate(origin: top + left, {rotation}deg)[#{{ ({body}) }}]]]"
         )
     }
 }

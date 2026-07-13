@@ -211,7 +211,7 @@ pub(crate) fn subtitle_doc(
     let place = subtitle_place_expr(sub, SUBTITLE_MARGIN_CM);
     let src = format!(
         "{pre}#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
-         #{place}[ #{body} ]\n",
+         #{place}[#{{ ({body}) }}]\n",
         pw = page_w,
         ph = page_h,
     );
