@@ -16,6 +16,7 @@
 //!                         │
 //!                         ▼
 //!   renderer::video ─▶ AV1 (rav1e) / H.264 (openh264) ─▶ MP4 / Matroska
+//!                         └▶ GIF (animated) / PNG (bitmap, final frame)
 //! ```
 //!
 //! No external tools are ever invoked: the Typst compilation, the video
@@ -104,6 +105,10 @@ pub enum OutputFormat {
     Mkv,
     /// WebM (Matroska with `webm` doctype).
     Webm,
+    /// Animated GIF (all frames, looping). Self-contained — no ffmpeg.
+    Gif,
+    /// Static PNG bitmap of the final frame (the animation "poster").
+    Png,
 }
 
 /// End-to-end build: `.tyx` → `Scene` → keyframes → frames → output.
@@ -230,13 +235,6 @@ pub fn build_input_with_gpu(
         return Ok(());
     }
 
-    let container = match format {
-        OutputFormat::Mp4 => Container::Mp4,
-        OutputFormat::Mkv => Container::Mkv,
-        OutputFormat::Webm => Container::Webm,
-        OutputFormat::Svg => unreachable!(),
-    };
-
     // Pre-compute natural layout once (serial) so the parallel rasterization
     // loop can use the &self render_frame_pixels_par method.
     renderer.ensure_natural_public()?;
@@ -294,62 +292,98 @@ pub fn build_input_with_gpu(
         }
     };
 
-    // Draft: persist the RGBA frames under `.candy/` for inspection.
+    // Draft: persist the RGBA frames under `intermediate_dir` for inspection.
     std::fs::create_dir_all(intermediate_dir)?;
     encode::write_rgba_draft(&probe, intermediate_dir, "frames")?;
 
-    // Step 6: encode + mux.
-    //
-    // FFmpeg codecs (X264, X265, VAAPI, VideoToolbox, QSV) shell out to
-    // system ffmpeg and return already-muxed bytes — they bypass candy's
-    // hand-written muxer. Self-contained codecs (AV1, H264) go through
-    // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
-    // back to E007.
-    let bytes: Vec<u8> = if codec.uses_ffmpeg()
-        || (codec == Codec::H265 && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some())
-    {
-        // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
-        let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
-        let max_h = probe.iter().map(|f| f.height).max().unwrap_or(16);
-        let tw = max_w.max(16).next_multiple_of(2);
-        let th = max_h.max(16).next_multiple_of(2);
-        let composed: Vec<_> = probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
-        match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(&composed, fps, codec, container) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!(CandyWarn::EncodeFallback(format!(
-                    "ffmpeg encode failed: {e}"
-                )));
-                for (i, &t_ms) in sample_times.iter().enumerate() {
-                    let svg = renderer.render_frame_at(t_ms, &frames)?;
-                    std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        // Self-contained path: rav1e/openh264 + candy's muxer.
-        let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(CandyWarn::EncodeFallback(format!(
-                    "video encode failed: {e}"
-                )));
-                for (i, &t_ms) in sample_times.iter().enumerate() {
-                    let svg = renderer.render_frame_at(t_ms, &frames)?;
-                    std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
-                }
-                return Err(e);
-            }
-        };
-        let audio = encode::collect_audio(&scene.audio, fps);
-        encode::mux(&video, audio.as_ref(), container)?
-    };
-
+    // Ensure the output's parent directory exists (e.g. `dist/` or a custom
+    // `--output-dir`). Done once here for every rasterized target (video,
+    // GIF, PNG).
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(output, bytes)?;
+
+    // Step 6: encode + mux / write, branching on the output container.
+    match format {
+        OutputFormat::Svg => unreachable!(),
+        // Animated GIF: all frames, looping forever. Self-contained.
+        OutputFormat::Gif => {
+            encode::write_gif(&probe, fps, output)?;
+        }
+        // Static PNG bitmap of the final frame (the animation "poster").
+        OutputFormat::Png => {
+            let last = probe
+                .last()
+                .ok_or_else(|| CandyError::Encode("no frames to write as PNG".into()))?;
+            encode::write_png(last, output)?;
+        }
+        // Video containers (MP4 / MKV / WebM): encode + mux.
+        OutputFormat::Mp4 | OutputFormat::Mkv | OutputFormat::Webm => {
+            let container = match format {
+                OutputFormat::Mp4 => Container::Mp4,
+                OutputFormat::Mkv => Container::Mkv,
+                OutputFormat::Webm => Container::Webm,
+                _ => unreachable!(),
+            };
+            // FFmpeg codecs (X264, X265, VAAPI, VideoToolbox, QSV) shell out to
+            // system ffmpeg and return already-muxed bytes — they bypass candy's
+            // hand-written muxer. Self-contained codecs (AV1, H264) go through
+            // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
+            // back to E007.
+            let bytes: Vec<u8> = if codec.uses_ffmpeg()
+                || (codec == Codec::H265
+                    && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some())
+            {
+                // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
+                let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
+                let max_h = probe.iter().map(|f| f.height).max().unwrap_or(16);
+                let tw = max_w.max(16).next_multiple_of(2);
+                let th = max_h.max(16).next_multiple_of(2);
+                let composed: Vec<_> =
+                    probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
+                match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(
+                    &composed, fps, codec, container,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        warn!(CandyWarn::EncodeFallback(format!(
+                            "ffmpeg encode failed: {e}"
+                        )));
+                        for (i, &t_ms) in sample_times.iter().enumerate() {
+                            let svg = renderer.render_frame_at(t_ms, &frames)?;
+                            std::fs::write(
+                                intermediate_dir.join(format!("frame_{:016}.svg", i)),
+                                svg,
+                            )?;
+                        }
+                        return Err(e);
+                    }
+                }
+            } else {
+                // Self-contained path: rav1e/openh264 + candy's muxer.
+                let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(CandyWarn::EncodeFallback(format!(
+                            "video encode failed: {e}"
+                        )));
+                        for (i, &t_ms) in sample_times.iter().enumerate() {
+                            let svg = renderer.render_frame_at(t_ms, &frames)?;
+                            std::fs::write(
+                                intermediate_dir.join(format!("frame_{:016}.svg", i)),
+                                svg,
+                            )?;
+                        }
+                        return Err(e);
+                    }
+                };
+                let audio = encode::collect_audio(&scene.audio, fps);
+                encode::mux(&video, audio.as_ref(), container)?
+            };
+
+            std::fs::write(output, bytes)?;
+        }
+    }
     Ok(())
 }
 

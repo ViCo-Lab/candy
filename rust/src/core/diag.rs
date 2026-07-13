@@ -136,6 +136,14 @@ pub enum CandyWarn {
     RevealFallback(String),
     /// W011 — An intermediate directory could not be removed after a build.
     CleanupFailed(String),
+    /// W012 — The number of `--output` names does not match the number of
+    /// inputs, so the custom names are ignored and the default
+    /// `dist/<stem>.<ext>` names are used for every input.
+    OutputNameCountMismatch(String),
+    /// W013 — A `--output` name contains a path separator (a multi-level /
+    /// directory path) or is otherwise not a plain file name, so it is ignored
+    /// for that input and the default `dist/<stem>.<ext>` name is used instead.
+    OutputNameInvalid(String),
 }
 
 impl CandyWarn {
@@ -153,6 +161,8 @@ impl CandyWarn {
             CandyWarn::UnknownEasing(_) => "W009",
             CandyWarn::RevealFallback(_) => "W010",
             CandyWarn::CleanupFailed(_) => "W011",
+            CandyWarn::OutputNameCountMismatch(_) => "W012",
+            CandyWarn::OutputNameInvalid(_) => "W013",
         }
     }
 }
@@ -196,6 +206,20 @@ impl fmt::Display for CandyWarn {
             ),
             CandyWarn::CleanupFailed(d) => {
                 write!(f, "[W011] could not remove intermediate dir {d}")
+            }
+            CandyWarn::OutputNameCountMismatch(d) => {
+                write!(
+                    f,
+                    "[W012] {d}; ignoring custom --output names and using the default \
+                     dist/<stem>.<ext> for every input"
+                )
+            }
+            CandyWarn::OutputNameInvalid(d) => {
+                write!(
+                    f,
+                    "[W013] --output name '{d}' is not a plain file name (contains a path \
+                     separator / multi-level directory); using the default dist/<stem>.<ext>"
+                )
             }
         }
     }

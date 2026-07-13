@@ -4,13 +4,17 @@
 //! candy build examples/dot_move.tyx                 # default: dist/<stem>.mp4 (AV1)
 //! candy build examples/dot_move.tyx --format webm   # dist/<stem>.webm (AV1)
 //! candy build examples/dot_move.tyx --format mkv --codec h264
+//! candy build examples/dot_move.tyx --format gif    # dist/<stem>.gif (animated)
+//! candy build examples/dot_move.tyx --format png    # dist/<stem>.png (final frame)
 //! candy build examples/dot_move.tyx --format svg    # SVG draft in .candy/
+//! candy build a.tyx b.tyx --output out_a.mp4 out_b.mp4   # 1:1 custom names
+//! candy build examples/dot_move.tyx --output-dir build/   # redirect all outputs
 //! ```
 //!
-//! Artifacts: intermediates (RGBA/SVG drafts) under `.candy/`; the final video
-//! under `dist/` (only video files ever reach `dist/`). For video builds, the
-//! per-build `.candy/<stem>/` directory is removed automatically after a
-//! successful run unless `--keep-intermediates` is passed.
+//! Artifacts: intermediates (RGBA/SVG drafts) under `.candy/` (or the chosen
+//! `--output-dir`); the final video/GIF/PNG under `dist/` (or `--output-dir`).
+//! For video builds, the per-build intermediate directory is removed
+//! automatically after a successful run unless `--keep-intermediates` is passed.
 
 use std::path::Path;
 
@@ -18,7 +22,7 @@ use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
 use candy::core::diag::CandyWarn;
 use candy::{error, info, warn};
 use candy::{CandyError, Codec, Input, OutputFormat, build_input_with_gpu};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -39,7 +43,8 @@ enum Commands {
         /// Path(s) to one or more `.tyx` Typst X-sheet files (or SVGs with a
         /// `candy-json` block when `--from-svg` is given). Passing several
         /// inputs builds each one in turn, writing a separate output per file.
-        #[arg(num_args = 1..)]
+        /// With no inputs, prints this help.
+        #[arg(num_args = 0..)]
         inputs: Vec<PathBufOrStr>,
         /// Force the inputs to be parsed as SVGs rendered by `@preview/candy`
         /// (each containing a `candy-json` block). Without this flag, the
@@ -47,21 +52,33 @@ enum Commands {
         /// `extract_scene_from_svg`, anything else → `.tyx`.
         #[arg(long)]
         from_svg: bool,
-        /// Output name hint (under `dist/` for videos; ignored for SVG drafts).
-        /// When building multiple files, this is a shared hint; a per-file
-        /// default of `dist/<stem>.<ext>` is used unless a real file name is
-        /// given.
-        #[arg(short, long, default_value = "out")]
-        output: String,
-        /// Output container. Default `mp4`. `svg` produces a draft in `.candy/`.
+        /// Output file name(s). These must be given **one per input** (a 1:1
+        /// correspondence) and must be plain file names — no path separators,
+        /// i.e. no multi-level directories. If the count of names does not
+        /// match the number of inputs, or a name contains a path separator,
+        /// that name is ignored and the default `dist/<stem>.<ext>` is used
+        /// instead (a warning is emitted). Ignored for `--format svg` (the
+        /// draft always lands in `.candy/<stem>/`).
+        #[arg(short, long, num_args = 0..)]
+        output: Vec<String>,
+        /// Redirect **every** output file (including custom `--output` names)
+        /// into this single directory. Only one `--output-dir` may be given;
+        /// giving more than one is an error. When omitted, video/GIF/PNG
+        /// outputs go to `dist/`.
+        #[arg(long)]
+        output_dir: Option<String>,
+        /// Output container / target. Default `mp4`. `svg` produces a draft in
+        /// `.candy/`; `gif` an animated GIF; `png` a static bitmap of the final
+        /// frame.
         #[arg(long, value_enum, default_value = "mp4")]
         format: FormatArg,
         /// Video codec. Default `h264` (self-contained, via openh264). `av1`
         /// (rav1e) is the fallback/alternative; `hevc`/`x264`/`x265`/hardware
-        /// codecs shell out to system ffmpeg when available.
+        /// codecs shell out to system ffmpeg when available. Ignored for
+        /// `--format gif` / `--format png`.
         #[arg(long, value_enum, default_value = "h264")]
         codec: CodecArg,
-        /// Frames per second (video path).
+        /// Frames per second (video / GIF path).
         #[arg(short, long, default_value_t = 30)]
         fps: u32,
         /// Pixels per Typst point (video path; higher = sharper, slower).
@@ -114,6 +131,8 @@ enum FormatArg {
     Mp4,
     Mkv,
     Webm,
+    Gif,
+    Png,
     Svg,
 }
 
@@ -176,23 +195,53 @@ fn run() -> Result<(), CandyError> {
             height,
             gpu,
             keep_intermediates,
+            output_dir,
         } => {
+            // No inputs: print the build subcommand's help and exit cleanly
+            // (the user asked for help on an empty `candy build`).
+            if inputs.is_empty() {
+                let mut cmd = Cli::command();
+                if let Some(build) = cmd.find_subcommand_mut("build") {
+                    let _ = build.print_help();
+                } else {
+                    let _ = cmd.print_help();
+                }
+                println!();
+                return Ok(());
+            }
+            // Custom `--output` names must correspond 1:1 with the inputs. If
+            // the counts disagree, ignore every custom name and warn once.
+            let names_match = output.len() == inputs.len();
+            if !names_match && !output.is_empty() {
+                warn!(CandyWarn::OutputNameCountMismatch(format!(
+                    "{} --output name(s) given for {} input(s)",
+                    output.len(),
+                    inputs.len()
+                )));
+            }
             // Build each input in turn, writing a separate output per file.
             // A failure on one file fails the whole batch (fail-fast); outputs
             // already written are kept.
-            for input in &inputs {
+            for (i, input) in inputs.iter().enumerate() {
                 let input = &input.0;
                 let stem = input
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "animation".into());
-                let intermediate_dir = Path::new(".candy").join(&stem);
+                // Intermediate dir: under `--output-dir` when given (so the
+                // draft is also redirected), otherwise the usual `.candy/<stem>`.
+                let intermediate_dir = match &output_dir {
+                    Some(d) => Path::new(d).join(&stem),
+                    None => Path::new(".candy").join(&stem),
+                };
                 std::fs::create_dir_all(&intermediate_dir)?;
 
                 let (out_fmt, container_ext) = match format {
                     FormatArg::Mp4 => (OutputFormat::Mp4, "mp4"),
                     FormatArg::Mkv => (OutputFormat::Mkv, "mkv"),
                     FormatArg::Webm => (OutputFormat::Webm, "webm"),
+                    FormatArg::Gif => (OutputFormat::Gif, "gif"),
+                    FormatArg::Png => (OutputFormat::Png, "png"),
                     FormatArg::Svg => (OutputFormat::Svg, "svg"),
                 };
                 let codec = match codec {
@@ -227,9 +276,10 @@ fn run() -> Result<(), CandyError> {
                 let ppt = resolve_pixel_per_pt(pixel_per_pt, width, height, page_pt);
 
                 if out_fmt == OutputFormat::Svg {
-                    // SVG draft → `.candy/<stem>/`, never `dist/`. GPU flag is
-                    // irrelevant for SVG drafts (no rasterization). The draft IS
-                    // the deliverable here, so we never auto-clean it.
+                    // SVG draft → `intermediate_dir` (`.candy/<stem>` or the
+                    // redirected `--output-dir/<stem>`), never `dist/`. GPU flag
+                    // is irrelevant for SVG drafts (no rasterization). The draft
+                    // IS the deliverable here, so we never auto-clean it.
                     build_input_with_gpu(
                         input_kind,
                         &intermediate_dir,
@@ -240,42 +290,78 @@ fn run() -> Result<(), CandyError> {
                         ppt,
                         false,
                     )?;
-                    info!("draft: .candy/{stem}/frame_*.svg");
+                    info!("draft: {}/frame_*.svg", intermediate_dir.display());
                     continue;
                 }
 
-                let output = resolve_output(&output, &stem, container_ext);
+                // Resolve the custom name for this input (1:1 with inputs, and
+                // only if it is a plain file name — no path separators).
+                let custom = if names_match {
+                    output.get(i).map(|s| s.as_str())
+                } else {
+                    None
+                };
+                let out_path =
+                    resolve_output(custom, &stem, container_ext, output_dir.as_deref());
                 build_input_with_gpu(
                     input_kind,
                     &intermediate_dir,
-                    &output,
+                    &out_path,
                     out_fmt,
                     codec,
                     fps,
                     ppt,
                     gpu,
                 )?;
-                // Successful video build: drop the per-build intermediate dir
-                // (`.candy/<stem>`) unless the user asked to keep it.
+                // Successful build: drop the per-build intermediate dir unless
+                // the user asked to keep it (the SVG draft `continue`s above, so
+                // it is never cleaned here).
                 if !keep_intermediates {
                     cleanup_intermediate(&intermediate_dir);
                 }
-                info!("built: {}", output.display());
+                info!("built: {}", out_path.display());
             }
         }
     }
     Ok(())
 }
 
-/// Resolve the final video path under `dist/`.
-fn resolve_output(output: &str, stem: &str, ext: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(output);
-    match p.file_name() {
-        Some(name) if name != std::ffi::OsStr::new("out") => {
-            Path::new("dist").join(name.to_string_lossy().into_owned())
+/// Resolve the final output path.
+///
+/// `output_name` is the user's custom name for this input (already validated to
+/// be a 1:1 match and a plain file name by the caller). When it is `None` or
+/// contains a path separator, the default `dist/<stem>.<ext>` (or
+/// `<output_dir>/<stem>.<ext>` when `--output-dir` is given) is used instead.
+fn resolve_output(
+    output_name: Option<&str>,
+    stem: &str,
+    ext: &str,
+    output_dir: Option<&str>,
+) -> std::path::PathBuf {
+    let default_name = format!("{stem}.{ext}");
+    let name = match output_name {
+        Some(n) if is_plain_filename(n) => n.to_string(),
+        Some(n) => {
+            // A custom name with a path separator (multi-level directory) is
+            // rejected — fall back to the default and warn.
+            warn!(CandyWarn::OutputNameInvalid(n.to_string()));
+            default_name.clone()
         }
-        _ => Path::new("dist").join(format!("{stem}.{ext}")),
-    }
+        None => default_name.clone(),
+    };
+    let dir = output_dir.unwrap_or("dist");
+    Path::new(dir).join(name)
+}
+
+/// A plain output file name: non-empty and containing no path separators
+/// (`/` or `\\`), and not `.` / `..`. Multi-level directory paths are rejected
+/// so outputs never escape the chosen output directory.
+fn is_plain_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && name != "."
+        && name != ".."
 }
 
 /// The canvas size (Typst points) of a scene's root for resolution purposes.

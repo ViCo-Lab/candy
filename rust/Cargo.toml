@@ -123,6 +123,13 @@
     earcutr  = "0.5"
     ab_glyph = "0.2"
 
+    # Raster image output targets (GIF animation + PNG bitmap). Both are pure
+    # Rust (no native/C deps, no OpenSSL) so they cross-compile cleanly like the
+    # rest of candy's self-contained pipeline. `gif` handles the animated-GIF
+    # muxer; `png` handles single-frame RGBA bitmap export.
+    gif = "0.13"
+    png = "0.17"
+
 [features]
     # AV1/H.264 video encoding. The build is fully self-contained: encoders run
     # in-process and containers (MP4 / Matroska) are written by candy itself, so no

@@ -281,3 +281,64 @@ pub fn write_rgba_draft(
     fs::write(path, buf)?;
     Ok(())
 }
+
+/// Encode `frames` into an animated GIF written to `path`.
+///
+/// Every frame is composed onto a uniform opaque-white canvas of the largest
+/// frame size (the same compositing the video path uses, so per-frame sizes
+/// that vary with Typst's auto-sizing still produce a valid GIF). The frame
+/// delay is derived from `fps` (centiseconds). The GIF loops forever.
+pub fn write_gif(
+    frames: &[RenderedFrame],
+    fps: u32,
+    path: &Path,
+) -> Result<(), CandyError> {
+    use gif::{Encoder, Frame, Repeat};
+    if frames.is_empty() {
+        return Err(CandyError::Encode("cannot write an empty GIF".into()));
+    }
+    if fps < 1 {
+        return Err(CandyError::Encode("fps must be >= 1".into()));
+    }
+    let max_w = frames.iter().map(|f| f.width).max().unwrap();
+    let max_h = frames.iter().map(|f| f.height).max().unwrap();
+    let tw = max_w.max(1);
+    let th = max_h.max(1);
+    let file = fs::File::create(path)?;
+    let mut encoder = Encoder::new(file, tw as u16, th as u16, &[])
+        .map_err(|e| CandyError::Encode(format!("gif encoder init failed: {e}")))?;
+    encoder
+        .set_repeat(Repeat::Infinite)
+        .map_err(|e| CandyError::Encode(format!("gif repeat failed: {e}")))?;
+    // Frame delay in centiseconds (GIF's time unit); round to at least 1.
+    let delay_cs = ((1000 / fps as u64) / 10).clamp(1, u64::MAX) as u16;
+    for f in frames {
+        let composed = compose(f, tw, th);
+        let mut rgba = composed.rgba;
+        let mut frame = Frame::from_rgba_speed(tw as u16, th as u16, &mut rgba, 10);
+        frame.delay = delay_cs;
+        encoder
+            .write_frame(&frame)
+            .map_err(|e| CandyError::Encode(format!("gif frame encode failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Encode a single [`RenderedFrame`] as an RGBA PNG bitmap written to `path`.
+///
+/// Used by the `--format png` target, which exports the animation's final
+/// frame as a static bitmap (the "poster" of the animation).
+pub fn write_png(frame: &RenderedFrame, path: &Path) -> Result<(), CandyError> {
+    use png::{BitDepth, ColorType};
+    let file = fs::File::create(path)?;
+    let mut enc = png::Encoder::new(file, frame.width as u32, frame.height as u32);
+    enc.set_color(ColorType::Rgba);
+    enc.set_depth(BitDepth::Eight);
+    let mut writer = enc
+        .write_header()
+        .map_err(|e| CandyError::Encode(format!("png header encode failed: {e}")))?;
+    writer
+        .write_image_data(&frame.rgba)
+        .map_err(|e| CandyError::Encode(format!("png data encode failed: {e}")))?;
+    Ok(())
+}

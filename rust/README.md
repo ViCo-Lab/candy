@@ -71,6 +71,8 @@ cross-module side effects. Each layer's postconditions are cheap to assert.
                          │
                          ▼
    renderer::video ─▶ AV1 (rav1e) / H.264 (openh264) / ffmpeg ─▶ MP4 / MKV / WebM
+                         └▶ GIF (animated, pure-Rust `gif`)
+                         └▶ PNG (static bitmap of final frame, pure-Rust `png`)
 ```
 
 The same flow is reachable from an SVG produced by `@preview/candy`: `Input::Svg` →
@@ -170,12 +172,17 @@ End-to-end, `build_input_with_gpu` performs:
    `.candy/<stem>/frame_*.svg` and the function returns — no video is produced.
 6. **Video path**: rasterize frames (parallel via rayon on CPU; serial on GPU), persist
    an `frames.rgba` draft, then encode + mux:
-   - FFmpeg codecs (`uses_ffmpeg()`, or `H265` with `ffmpeg` present) shell out to
-     ffmpeg and bypass candy's muxer.
-   - Self-contained codecs (`Av1`, `H264`) go through `rav1e`/`openh264` + candy's
-     hand-written muxer, with audio collected via `collect_audio`.
-   - On any encode failure, candy writes an SVG draft to `.candy/` and surfaces the
-     error (`E007` for encode).
+   - `Mp4` / `Mkv` / `Webm`: video containers. FFmpeg codecs (`uses_ffmpeg()`, or
+     `H265` with `ffmpeg` present) shell out to ffmpeg and bypass candy's muxer.
+     Self-contained codecs (`Av1`, `H264`) go through `rav1e`/`openh264` + candy's
+     hand-written muxer, with audio collected via `collect_audio`. On any encode
+     failure, candy writes an SVG draft to `.candy/` and surfaces the error
+     (`E007` for encode).
+   - `Gif`: an animated GIF of every frame (looping), encoded in-process via the
+     pure-Rust `gif` crate. The `--codec` flag is ignored.
+   - `Png`: a single static RGBA bitmap of the **final** frame (the animation
+     "poster"), encoded in-process via the pure-Rust `png` crate. The `--codec`
+     flag is ignored.
 
 ### `Input` {#input}
 
@@ -196,11 +203,16 @@ directory of the source file, wired into `Renderer::with_root` so local
 ### `OutputFormat` {#outputformat}
 
 ```rust
-pub enum OutputFormat { Svg, Mp4, Mkv, Webm }
+pub enum OutputFormat { Svg, Mp4, Mkv, Webm, Gif, Png }
 ```
 
-`Svg` is a draft written to `.candy/` (never `dist/`). The others are video containers
-(`Webm` = Matroska with the `webm` doctype).
+`Svg` is a draft written to `.candy/` (never `dist/`). `Mp4` / `Mkv` / `Webm` are video
+containers (`Webm` = Matroska with the `webm` doctype). `Gif` is an animated GIF of all
+frames (looping); `Png` is a static RGBA bitmap of the final frame. The CLI exposes these
+via `--format {mp4,mkv,webm,gif,png,svg}`, plus `--output <name>...` (one plain file name
+per input — no path separators; mismatched counts or directory paths fall back to
+`dist/<stem>.<ext>` with a warning) and `--output-dir <dir>` (redirects every output file
+into a single directory).
 
 ### `Codec` {#codec}
 
@@ -397,7 +409,9 @@ All fallible operations return `Result<T, CandyError>`; production code must not
   `frame_*.svg` (draft frames, also written on encode failure). For **video** builds
   this directory is **removed automatically** after a successful run unless
   `--keep-intermediates` is passed; `--format svg` keeps it (the draft *is* the output).
-- `dist/<stem>.<ext>` — final video (MP4 / MKV / WebM).
+- `dist/<stem>.<ext>` — final video (MP4 / MKV / WebM), animated GIF (`.gif`), or static
+  PNG bitmap of the final frame (`.png`). With `--output-dir <dir>` every one of these is
+  redirected into `<dir>/` instead of `dist/`.
 
 ---
 
