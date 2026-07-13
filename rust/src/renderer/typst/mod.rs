@@ -203,13 +203,9 @@ impl Renderer {
             main: source,
         };
         let warned = typst::compile::<PagedDocument>(&world);
-        match warned.output {
-            Ok(d) => Ok(d),
-            Err(errs) => {
-                eprintln!("DEBUG-COMPILE-RAW:\n{src:?}\n---END ({errs:?})---");
-                Err(CandyError::Typst(format!("{:?}", errs)))
-            }
-        }
+        warned
+            .output
+            .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
     }
 
     /// Compile a Typst source, memoized by the exact source string.
@@ -226,16 +222,7 @@ impl Renderer {
         if let Some(doc) = self.body_cache.lock().unwrap().get(src) {
             return Ok(doc.clone());
         }
-        let doc = match self.compile(src) {
-            Ok(d) => d,
-            Err(e) => {
-                if src.contains('$') || src.contains("9fb3ff") {
-                    eprintln!("DEBUG-COMPILE-FAIL:\n{src}\n---END ({e:?})---");
-                }
-                return Err(e);
-            }
-        };
-        let doc = Arc::new(doc);
+        let doc = Arc::new(self.compile(src)?);
         self.body_cache
             .lock()
             .unwrap()
