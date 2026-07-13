@@ -8,8 +8,11 @@
 //! specific `main` source over the shared state.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use typst::{Library, LibraryExt, World};
+use typst_kit::datetime::Time;
+use typst_kit::diagnostics::DiagnosticWorld;
 use typst_kit::downloader::Downloader;
 use typst_kit::files::{FileStore, FsRoot, SystemFiles};
 use typst_kit::fonts::FontStore;
@@ -17,7 +20,7 @@ use typst_kit::packages::SystemPackages;
 use typst_library::diag::FileError;
 use typst_library::foundations::{Bytes, Datetime, Duration};
 use typst_library::text::Font;
-use typst_syntax::{FileId, Source as TypstSource};
+use typst_syntax::{FileId, Source as TypstSource, VirtualRoot};
 use typst_utils::LazyHash;
 
 #[cfg(feature = "system-downloader")]
@@ -87,10 +90,29 @@ impl Downloader for RustlsDownloader {
 /// library). Built once per [`Renderer`](crate::renderer::typst::Renderer) and
 /// reused across every frame compile, so the cost of system font scanning is
 /// paid exactly once.
+///
+/// Mirrors the official `typst` CLI `SystemWorld`: the standard library is
+/// built via [`Library::builder`], fonts are the embedded fallbacks plus all
+/// system fonts, and the current time is captured once at construction so that
+/// `datetime.today()` is stable across every frame of a single render (just
+/// like the CLI fixes the time per compilation).
 pub(crate) struct WorldState {
     library: LazyHash<Library>,
     fonts: FontStore,
     files: FileStore<SystemFiles>,
+    now: Time,
+    /// Guards the "time-dependent render is not reproducible" warning so it is
+    /// printed at most once per renderer, not once per compiled frame.
+    time_warned: AtomicBool,
+}
+
+impl WorldState {
+    /// Emit the non-determinism warning at most once for this renderer.
+    /// Returns `true` the first time it is called after a time-dependent
+    /// compile, so the caller can print the warning exactly once.
+    pub(crate) fn note_time_used(&self) -> bool {
+        !self.time_warned.swap(true, Ordering::Relaxed)
+    }
 }
 
 impl WorldState {
@@ -101,8 +123,9 @@ impl WorldState {
     ///   `#import "file.typ"` works, and `@preview` packages resolve from
     ///   the local cache (downloading on demand when the
     ///   `system-downloader` feature is enabled)
+    /// - the current system time, captured once for `datetime.today()`
     pub(crate) fn new(project_root: PathBuf) -> Self {
-        let library = LazyHash::new(Library::default());
+        let library = LazyHash::new(Library::builder().build());
 
         let mut fonts = FontStore::new();
         fonts.extend(typst_kit::fonts::embedded());
@@ -123,6 +146,8 @@ impl WorldState {
             library,
             fonts,
             files,
+            now: Time::system(),
+            time_warned: AtomicBool::new(false),
         }
     }
 }
@@ -132,6 +157,30 @@ impl WorldState {
 pub(crate) struct CandyWorld<'a> {
     pub(crate) state: &'a WorldState,
     pub(crate) main: TypstSource,
+    /// Set to `true` the first time [`today`](World::today) is queried during
+    /// this compile. When set, the compiled body depends on the wall-clock
+    /// time (`datetime.today()`), so the render is *not* reproducible — the
+    /// caller emits a warning (see [`CandyWorld::used_time`]).
+    time_used: AtomicBool,
+}
+
+impl<'a> CandyWorld<'a> {
+    /// Construct a per-compile view over the shared state with a fixed `main`
+    /// source. The time-usage flag starts cleared.
+    pub(crate) fn new(state: &'a WorldState, main: TypstSource) -> Self {
+        Self {
+            state,
+            main,
+            time_used: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether this compile queried the current date/time (`datetime.today()`).
+    /// If `true`, the produced document is time-dependent and therefore not
+    /// deterministic across renders.
+    pub(crate) fn used_time(&self) -> bool {
+        self.time_used.load(Ordering::Relaxed)
+    }
 }
 
 impl<'a> World for CandyWorld<'a> {
@@ -165,7 +214,25 @@ impl<'a> World for CandyWorld<'a> {
         self.state.fonts.font(index)
     }
 
-    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
-        None
+    fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
+        // Record that this compile consulted the wall clock: the resulting
+        // document is time-dependent and thus not reproducible.
+        self.time_used.store(true, Ordering::Relaxed);
+        self.state.now.today(offset)
+    }
+}
+
+impl<'a> DiagnosticWorld for CandyWorld<'a> {
+    fn name(&self, id: FileId) -> String {
+        let vpath = id.vpath();
+        match id.root() {
+            // Project-local files: display the path without the leading slash,
+            // matching the official `typst` CLI's user-facing formatting.
+            VirtualRoot::Project => vpath.get_without_slash().into(),
+            // Package files: `@ns/name:ver/path`.
+            VirtualRoot::Package(package) => {
+                format!("{package}{}", vpath.get_with_slash())
+            }
+        }
     }
 }

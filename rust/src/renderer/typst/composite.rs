@@ -155,7 +155,13 @@ pub(crate) fn composite_over_at_xf(
     let ib = -b / det;
     let ic = -c / det;
     let id = a / det;
-    let (ox, oy) = (ox + cx, oy + cy); // shift pivot to center
+    // `ox, oy` is the destination (canvas px) of the source crop's *center*
+    // (the caller passes the glyph center). The inverse map below,
+    // `src = M^-1 * (dst - (ox, oy)) + (cx, cy)`, already places the source
+    // center `(cx, cy)` at `(ox, oy)` — so do NOT add `(cx, cy)` here. Adding
+    // it shifted every fragment by half its crop size (down-right), smearing
+    // the formula into a ghost. (The SVG path never applied this shift, which
+    // is why only the pixel/MP4 path was wrong.)
     for dy in 0..h as i64 {
         for dx in 0..w as i64 {
             // map destination pixel (relative to origin) back into source space

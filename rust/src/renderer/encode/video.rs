@@ -31,7 +31,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::core::error::CandyError;
+use crate::core::diag::{CandyWarn, CandyError};
+use crate::warn;
 use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
@@ -177,10 +178,7 @@ pub fn encode_frames(
         Codec::H264 => match crate::renderer::encode::h264::encode(&composed, fps) {
             Ok(v) => Ok(v),
             Err(e) => {
-                eprintln!(
-                    "warn: [{}] H.264 encode failed, falling back to AV1: {e}",
-                    e.code()
-                );
+                warn!(CandyWarn::CodecFallback(format!("H.264 -> AV1: {e}")));
                 crate::renderer::encode::rav1e::encode(&composed, fps)
             }
         },
@@ -190,10 +188,7 @@ pub fn encode_frames(
         Codec::Av1 => match crate::renderer::encode::rav1e::encode(&composed, fps) {
             Ok(v) => Ok(v),
             Err(e) => {
-                eprintln!(
-                    "warn: [{}] AV1 encode failed, falling back to H.264: {e}",
-                    e.code()
-                );
+                warn!(CandyWarn::CodecFallback(format!("AV1 -> H.264: {e}")));
                 crate::renderer::encode::h264::encode(&composed, fps)
             }
         },
@@ -242,10 +237,10 @@ pub fn collect_audio(tracks: &[crate::core::ast::AudioTrack], _fps: u32) -> Opti
     let mut merged: Option<AudioData> = None;
     for t in tracks {
         let Ok(mut ad) = audio::parse_audio(t) else {
-            eprintln!(
-                "warn: [E007] dropping audio '{}' (unsupported format)",
+            warn!(CandyWarn::AudioDropped(format!(
+                "'{}' unsupported format",
                 t.path
-            );
+            )));
             continue;
         };
         let off = t.start_ms as u64; // already in ms
@@ -256,10 +251,10 @@ pub fn collect_audio(tracks: &[crate::core::ast::AudioTrack], _fps: u32) -> Opti
             None => merged = Some(ad),
             Some(m) => {
                 if m.codec != ad.codec {
-                    eprintln!(
-                        "warn: [E007] dropping audio '{}' (codec differs from first track)",
+                    warn!(CandyWarn::AudioDropped(format!(
+                        "'{}' codec differs from first track",
                         t.path
-                    );
+                    )));
                 } else {
                     m.frames.extend(ad.frames);
                 }

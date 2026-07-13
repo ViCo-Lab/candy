@@ -6,7 +6,7 @@
 //! output is repackaged into length-prefixed NAL samples (as required by MP4 /
 //! Matroska) and the SPS/PPS are extracted into an `avcC` codec config.
 
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
 

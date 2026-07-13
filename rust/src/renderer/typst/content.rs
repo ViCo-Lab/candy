@@ -9,7 +9,7 @@ use typst_syntax::{LinkedNode, Source as TypstSource, parse_code};
 use typst_svg::{SvgOptions, svg};
 
 use crate::core::ast::{Label, Scene, SubPos, Subtitle};
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 
 use super::world::{CandyWorld, WorldState};
 
@@ -217,10 +217,7 @@ pub(crate) fn subtitle_doc(
     );
     let state = WorldState::new(std::path::PathBuf::new());
     let source = TypstSource::detached(src);
-    let world = CandyWorld {
-        state: &state,
-        main: source,
-    };
+    let world = CandyWorld::new(&state, source);
     let warned = compile::<PagedDocument>(&world);
     warned
         .output

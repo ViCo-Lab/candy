@@ -34,7 +34,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
+use crate::info;
 use crate::renderer::RenderedFrame;
 use crate::renderer::encode::{Codec, Container};
 
@@ -243,8 +244,8 @@ pub fn encode_via_ffmpeg(
         ));
     }
 
-    eprintln!(
-        "info: encoded {} frames via ffmpeg -c:v {encoder} -f {format} ({} bytes)",
+    info!(
+        "encoded {} frames via ffmpeg -c:v {encoder} -f {format} ({} bytes)",
         frames.len(),
         bytes.len()
     );

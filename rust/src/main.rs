@@ -15,6 +15,8 @@
 use std::path::Path;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
+use candy::core::diag::CandyWarn;
+use candy::{error, info, warn};
 use candy::{CandyError, Codec, Input, OutputFormat, build_input_with_gpu};
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -147,12 +149,20 @@ enum CodecArg {
     H265Qsv,
 }
 
-fn main() -> Result<(), CandyError> {
+fn main() {
+    if let Err(e) = run() {
+        // Fatal error: surface through the unified diagnostic reporter, which
+        // prints to stderr and terminates with exit code 64..70 (E001 -> 64).
+        error!(&e);
+    }
+}
+
+fn run() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Candy => {
             // Hidden easter egg: `candy candy` / `candy tyx`.
-            println!("Built for Candy(TYX). In memory of CChO2025.");
+            eprintln!("Built for Candy(TYX). In memory of CChO2025.");
         }
         Commands::Build {
             inputs,
@@ -230,7 +240,7 @@ fn main() -> Result<(), CandyError> {
                         ppt,
                         false,
                     )?;
-                    println!("draft: .candy/{stem}/frame_*.svg");
+                    info!("draft: .candy/{stem}/frame_*.svg");
                     continue;
                 }
 
@@ -250,7 +260,7 @@ fn main() -> Result<(), CandyError> {
                 if !keep_intermediates {
                     cleanup_intermediate(&intermediate_dir);
                 }
-                println!("built: {}", output.display());
+                info!("built: {}", output.display());
             }
         }
     }
@@ -313,10 +323,7 @@ fn cleanup_intermediate(dir: &Path) {
         return;
     }
     if let Err(e) = std::fs::remove_dir_all(dir) {
-        eprintln!(
-            "warn: could not remove intermediate dir {}: {e}",
-            dir.display()
-        );
+        warn!(CandyWarn::CleanupFailed(format!("{}: {e}", dir.display())));
         return;
     }
     if let Some(parent) = dir.parent() {

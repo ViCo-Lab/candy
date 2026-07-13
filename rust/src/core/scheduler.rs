@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
 use crate::core::easing::Easing;
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 
 /// Per-target animation state. Internal to the scheduler.
 #[derive(Debug, Clone, Copy)]

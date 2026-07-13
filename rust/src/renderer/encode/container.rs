@@ -7,7 +7,8 @@
 //!
 //! All byte layout is written by hand so `candy` is fully self-contained.
 
-use crate::core::error::CandyError;
+use crate::core::diag::{CandyWarn, CandyError};
+use crate::warn;
 use crate::renderer::audio::AudioData;
 use crate::renderer::EncodedVideo;
 
@@ -33,7 +34,7 @@ pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, C
             (sizes, durs, total)
         }
         Some(_) => {
-            eprintln!("warn: [E007] MP4 only muxes AAC audio; ignoring non-AAC track");
+            warn!(CandyWarn::AudioIgnored);
             (vec![], vec![], 0)
         }
         None => (vec![], vec![], 0),

@@ -6,7 +6,8 @@
 //! units are returned as [`crate::renderer::EncodedVideo`] for the container
 //! muxer to package into MP4 / Matroska (WebM/MKV).
 
-use crate::core::error::CandyError;
+use crate::core::diag::{CandyWarn, CandyError};
+use crate::warn;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
 
@@ -35,10 +36,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
         match catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, false))) {
             Ok(r) => r,
             Err(_) => {
-                eprintln!(
-                    "warn: [E007] rav1e inter-prediction panicked; retrying AV1 in \
-                     all-intra mode (valid but no temporal compression)"
-                );
+                warn!(CandyWarn::EncodeRetry);
                 catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, true)))
                     .unwrap_or_else(|_| {
                         Err(CandyError::Encode(

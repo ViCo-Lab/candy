@@ -14,10 +14,12 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use typst_syntax::ast::{self, AstNode, Expr};
 use typst_syntax::LinkedNode;
 use typst_syntax::SyntaxNode;
+use typst_syntax::ast::{self, AstNode, Expr};
 
+use crate::core::diag::CandyWarn;
+use crate::warn;
 use crate::parser::ast_walk::ParseCtx;
 
 /// The Candy symbol names recognized as directives.
@@ -131,17 +133,20 @@ pub(crate) fn current_scope(ctx: &ParseCtx) -> String {
 }
 
 /// Resolve the easing named arg, falling back to Linear with a warning.
-pub(crate) fn resolve_easing(named: &HashMap<String, Expr>, label: &crate::core::ast::Label) -> crate::core::easing::Easing {
+pub(crate) fn resolve_easing(
+    named: &HashMap<String, Expr>,
+    label: &crate::core::ast::Label,
+) -> crate::core::easing::Easing {
     match named.get("easing") {
         Some(Expr::Str(s)) => {
             let name = s.get();
             match crate::core::easing::Easing::from_str(name.as_str()) {
                 Some(e) => e,
                 None => {
-                    eprintln!(
-                        "warn: unknown easing '{name}' for @{}, falling back to linear",
+                    warn!(CandyWarn::UnknownEasing(format!(
+                        "'{name}' for @{}",
                         label.0
-                    );
+                    )));
                     crate::core::easing::Easing::Linear
                 }
             }
@@ -151,7 +156,10 @@ pub(crate) fn resolve_easing(named: &HashMap<String, Expr>, label: &crate::core:
 }
 
 /// Extract the target label (positional string arg or `target:` named arg).
-pub(crate) fn target_arg(pos: &[Expr], named: &HashMap<String, Expr>) -> Option<crate::core::ast::Label> {
+pub(crate) fn target_arg(
+    pos: &[Expr],
+    named: &HashMap<String, Expr>,
+) -> Option<crate::core::ast::Label> {
     let e = pos.first().or_else(|| named.get("target"))?;
     match e {
         Expr::Str(s) => Some(crate::core::ast::Label(s.get().to_string())),

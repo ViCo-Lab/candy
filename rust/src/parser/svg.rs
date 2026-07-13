@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::core::ast::Scene;
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 
 /// Extract a `Scene` AST from an SVG rendered by `@preview/candy`.
 ///

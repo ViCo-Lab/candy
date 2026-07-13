@@ -37,17 +37,15 @@
 //!   timelines for the not-yet-active pages).
 //! * [`transform`] — per-glyph `#transform` plan types and the body placement
 //!   source builder.
-
 pub(crate) mod camera;
 pub(crate) mod composite;
 pub(crate) mod content;
 pub(crate) mod matrix;
-pub(crate) mod svg;
 pub(crate) mod morph;
 pub(crate) mod pages;
+pub(crate) mod svg;
 pub(crate) mod transform;
 pub(crate) mod world;
-
 // Re-export the helper items so the `Renderer` impl below can call them with
 // the same unqualified names as before the split.
 pub(crate) use self::camera::*;
@@ -58,34 +56,29 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-
+use crate::core::ast::{FrameData, Label, Scene, Subtitle};
+use crate::core::diag::{CandyError, CandyWarn};
+use crate::warn;
+use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use std::collections::HashMap;
 use std::hash::Hash;
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
 use typst_layout::PagedDocument;
 use typst_library::foundations::Smart;
 use typst_library::visualize::Paint;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
-use typst_syntax::Source as TypstSource;
-use typst_utils::Scalar;
-
-use crate::core::ast::{FrameData, Label, Scene, Subtitle};
-use crate::core::error::CandyError;
-use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
-
-#[cfg(test)]
-use std::path::Path;
 #[cfg(test)]
 use typst_syntax::FileId;
+use typst_syntax::Source as TypstSource;
 #[cfg(test)]
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
-
+use typst_utils::Scalar;
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
-
 /// Maximum segment length (in Typst points) when bisecting morph outline rings.
 /// Smaller = smoother morph but more points (the plan is sampled per frame, so
 /// the per-frame cost is linear in the point count — 3pt is a good balance).
@@ -100,7 +93,6 @@ struct SpriteKey {
     y_q: u32,
     ppi_q: u32,
 }
-
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
     scene: Scene,
@@ -163,7 +155,6 @@ pub struct Renderer {
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
 }
-
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
     ///
@@ -173,7 +164,6 @@ impl Renderer {
     pub fn new(scene: Scene) -> Result<Self, CandyError> {
         Self::with_root(scene, PathBuf::new())
     }
-
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
         scene.validate().map_err(CandyError::Parse)?;
@@ -194,20 +184,20 @@ impl Renderer {
             bg_cache: Mutex::new(HashMap::new()),
         })
     }
-
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
         let source = TypstSource::detached(src.to_string());
-        let world = CandyWorld {
-            state: &self.state,
-            main: source,
-        };
+        let world = CandyWorld::new(&self.state, source);
         let warned = typst::compile::<PagedDocument>(&world);
+        // If the body consulted the wall clock (`datetime.today()`), the render
+        // is time-dependent and not reproducible — warn once per renderer.
+        if world.used_time() && self.state.note_time_used() {
+            warn!(CandyWarn::TimeDependent);
+        }
         warned
             .output
             .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
     }
-
     /// Compile a Typst source, memoized by the exact source string.
     ///
     /// This is the unified compile entry point for every object render path
@@ -229,7 +219,6 @@ impl Renderer {
             .insert(src.to_string(), doc.clone());
         Ok(doc)
     }
-
     /// Resolve the Typst body for `label` at frame time `time_ms`, choosing the
     /// SAME source for every render path (SVG, pixels, isolated). During an
     /// active `#morph` window the morphed polygon wins; otherwise the label's
@@ -240,7 +229,6 @@ impl Renderer {
         self.morph_body_for(label, time_ms)
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
-
     /// Resolve a `#scene(bg: …)` color expression to a `#rrggbb(aa)` hex string
     /// suitable for an SVG `fill` / video canvas, using the real Typst compiler.
     ///
@@ -273,7 +261,6 @@ impl Renderer {
             .insert(bg.to_string(), resolved.clone());
         resolved
     }
-
     /// Effective background hex for `scene_id`, walking up the scene tree to
     /// inherit a parent's `bg` (root with none ⇒ opaque white).
     fn scene_bg_hex(&self, scene_id: usize) -> String {
@@ -290,7 +277,6 @@ impl Renderer {
         }
         "white".to_string()
     }
-
     /// Parse a `#rrggbb(aa)` hex (or a bare `#rgb`) into `(r, g, b, a)`, with
     /// full opacity as the default alpha. Used to seed the video canvas.
     fn hex_to_rgba(bg: &str) -> [u8; 4] {
@@ -324,7 +310,6 @@ impl Renderer {
         };
         [bytes[0], bytes[1], bytes[2], bytes[3]]
     }
-
     /// Map a single hex digit (`0-9`, `a-f`, `A-F`) to its 0–15 value, doubling
     /// it to a 0–255 byte for `#rgb` shorthand expansion. Unknown digits → 15.
     fn hex_digit(b: u8) -> u8 {
@@ -336,7 +321,6 @@ impl Renderer {
         }
         .saturating_mul(17)
     }
-
     /// Compose a parent transform onto a child transform (group support).
     /// Both are deltas from their respective natural positions; the result is
     /// the child's effective transform with the parent's pan/zoom/rotate applied
@@ -357,7 +341,6 @@ impl Renderer {
             easing: child.easing.clone(),
         }
     }
-
     /// Resolve the effective per-frame transform of `label`, walking up the
     /// group parent chain (cycle-guarded) and composing each ancestor.
     fn effective_state(&self, label: &Label, states: &HashMap<Label, FrameData>) -> FrameData {
@@ -386,7 +369,6 @@ impl Renderer {
         }
         combined
     }
-
     /// Build the per-frame object states: seed from `all_frames` + `scene.items`,
     /// then apply group (parent→child) transform composition. Returns the map of
     /// label → effective transform (excluding the synthetic camera and any
@@ -415,11 +397,9 @@ impl Renderer {
                 .entry(label.clone())
                 .or_insert_with(|| self.initial_for(label.clone(), time_ms));
         }
-
         // Camera is a synthetic mobject; extract and remove it from the draw set.
         let mut camera = states.get(&Label(CAMERA_LABEL.into())).cloned();
         states.remove(&Label(CAMERA_LABEL.into()));
-
         // A `#camera` directive is *scene-scoped*: it only transforms the scene
         // in which it is declared. Once that scene ends, the camera returns to
         // identity so a pan/zoom/rotate from an earlier scene does not leak into
@@ -465,10 +445,8 @@ impl Renderer {
                 }
             }
         }
-
         // Synthetic group parents (empty body) are containers, not drawn.
         let parent_labels: std::collections::HashSet<&Label> = self.scene.groups.values().collect();
-
         let mut out: HashMap<Label, FrameData> = HashMap::new();
         for label in states.keys() {
             if parent_labels.contains(label)
@@ -484,7 +462,6 @@ impl Renderer {
         }
         (out, camera)
     }
-
     /// Compute (once) the natural layout of every mobject.
     ///
     /// Each scene's objects are laid out by plain Typst document flow — every
@@ -513,9 +490,7 @@ impl Renderer {
             .unwrap_or((16.0, 9.0));
         self.page_w = page_w_cm * PT_PER_CM;
         self.page_h = page_h_cm * PT_PER_CM;
-
         let preamble = imports_preamble(&self.scene);
-
         // Group labels by the scene that owns them, preserving declaration order
         // within each scene. Legacy single-scene documents (no `scenes`) lay out
         // every item on one page.
@@ -533,7 +508,6 @@ impl Renderer {
                 by_scene.push((s.id, pg, ls));
             }
         }
-
         let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
         // Number of pages each scene's natural layout spilled onto. A scene that
         // overflows its single page becomes a *cross-page scene*: its mobjects
@@ -543,7 +517,6 @@ impl Renderer {
         // label -> the page (0-based) its natural layout landed on. Fed to the
         // page scheduler so it can partition each scene's timeline by page.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
-
         for (sid, (pw, ph), labels) in &by_scene {
             // Native layout pass: each mobject is wrapped in a content-sized,
             // block-level coloured `block` and emitted in plain document flow.
@@ -647,9 +620,7 @@ impl Renderer {
                 }
             }
         }
-
         self.nat = nat;
-
         // Build per-scene canvas sizes + label→scene ownership for auto-hide.
         // When `scenes` is empty (legacy single-scene document) we fall back to
         // the whole document as one scene (id 0) — behavior identical to v0.1.
@@ -671,13 +642,11 @@ impl Renderer {
             }
         }
         self.scene_pages = sp;
-
         // Build the cross-page scene playback scheduler. This partitions each
         // scene's timeline into page-segments (see [`pages`]): each page has its
         // own independent timeline, and the renderer auto-advances from one page
         // to the next once the current page's content has finished playing.
         self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
-
         // Precompute morph plans (the expensive part) exactly once. For each
         // `#morph(from, to)` pair we render both bodies to SVG, extract their
         // outline rings, normalize each ring to its own local origin, and build
@@ -710,7 +679,6 @@ impl Renderer {
             self.morph_cache
                 .insert((pair.from.clone(), pair.to.clone()), plan);
         }
-
         // Precompute per-glyph fragment layouts for inline `#transform` calls.
         // Each plan's old/new bodies are split into glyph fragments, laid out at
         // their absolute page positions, and matched via LCS. Only plans that
@@ -725,11 +693,9 @@ impl Renderer {
                 self.transform_fragments.push(tf);
             }
         }
-
         self.natural_computed = true;
         Ok(())
     }
-
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).
     fn initial_for(&self, label: Label, time_ms: u32) -> FrameData {
         match self.scene.initial.get(&label) {
@@ -746,7 +712,6 @@ impl Renderer {
             None => FrameData::new(time_ms, label),
         }
     }
-
     /// Render a single mobject at its placed position onto a transparent
     /// full-canvas RGBA frame (page-sized).
     fn render_object_pixels(
@@ -765,7 +730,6 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = self.resolve_body(label, time_ms);
         let preamble = imports_preamble(&self.scene);
-
         // Sprite cache: identical (label + body + quantized transform + ppi)
         // states reuse the previously rasterized RGBA, skipping Typst's
         // `render`. Paused / static objects are the common case and hit this
@@ -787,7 +751,6 @@ impl Renderer {
         if let Some(cached) = self.sprite_cache.lock().unwrap().get(&key) {
             return Ok((**cached).clone());
         }
-
         let placed = place_source(
             page_w,
             page_h,
@@ -798,7 +761,6 @@ impl Renderer {
             &body,
             &preamble,
         );
-
         let doc = self.compile_cached(&placed)?;
         let page = doc
             .pages()
@@ -820,7 +782,6 @@ impl Renderer {
             .insert(key, Arc::new(frame.clone()));
         Ok(frame)
     }
-
     /// Stable paint index for each label, following source *declaration* order:
     /// scenes in order, each scene's `owns_labels` in declaration order. Used so
     /// the composite z-order is deterministic and faithful to native Typst
@@ -837,7 +798,6 @@ impl Renderer {
         }
         idx
     }
-
     /// Composite all mobjects (per-object opacity) onto an opaque-white canvas.
     pub fn render_frame_pixels(
         &mut self,
@@ -848,7 +808,6 @@ impl Renderer {
         self.ensure_natural()?;
         self.render_frame_pixels_par(time_ms, all_frames, pixel_per_pt)
     }
-
     /// Parallel-safe variant of [`render_frame_pixels`](Self::render_frame_pixels).
     ///
     /// Takes `&self` (not `&mut self`) so it can be called from a rayon
@@ -864,7 +823,6 @@ impl Renderer {
         // Resolve per-object effective transforms (group composition applied)
         // and extract the optional global camera state.
         let (states, camera) = self.prepare_states(all_frames, time_ms);
-
         // Resolve the active scene (innermost scene at this frame time) and its
         // canvas. Entering a child scene hides its parent — we render only the
         // active scene's mobjects. With no scene tree, the whole document is one
@@ -889,11 +847,9 @@ impl Renderer {
                 .copied()
                 .unwrap_or((self.page_w, self.page_h))
         };
-
         let mut labels: Vec<&Label> = states.keys().collect();
         let order = self.draw_order_index();
         labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
-
         let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
         for label in &labels {
             // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
@@ -926,7 +882,6 @@ impl Renderer {
             let frame = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
             objs.push((st.opacity, frame));
         }
-
         // Subtitle overlays are collected separately: they must be composited
         // AFTER the global camera warp so they stay pinned at a fixed page
         // position/size regardless of the current view (pan/zoom/rotate).
@@ -941,7 +896,6 @@ impl Renderer {
                 subs.push(frame);
             }
         }
-
         // Canvas size follows the active scene's page (not an arbitrary frame).
         let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
         let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
@@ -985,14 +939,12 @@ impl Renderer {
             rgba: canvas,
         })
     }
-
     /// Public wrapper around `ensure_natural` so callers (e.g. the parallel
     /// rasterization loop in `build_input_with_gpu`) can pre-compute the
     /// natural layout before spawning parallel frame renders.
     pub fn ensure_natural_public(&mut self) -> Result<(), CandyError> {
         self.ensure_natural()
     }
-
     /// Test-only accessor for the computed natural (first-frame) top-left of a
     /// mobject, in Typst points (page origin). Used by the native-consistency /
     /// declaration-order regression tests.
@@ -1000,7 +952,6 @@ impl Renderer {
     pub(crate) fn nat_for(&self, label: &Label) -> Option<(f64, f64)> {
         self.nat.get(label).copied()
     }
-
     /// Test-only: summary of the precomputed per-glyph transform plans
     /// `(target, fragment_count, start_ms, end_ms)`.
     #[cfg(test)]
@@ -1010,7 +961,6 @@ impl Renderer {
             .map(|p| (p.target.0.clone(), p.anims.len(), p.start_ms, p.end_ms))
             .collect()
     }
-
     /// Test-only: total number of glyph fragments active at `time_ms`.
     #[cfg(test)]
     pub(crate) fn active_fragment_count(&self, time_ms: u32) -> usize {
@@ -1020,7 +970,6 @@ impl Renderer {
             .map(|p| p.anims.len())
             .sum()
     }
-
     /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).
     ///
     /// Available only when the `gpu` cargo feature is enabled. Renders the
@@ -1045,7 +994,6 @@ impl Renderer {
         let svg_bytes = self.render_frame_at(time_ms, all_frames)?;
         let svg_str = std::str::from_utf8(&svg_bytes)
             .map_err(|e| CandyError::Typst(format!("svg utf8: {e}")))?;
-
         // 2. Compute target pixel dimensions from the active scene's page size + ppi.
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
@@ -1058,11 +1006,9 @@ impl Renderer {
         };
         let width = (pw * pixel_per_pt as f64).round().max(1.0) as u32;
         let height = (ph * pixel_per_pt as f64).round().max(1.0) as u32;
-
         // 3. Rasterize on the GPU.
         gpu.render_svg(svg_str, width, height)
     }
-
     /// Render the full scene at a frame index to an SVG string (draft / fallback).
     ///
     /// Unlike the older implementation, this applies per-object `opacity` by
@@ -1079,14 +1025,11 @@ impl Renderer {
         // Resolve per-object effective transforms (group composition applied)
         // and extract the optional global camera state.
         let (states, camera) = self.prepare_states(all_frames, time_ms);
-
         let mut labels: Vec<&Label> = states.keys().collect();
         let order = self.draw_order_index();
         labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
-
         // Deterministic z-order (same as the video path), following source
         // declaration order so并列 mobjects paint in the order they were written.
-
         // Resolve the active scene + its canvas. Only the active scene's
         // mobjects are rendered; a parent scene is auto-hidden while a child
         // scene is active.
@@ -1107,7 +1050,6 @@ impl Renderer {
                 .copied()
                 .unwrap_or((self.page_w, self.page_h))
         };
-
         // Background, page-sized canvas. The fill honors the active scene's
         // configured `bg` (e.g. rgb("#05060f")), inheriting from a parent
         // scene and defaulting to opaque white when none is set.
@@ -1127,7 +1069,6 @@ impl Renderer {
             ph = ph,
             bg_hex = bg_hex
         ));
-
         // A present camera wraps only the mobjects in a single global transform
         // group. The background and subtitle overlays stay fixed (drawn outside
         // this group) so they are unaffected by the camera; only the mobjects
@@ -1138,7 +1079,6 @@ impl Renderer {
                 camera_transform_svg(cam, pw, ph)
             ));
         }
-
         for label in labels {
             // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
             // the active scene (`label_scene[label] == active`). This is what
@@ -1173,7 +1113,6 @@ impl Renderer {
             let op = st.opacity.clamp(0.0, 1.0);
             out.push_str(&format!("<g opacity=\"{op}\">\n{obj_svg}\n</g>\n"));
         }
-
         // Per-glyph transform overlays (Manim-style), drawn INSIDE the camera
         // group so they move with the view like the other mobjects.
         //
@@ -1189,7 +1128,6 @@ impl Renderer {
         // is also what prevents neighbouring glyphs from leaking through a
         // slightly-off clip box — the "residual garbage" artefact.
         out.push_str(&self.transform_overlay_svg(&states, time_ms));
-
         // Close the camera group BEFORE drawing subtitles so the captions are
         // not transformed by the camera — they stay pinned at a fixed page
         // position and fixed size regardless of the current view (pan/zoom/
@@ -1198,7 +1136,6 @@ impl Renderer {
         if camera.is_some() {
             out.push_str("</g>\n");
         }
-
         // Subtitle overlays: one per visible scope, subject to
         // parental shadowing + auto-destroy. Drawn on top of the objects,
         // OUTSIDE any camera transform, at their fixed page anchors.
@@ -1213,11 +1150,9 @@ impl Renderer {
                 out.push('\n');
             }
         }
-
         out.push_str("</svg>\n");
         Ok(out.into_bytes())
     }
-
     /// Render a single mobject at its placed position as an SVG string.
     /// Uses the same placement math as `render_object_pixels`.
     fn render_object_svg(
@@ -1235,7 +1170,6 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let body = self.resolve_body(label, time_ms);
         let preamble = imports_preamble(&self.scene);
-
         let src = place_source(
             page_w,
             page_h,
@@ -1246,7 +1180,6 @@ impl Renderer {
             &body,
             &preamble,
         );
-
         let doc = self.compile_cached(&src)?;
         let page = doc
             .pages()
@@ -1254,7 +1187,6 @@ impl Renderer {
             .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
         Ok(typst_svg::svg(page, &SvgOptions::default()))
     }
-
     /// Render a single target's frame as an isolated SVG (spec §4.4 style).
     pub fn render_frame(&mut self, frame: &FrameData) -> Result<Vec<u8>, CandyError> {
         if !self.scene.items.contains_key(&frame.target)
@@ -1271,7 +1203,6 @@ impl Renderer {
         let svg = typst_svg::svg(page, &SvgOptions::default());
         Ok(svg.into_bytes())
     }
-
     /// Build the isolated per-object source for a single target.
     fn object_source(&self, st: &FrameData, time_ms: u32) -> String {
         let nat = self.nat.get(&st.target).cloned().unwrap_or((0.0, 0.0));
@@ -1292,12 +1223,10 @@ impl Renderer {
             &preamble,
         )
     }
-
     /// Render a subtitle to an SVG string using the scene's page size.
     fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
         render_subtitle_svg_impl(&self.scene, sub, self.page_w, self.page_h, time_ms)
     }
-
     /// Render a subtitle to an RGBA frame (page-sized) for the pixel path.
     fn render_subtitle_pixels(
         &self,
@@ -1321,7 +1250,6 @@ impl Renderer {
             rgba: pix.data().to_vec(),
         })
     }
-
     /// Render a mobject body in isolation and return its largest outline shape
     /// (by absolute area) as a ring of points plus its paint. Returns `None` if
     /// the body produces no extractable outline (e.g. an image or a body whose
@@ -1355,7 +1283,6 @@ impl Renderer {
             })
             .map(|s| (s.ring, s.fill, s.stroke))
     }
-
     /// If `label` is the `to` target of an active `#morph` pair at `time_ms`,
     /// return the morphed shape as a Typst `polygon(...)` body (without a
     /// leading `#` — the caller's `place_source` prepends it). Outside the pair
@@ -1383,7 +1310,6 @@ impl Renderer {
         None
     }
 }
-
 #[cfg(test)]
 pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -1393,10 +1319,7 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
     let state = WorldState::new(dir);
     let text = std::fs::read_to_string(path)?; // E001 on missing file
     let source = TypstSource::new(id, text);
-    let world = CandyWorld {
-        state: &state,
-        main: source,
-    };
+    let world = CandyWorld::new(&state, source);
     let warned = typst::compile::<PagedDocument>(&world);
     match warned.output {
         Ok(doc) => {
@@ -1409,7 +1332,6 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
         Err(e) => Err(CandyError::Typst(format!("{:?}", e))),
     }
 }
-
 #[test]
 fn path_parser_handles_relative_hv_and_implicit_repeat() {
     // Typst emits the coloured layout-marker rects as relative `v`/`h` paths.
@@ -1433,7 +1355,6 @@ fn path_parser_handles_relative_hv_and_implicit_repeat() {
         "expected height 13.16, got {max_y}"
     );
 }
-
 #[test]
 fn path_parser_includes_bezier_control_points() {
     // Control points must be part of the returned hull, otherwise the bbox of
@@ -1451,7 +1372,6 @@ fn path_parser_includes_bezier_control_points() {
         "control point y=-10 must bound bbox, got {min_y}"
     );
 }
-
 /// Verify the content timeline actually swaps an mobject's rendered body
 /// between frames (this is what makes `transform` show the OLD content before
 /// the switch and the NEW content after, without corrupting earlier frames).
@@ -1460,7 +1380,6 @@ fn content_timeline_swaps_rendered_body() {
     use crate::core::ast::{Label, Scene, Slide};
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     let mut items = HashMap::new();
     items.insert(Label("box".into()), "rect(width: 2cm, height: 2cm)".into());
     let mut timeline = HashMap::new();
@@ -1490,7 +1409,6 @@ fn content_timeline_swaps_rendered_body() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     // Before the switch (t=0): should render the original `rect`.
     let before = r.render_frame_at(0, &[]).unwrap();
@@ -1501,14 +1419,12 @@ fn content_timeline_swaps_rendered_body() {
         "content timeline did not change rendered body"
     );
 }
-
 #[test]
 fn substitute_counters_expands_ecval_as_ast_node() {
     use crate::core::ast::{CounterDef, Slide};
     use crate::core::easing::Easing;
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     let mut counters = Vec::new();
     counters.push(CounterDef {
         name: "r".into(),
@@ -1541,7 +1457,6 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     // The canonical `ecval("name")` form: a real AST call expanded to an integer.
     assert_eq!(
         substitute_counters(&scene, "circle(radius: ecval(\"r\") * 1pt + 1cm)", 0),
@@ -1562,14 +1477,12 @@ fn substitute_counters_expands_ecval_as_ast_node() {
     // The bare-ident form stays accepted for backwards compatibility.
     assert_eq!(substitute_counters(&scene, "ecval(r)", 0), "10");
 }
-
 #[test]
 fn subtitle_stays_in_viewport() {
     use crate::core::ast::{Scene, Slide, SubPos, Subtitle};
     use crate::core::easing::Easing;
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
     let mut subtitles = Vec::new();
@@ -1613,7 +1526,6 @@ fn subtitle_stays_in_viewport() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     let svg = r.render_frame_at(50, &[]).unwrap();
     let s = String::from_utf8(svg).unwrap();
@@ -1635,7 +1547,6 @@ fn subtitle_stays_in_viewport() {
         "subtitle overflows viewport: max translate y = {max_y} > page_h {page_h}"
     );
 }
-
 /// Verify the performance-first morph path: the renderer precomputes a
 /// `MorphPlan` and, during the pair window, returns the `to` object's body as
 /// an interpolated `polygon(...)` (a real shape morph, not a plain crossfade).
@@ -1646,7 +1557,6 @@ fn morph_renders_interpolated_polygon() {
     use crate::core::easing::Easing;
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     let mut items = HashMap::new();
     items.insert(Label("a".into()), "circle(radius: 1cm, fill: blue)".into());
     items.insert(Label("b".into()), "square(size: 2cm, fill: red)".into());
@@ -1680,10 +1590,8 @@ fn morph_renders_interpolated_polygon() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
-
     // Before the window: normal body (b is just a square).
     assert!(
         r.morph_body_for(&Label("b".into()), 101).is_none(),
@@ -1709,11 +1617,9 @@ fn morph_renders_interpolated_polygon() {
         .morph_body_for(&Label("b".into()), 100)
         .expect("expected a morphed polygon at t=end");
     assert!(body_end.starts_with("polygon("));
-
     // The plan was actually precomputed (not empty).
     assert!(!r.morph_cache.is_empty(), "morph plan should be cached");
 }
-
 /// Regression test for two coupled rendering bugs:
 ///   1. Positioning must match native Typst — `nat` is the body's content-box
 ///      top-left (the coloured-block top-left), NOT shifted by the body's ink
@@ -1722,7 +1628,6 @@ fn morph_renders_interpolated_polygon() {
 ///   2. Multiple并列 mobjects must keep their *declaration* order top-to-bottom.
 ///      The labels below are deliberately declared as `zeta, alpha, mid` (not
 ///      alphabetical) so a stray alphabetical sort would be detected.
-
 /// Independent ground-truth reference shared by the layout regression tests:
 /// lay the bodies out in plain document flow (each wrapped in a uniquely
 /// coloured block) and read back each block's top-left. This deliberately does
@@ -1758,13 +1663,11 @@ fn native_natural_positions(
     }
     out
 }
-
 #[test]
 fn renderer_natural_layout_matches_native_and_declaration_order() {
     use crate::core::ast::{Label, Scene, SceneInfo, Slide};
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     let ordered: Vec<(String, String)> = vec![
         ("zeta".into(), "text(size: 20pt)[First]".into()),
         ("alpha".into(), "rect(width: 3cm, height: 1cm)".into()),
@@ -1806,20 +1709,16 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
-
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
-
     // Independent ground-truth reference: lay the bodies out in plain document
     // flow (each wrapped in a uniquely coloured block) and read back each
     // block's top-left. This deliberately does NOT call `ensure_natural`, so a
     // regression in the production layout (ink-offset shift, scrambled order) is
     // caught rather than silently mirrored.
     let native = native_natural_positions(&r, &ordered, page_w, page_h);
-
     // (1) Each mobject's natural top-left must equal native Typst's content-box
     //     top-left (within 1pt — far smaller than a text ink offset of ~16pt).
     for (l, _) in &ordered {
@@ -1831,7 +1730,6 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
             "label {l}: candy nat {candy:?} != native {nat:?}"
         );
     }
-
     // (2) Declaration order must be preserved top-to-bottom. With labels
     //     `zeta, alpha, mid`, an alphabetical sort would put `alpha` on top;
     //     assert `zeta` is highest and the order follows the source.
@@ -1845,7 +1743,6 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
         "order scrambled: alpha must sit above mid"
     );
 }
-
 /// Regression test for "temporarily-not-rendered mobjects use `#hide` to occupy
 /// their natural space instead of being skipped". A mobject hidden at frame 0
 /// (its content-timeline resolves to `none` at t=0, e.g. a `reveal`/`typewriter`
@@ -1857,7 +1754,6 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
     use crate::core::ast::{Label, Scene, SceneInfo, Slide};
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-
     // `hidden` is suppressed at t=0 via the content timeline; its base body is
     // still real text (what it shows once revealed).
     let ordered: Vec<(String, String)> = vec![
@@ -1872,7 +1768,6 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
     // Suppress `hidden` at frame 0 (mirrors `reveal`/`typewriter` behaviour).
     let mut ct: HashMap<Label, Vec<(u32, String)>> = HashMap::new();
     ct.insert(Label("hidden".into()), vec![(0, "none".to_string())]);
-
     let owns: Vec<Label> = ordered.iter().map(|(l, _)| Label(l.clone())).collect();
     let scene = Scene {
         slides: vec![Slide {
@@ -1905,14 +1800,11 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         groups: HashMap::new(),
         private_metadata: PrivateMeta::default(),
     };
-
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
-
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
     let native = native_natural_positions(&r, &ordered, page_w, page_h);
-
     // (1) The hidden mobject MUST have a natural position (it was not skipped).
     let hidden = r
         .nat_for(&Label("hidden".into()))
@@ -1934,7 +1826,6 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         "hidden must reserve space above bottom"
     );
 }
-
 /// Per-glyph `Transform` must split inline content into independent glyph
 /// fragments (matched glide, unmatched fade) instead of the old crossfade, and
 /// must handle *chained* transforms by reading the latest `content_timeline`
@@ -2178,7 +2069,6 @@ fn transform_translation_animate_shifts_all_fragments() {
         );
     }
 }
-
 /// Regression: a scene whose content overflows its page becomes a **cross-page
 /// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
 /// timeline) but are laid out across the overflow pages, and the renderer plays
@@ -2233,3 +2123,4 @@ fn overflowing_scene_plays_pages_in_sequence() {
     );
     std::fs::remove_file(&tmp).ok();
 }
+

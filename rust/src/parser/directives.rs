@@ -16,6 +16,8 @@ use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
     Slide, Subtitle, TrackKey,
 };
+use crate::core::diag::CandyWarn;
+use crate::warn;
 use crate::core::easing::Easing;
 
 use crate::parser::ast_walk::ParseCtx;
@@ -164,10 +166,10 @@ fn process_animate(
             match Easing::from_str(name.as_str()) {
                 Some(e) => e,
                 None => {
-                    eprintln!(
-                        "warn: unknown easing '{name}' for @{}, falling back to linear",
+                    warn!(CandyWarn::UnknownEasing(format!(
+                        "'{name}' for @{}",
                         label.0
-                    );
+                    )));
                     Easing::Linear
                 }
             }
@@ -959,10 +961,7 @@ fn process_reveal(
         return;
     };
     let Some(inner) = strip_string_literal(body) else {
-        eprintln!(
-            "warn: #reveal/@{} body is not a string literal; falling back to FadeIn",
-            label.0
-        );
+        warn!(CandyWarn::RevealFallback(format!("@{0}", label.0)));
         ctx.slides.push(Slide {
             duration_ms: duration,
             actions: vec![Action::FadeIn {

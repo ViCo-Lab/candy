@@ -55,6 +55,11 @@
         "embedded-fonts",
         "scan-fonts",
         "system-files",
+        "datetime",
+        # `DiagnosticWorld` (see `world.rs`) — user-facing file-name formatting
+        # for compile diagnostics, mirroring the official `typst` CLI. Only pulls
+        # in `codespan-reporting`, no native deps.
+        "emit-diagnostics",
     ] }
 
     # HTTP client for candy's @preview package downloader. The `tls` feature uses

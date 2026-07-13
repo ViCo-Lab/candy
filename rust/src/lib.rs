@@ -28,8 +28,10 @@ pub mod core;
 pub mod parser;
 pub mod renderer;
 
-/// Unified error type (E001–E007); see `core::error::CandyError`.
-pub use crate::core::error::CandyError;
+/// Unified error type (E001–E007, fatal → exit code 64–70) and non-fatal
+/// warning type (W001–W011); see `core::diag::{CandyError, CandyWarn}` and the
+/// `core::diag::{error, warn, debug, info}` reporters.
+pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
 
 use std::collections::HashMap;
@@ -253,19 +255,19 @@ pub fn build_input_with_gpu(
     if gpu_ok {
         match crate::renderer::raster::gpu::GpuRenderer::new() {
             Ok(g) => {
-                eprintln!("info: GPU rasterization enabled (vello + wgpu)");
+                info!("GPU rasterization enabled (vello + wgpu)");
                 gpu_renderer = Some(g);
             }
             Err(e) => {
-                eprintln!("warn: GPU unavailable, falling back to CPU: {e}");
+                warn!(CandyWarn::GpuUnavailable(e.to_string()));
             }
         }
     } else if use_gpu {
-        eprintln!("warn: --gpu requested but candy was built without the 'gpu' feature; using CPU");
+        warn!(CandyWarn::GpuFeatureDisabled);
     }
     #[cfg(not(feature = "gpu"))]
     if use_gpu {
-        eprintln!("warn: --gpu requested but candy was built without the 'gpu' feature; using CPU");
+        warn!(CandyWarn::GpuFeatureDisabled);
     }
 
     let probe: Vec<_> = {
@@ -315,10 +317,9 @@ pub fn build_input_with_gpu(
         match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(&composed, fps, codec, container) {
             Ok(bytes) => bytes,
             Err(e) => {
-                eprintln!(
-                    "warn: [{}] ffmpeg encode failed, wrote SVG draft to .candy: {e}",
-                    e.code()
-                );
+                warn!(CandyWarn::EncodeFallback(format!(
+                    "ffmpeg encode failed: {e}"
+                )));
                 for (i, &t_ms) in sample_times.iter().enumerate() {
                     let svg = renderer.render_frame_at(t_ms, &frames)?;
                     std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
@@ -331,10 +332,9 @@ pub fn build_input_with_gpu(
         let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
-                    "warn: [{}] video encode failed, wrote SVG draft to .candy: {e}",
-                    e.code()
-                );
+                warn!(CandyWarn::EncodeFallback(format!(
+                    "video encode failed: {e}"
+                )));
                 for (i, &t_ms) in sample_times.iter().enumerate() {
                     let svg = renderer.render_frame_at(t_ms, &frames)?;
                     std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;

@@ -13,7 +13,8 @@
 use std::path::Path;
 
 use crate::core::ast::AudioTrack;
-use crate::core::error::CandyError;
+use crate::core::diag::{CandyError, CandyWarn};
+use crate::{info, warn};
 
 /// Audio codec carried by an [`AudioData`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,8 +58,12 @@ impl AudioData {
 /// Parse `track.path` into [`AudioData`], honoring `slice`/`loop` hints.
 pub fn parse_audio(track: &AudioTrack) -> Result<AudioData, CandyError> {
     let path = Path::new(&track.path);
-    let bytes = std::fs::read(path)
-        .map_err(|e| CandyError::Io(std::io::Error::new(e.kind(), format!("audio '{}': {e}", track.path))))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        CandyError::Io(std::io::Error::new(
+            e.kind(),
+            format!("audio '{}': {e}", track.path),
+        ))
+    })?;
 
     let mut data = if is_opus(&bytes) {
         parse_opus_ogg(&bytes)?
@@ -76,7 +81,8 @@ pub fn parse_audio(track: &AudioTrack) -> Result<AudioData, CandyError> {
     if let Some((s, e)) = track.slice {
         let s_ms = (s * 1000.0) as u64;
         let e_ms = (e * 1000.0) as u64;
-        data.frames.retain(|f| f.timestamp_ms + f.duration_ms > s_ms && f.timestamp_ms < e_ms);
+        data.frames
+            .retain(|f| f.timestamp_ms + f.duration_ms > s_ms && f.timestamp_ms < e_ms);
         // Re-zero timestamps after the slice cut.
         let mut shift = 0i64;
         if let Some(first) = data.frames.first() {
@@ -191,7 +197,9 @@ fn parse_adts_aac(bytes: &[u8]) -> Result<AudioData, CandyError> {
     }
 
     if frames.is_empty() {
-        return Err(CandyError::Encode("ADTS AAC: no frames found (E007)".into()));
+        return Err(CandyError::Encode(
+            "ADTS AAC: no frames found (E007)".into(),
+        ));
     }
     Ok(AudioData {
         codec: AudioCodec::Aac,
@@ -290,17 +298,18 @@ pub fn transcode_via_ffmpeg(
         .output()
         .ok()?;
     if output.status.success() && tmp.exists() {
-        eprintln!(
-            "info: transcoded '{}' to {} via ffmpeg",
-            input_path, codec_name
-        );
+        info!("transcoded '{}' to {} via ffmpeg", input_path, codec_name);
         Some(tmp)
     } else {
-        eprintln!(
-            "warn: ffmpeg transcoding failed for '{}': {}",
+        warn!(CandyWarn::AudioDropped(format!(
+            "ffmpeg transcoding failed for '{}': {}",
             input_path,
-            String::from_utf8_lossy(&output.stderr).lines().take(5).collect::<Vec<_>>().join("\n")
-        );
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )));
         None
     }
 }

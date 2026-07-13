@@ -13,7 +13,7 @@ use typst_utils::Scalar;
 
 use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 use crate::renderer::RenderedFrame;
 use crate::renderer::typst::{
     PT_PER_CM, Renderer, collect_formula_leaves, composite_over_at_xf, crop_formula_rgba,

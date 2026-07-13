@@ -33,7 +33,7 @@ use wgpu::{
     TextureFormat, TextureUsages, TextureViewDescriptor,
 };
 
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 use crate::renderer::RenderedFrame;
 
 /// A reusable GPU rasterization context: wgpu device + queue + vello renderer.

@@ -25,7 +25,7 @@ use typst_syntax::{LinkedNode, parse_code};
 use crate::core::ast::{
     AudioTrack, CounterDef, CounterEvent, FrameData, Label, Scene, SceneInfo, Slide, Subtitle,
 };
-use crate::core::error::CandyError;
+use crate::core::diag::CandyError;
 use crate::core::meta::PrivateMeta;
 
 use crate::parser::directives::process_call;

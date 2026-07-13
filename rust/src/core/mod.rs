@@ -4,8 +4,8 @@
 //! free, which makes the mandatory pipeline assertions cheap to verify.
 
 pub mod ast;
+pub mod diag;
 pub mod easing;
-pub mod error;
 pub mod interpolator;
 pub mod meta;
 pub mod morph;
@@ -13,4 +13,4 @@ pub mod scheduler;
 
 pub use ast::*;
 pub use easing::Easing;
-pub use error::CandyError;
+pub use diag::{CandyError, CandyWarn};
