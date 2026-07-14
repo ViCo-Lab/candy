@@ -125,6 +125,19 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         }
     }
 
+    // E008: a `.tyx` that never imports the candy package has no root scene to
+    // own its static (non-candy) content, so candy cannot render it. This is
+    // checked after the full walk so any import style (wildcard / renamed /
+    // bare module / published `@preview/candy:<v>`) is recognized.
+    if !ctx.candy_imported {
+        return Err(CandyError::NoCandyImport(
+            "the .tyx does not import the candy package; candy can only render \
+             documents that import `@preview/candy` (its static content must be \
+             owned by the implicit root scene)"
+                .into(),
+        ));
+    }
+
     let private = PrivateMeta::default();
     let scene = Scene {
         slides: ctx.slides,
@@ -160,6 +173,12 @@ pub(crate) struct ParseCtx {
     /// `#import "candy"` / `#import "candy" as X`. Enables `candy.mobject(...)`
     /// field-access detection while keeping ordinary method calls out.
     pub(crate) candy_aliases: HashSet<String>,
+    /// Whether the candy package itself was imported anywhere in the document
+    /// (any import style: `#import "candy": *`, `#import "candy": mobject as m`,
+    /// `#import "candy"`, or `#import "@preview/candy:<v>"`). Gates the E008
+    /// "candy package not imported" error — without it there is no root scene to
+    /// own the document's static (non-candy) content.
+    pub(crate) candy_imported: bool,
     /// label -> raw body source text.
     pub(crate) items: HashMap<Label, String>,
     /// label -> frame-0 visual state.
@@ -423,6 +442,16 @@ fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
 
 /// Record imported Candy symbols so later calls can be resolved.
 fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
+    // Detect whether the candy *package* itself is being imported (any style).
+    // This gates the E008 "candy package not imported" error: a `.tyx` that
+    // never imports `@preview/candy` (or a local `candy` path) has no root
+    // scene to own its static content, so candy cannot render it.
+    if let Expr::Str(s) = imp.source() {
+        let src = s.get();
+        if src == "candy" || src.ends_with("/candy") || src.starts_with("@preview/candy:") {
+            ctx.candy_imported = true;
+        }
+    }
     match imp.imports() {
         Some(ast::Imports::Wildcard) => {
             for c in CANDY {
@@ -1062,6 +1091,22 @@ mod tests {
     /// Every candy import in test code must use the auto-fetched `@preview/candy`
     /// version — never a hard-coded one. This proves `with_auto_version` rewrites
     /// `#import "candy"` into the versioned published path.
+    /// A `.tyx` that uses candy-style calls but never imports the candy package
+    /// must be rejected with the dedicated E008 (not parsed as an empty scene,
+    /// not panicked, not silently rendered).
+    #[test]
+    fn no_candy_import_is_e008() {
+        let src = r#"
+#mobject("a", circle(radius: 1cm, fill: blue))
+#animate("a", to: (4cm, 0pt), duration: 30)
+"#;
+        let tmp = std::env::temp_dir().join("candy_test_no_import.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let err = parse_tyx(&tmp).unwrap_err();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(err.code(), "E008", "expected E008, got {err:?}");
+    }
+
     #[test]
     fn test_candy_imports_use_auto_fetched_version() {
         let src = with_auto_version(

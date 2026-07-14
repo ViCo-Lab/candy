@@ -75,10 +75,10 @@ pub(crate) fn composite_over_at(
 /// Crop a rectangular region (in Typst pt, page coords) out of a page-sized
 /// `RenderedFrame`, returning a small RGBA whose top-left is the crop's top-left.
 ///
-/// A `pad_pt` margin is added on every side before rounding so glyph ink that
-/// overflows its strict path bbox (strokes, anti-aliasing, italic overshoot)
-/// is not clipped — the previous exact-bbox crop was slicing the edges off
-/// characters.
+    /// A `pad_pt` margin is added on every side before rounding so glyph ink that
+    /// overflows its strict path bbox (strokes, anti-aliasing, italic overshoot)
+    /// is not clipped — the previous exact-bbox crop was slicing the edges off
+    /// characters.
 pub(crate) fn crop_formula_rgba(
     whole: &RenderedFrame,
     bx0: f64,
@@ -87,7 +87,7 @@ pub(crate) fn crop_formula_rgba(
     by1: f64,
     ppi: f32,
 ) -> RenderedFrame {
-    let pad = 1.0; // pt, generous enough for strokes + AA
+    let pad = 2.5; // pt, generous enough for strokes + AA + slight overshoot
     let px0 = ((bx0 - pad) * ppi as f64).floor() as i64;
     let py0 = ((by0 - pad) * ppi as f64).floor() as i64;
     let px1 = ((bx1 + pad) * ppi as f64).ceil() as i64;

@@ -280,6 +280,11 @@ pub fn write_rgba_draft(
     name: &str,
 ) -> Result<(), CandyError> {
     let path = dir.join(format!("{name}.rgba"));
+    if frames.is_empty() {
+        return Err(CandyError::Encode(
+            "cannot write an empty RGBA draft (no frames were produced)".into(),
+        ));
+    }
     let mut buf = Vec::new();
     buf.extend_from_slice(&(frames.len() as u32).to_le_bytes());
     buf.extend_from_slice(&(frames[0].width as u32).to_le_bytes());

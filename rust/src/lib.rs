@@ -236,6 +236,19 @@ pub fn build_input_with_gpu(
         return Ok(());
     }
 
+    // Nothing to render: a degenerate input (no `#candy` content / no animatable
+    // objects — e.g. a file whose only content is an unknown top-level Typst
+    // call like `#invalid()`) parses into an empty scene, which yields zero
+    // sample times. Surface this as a clean error instead of letting the encoder
+    // index into an empty frame buffer and panic (index out of bounds).
+    if sample_times.is_empty() {
+        return Err(CandyError::Encode(
+            "no frames to render: the input produced an empty scene \
+             (no #candy content or no animatable objects were found)"
+                .into(),
+        ));
+    }
+
     // Pre-compute natural layout once (serial) so the parallel rasterization
     // loop can use the &self render_frame_pixels_par method.
     renderer.ensure_natural_public()?;

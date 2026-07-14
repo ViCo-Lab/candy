@@ -41,6 +41,13 @@ pub enum CandyError {
     Typst(String),
     /// E007 — Rav1e / codec / mux encoding failure.
     Encode(String),
+    /// E008 — The `.tyx` does not import the candy package, so its static
+    /// (non-candy) content has no scene to own it — not even the implicit root
+    /// scene. Candy can only render documents that import `@preview/candy`
+    /// (whose root scene then owns all static content). A bare Typst document
+    /// run through `candy build` without importing candy is therefore rejected
+    /// with this dedicated code rather than producing an empty / garbage output.
+    NoCandyImport(String),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
@@ -62,6 +69,7 @@ impl CandyError {
             CandyError::Interp(_) => "E005",
             CandyError::Typst(_) => "E006",
             CandyError::Encode(_) => "E007",
+            CandyError::NoCandyImport(_) => "E008",
         }
     }
 
@@ -78,6 +86,7 @@ impl CandyError {
             CandyError::Interp(_) => 5,
             CandyError::Typst(_) => 6,
             CandyError::Encode(_) => 7,
+            CandyError::NoCandyImport(_) => 8,
         }
     }
 
@@ -108,6 +117,9 @@ impl fmt::Display for CandyError {
             CandyError::Interp(e) => write!(f, "[E005] interpolation range: {e}"),
             CandyError::Typst(e) => write!(f, "[E006] Typst render failure: {e}"),
             CandyError::Encode(e) => write!(f, "[E007] encode failure: {e}"),
+            CandyError::NoCandyImport(e) => {
+                write!(f, "[E008] candy package not imported: {e}")
+            }
             CandyError::Yee(e) => write!(f, "[EYEE] {e}"),
         }
     }

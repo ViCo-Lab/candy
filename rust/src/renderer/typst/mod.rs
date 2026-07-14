@@ -58,8 +58,7 @@ pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
-use crate::core::meta::PrivateMeta;
-use crate::{info, warn};
+use crate::warn;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -129,8 +128,6 @@ pub struct Renderer {
     /// glyph, instead of the whole block dissolving at once (the previous
     /// "stiff" crossfade). Empty for shape transforms / non-inline content.
     transform_fragments: Vec<TransformFragmentPlan>,
-    /// Private metadata carried through the rendering pipeline (easter-egg only).
-    private_metadata: PrivateMeta,
     /// Cache of compiled Typst documents keyed by their exact source string.
     /// Intermediate frames that produce an identical source (e.g. paused or
     /// otherwise static objects) reuse the prior compile instead of re-running
@@ -170,7 +167,6 @@ impl Renderer {
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
         scene.validate().map_err(CandyError::Parse)?;
-        let private_metadata = scene.private_metadata.clone();
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -183,7 +179,6 @@ impl Renderer {
             pages: PageScheduler::empty(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
-            private_metadata,
             body_cache: Mutex::new(HashMap::new()),
             sprite_cache: Mutex::new(HashMap::new()),
             bg_cache: Mutex::new(HashMap::new()),
@@ -486,10 +481,6 @@ impl Renderer {
         if self.natural_computed {
             return Ok(());
         }
-        info!(
-            "candy renderer: version codename = {}",
-            self.private_metadata.version_codename
-        );
         // Use the page size from the .tyx source if set (`#set page(width:..,
         // height:..)`), otherwise default to 16:9 (16cm × 9cm).
         let (page_w_cm, page_h_cm) = self
