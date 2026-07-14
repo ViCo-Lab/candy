@@ -14,6 +14,8 @@ and encoding backend. Inspired by 3Blue1Brown's
 - Code-oriented animation creation, written directly in Typst.
 - Self-contained video encoding via [`rav1e`](https://crates.io/crates/rav1e) (AV1) and [`openh264`](https://crates.io/crates/openh264) (H.264) — **no FFmpeg, no external codec CLI**.
 - Hand-written MP4 / Matroska / WebM muxers in pure Rust.
+- **Animated GIF and static PNG output** (pure-Rust `gif` / `png`) for quick
+  previews and posters — no codec, no container.
 - Audio muxing for Opus (`.opus`/`.ogg` → MKV/WebM) and AAC (`.aac` → MP4).
 - Smooth **object transitions** (Manim-style `Transform`): morph a mobject into
   new inline content — including **formulas** — via `#transform`, keeping the
@@ -115,11 +117,23 @@ candy build examples/dot_move.tyx --format mp4 --codec h264
 # SVG draft (one file per frame, written to .candy/<stem>/)
 candy build examples/dot_move.tyx --format svg
 
+# Animated GIF of every frame (looping)
+candy build examples/dot_move.tyx --format gif
+
+# Static PNG poster of the final frame (the animation "poster")
+candy build examples/dot_move.tyx --format png
+
 # Build from an SVG rendered by @preview/candy (candy-json round-trip)
 candy build scene.svg --from-svg --format mp4
 ```
 
 **When Debugging, use `cargo run -- <args>` instead of `candy <args>`.**
+
+**Batch builds.** `candy build` accepts multiple inputs (`candy build a.tyx
+b.tyx …`). Every input is attempted (no fail-fast); if any fails, candy reports
+each failed input and exits with code `111` (the `EYEE` batch marker) while the
+successful ones still produce output. A single failed input keeps its specific
+`E00x` code.
 
 ### Flags
 
@@ -128,7 +142,7 @@ candy build scene.svg --from-svg --format mp4
 | `<input>` (positional) | required | Path to the `.tyx` X-sheet, or an SVG with a `candy-json` block (see `--from-svg`). |
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
-| `--format` | `mp4` | `mp4` / `mkv` / `webm` / `svg` (SVG draft → `.candy/`). |
+| `--format` | `mp4` | `mp4` / `mkv` / `webm` / `gif` / `png` / `svg` (SVG draft → `.candy/`). The `--codec` flag is ignored for `gif` / `png`. |
 | `--codec` | `h264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`. The first three are self-contained (rav1e/openh264); the rest shell out to system ffmpeg (runtime-detected, no cargo dep). See [Codecs](#codecs). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |

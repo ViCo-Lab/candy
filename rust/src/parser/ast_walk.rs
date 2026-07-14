@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use typst_syntax::ast::{self, Expr};
-use typst_syntax::{LinkedNode, parse_code};
+use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
     AudioTrack, CounterDef, CounterEvent, FrameData, Label, Scene, SceneInfo, Slide, Subtitle,
@@ -41,13 +41,16 @@ pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// `private_metadata` is set to the fixed defaults.
 pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     let raw = std::fs::read_to_string(path)?; // E001 on missing file
-    // Parse as **code** (not markup). A `.tyx` X-sheet is a flat sequence of
-    // Candy directives (it even uses `//` line comments, which are only valid
-    // in code mode), so code mode is the correct interpretation. Critically,
-    // code mode surfaces `{ ... }` blocks as real `ast::CodeBlock` nodes —
-    // markup mode silently strips them — which is what drives the lexical
-    // shadowing / scope-restore logic in `walk` (see `candy_directive_restored_after_shadow_scope`).
-    let root = parse_code(&raw);
+    // Parse as standard Typst **markup** — exactly like `typst compile`. A
+    // `.tyx` is a valid standard Typst document: it imports the Candy package
+    // and calls plain Candy functions; prose, equations, `//` line comments and
+    // `#{ … }` code blocks all work natively. Markup mode is the correct
+    // interpretation because it preserves the document's natural layout and
+    // Z-order, which the per-frame renderer reuses. Critically, markup mode
+    // surfaces `#{ … }` blocks as real `ast::CodeBlock` nodes — which drives the
+    // lexical shadowing / scope-restore logic in `walk` (see
+    // `candy_directive_restored_after_shadow_scope`).
+    let root = parse(&raw);
     let node = LinkedNode::new(&root);
 
     let mut ctx = ParseCtx::default();
@@ -1051,9 +1054,9 @@ mod tests {
             r#"
 #import "candy": *
 #let track(n) = n
-{
-  // Inside this block, `track` is the user's function, not candy's keyframe
-  // `track`. The call below must NOT produce a Track slide.
+// Inside this `#{ … }` code block, `track` is the user's function, not candy's
+// keyframe `track`. The call below must NOT produce a Track slide.
+#{
   #track(5)
 }
 "#,
@@ -1072,7 +1075,7 @@ mod tests {
         let src = with_auto_version(
             r#"
 #import "candy": *
-{
+#{
   #let track(n) = n
   #track(5)   // user's `track` inside the block — not candy
 }
@@ -1124,5 +1127,28 @@ mod tests {
             !src.contains("#import \"candy\""),
             "test import must not retain the bare `candy` path: {src}"
         );
+    }
+
+    /// Standard Typst markup supports `//` line comments natively, so a `.tyx`
+    /// that mixes prose, `//` comments and candy directives parses exactly like
+    /// `typst compile` — no special code/markup mode switching.
+    #[test]
+    fn markup_supports_slash_comments_natively() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+= Heading
+
+Some prose with an equation $a + b = c$ and a URL https://example.com.
+// a line comment — valid in standard markup mode
+#mobject("dot", circle(radius: 1cm, fill: blue))
+#animate("dot", to: (4cm, 0pt), duration: 30)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_markup_comments.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        assert!(scene.items.contains_key(&Label("dot".into())));
     }
 }

@@ -18,6 +18,9 @@
 //! without wrapping every message in `format!`.
 
 use std::fmt;
+use std::io::IsTerminal;
+
+use colored::{Color, Colorize};
 
 use crate::core::ast::Label;
 
@@ -103,25 +106,30 @@ impl CandyError {
             other => ERROR_EXIT_BASE + other.number() as i32 - 1,
         }
     }
+
+    /// The human-readable message, WITHOUT the `[Exxx]` / `[EYEE]` code prefix.
+    /// The `error!` macro renders this separately from the code so the code can
+    /// be shown bold + colored while the message stays plain.
+    pub fn message(&self) -> String {
+        match self {
+            CandyError::Io(e) => format!("I/O error: {e}"),
+            CandyError::Parse(e) => format!("Invalid .tyx syntax: {e}"),
+            CandyError::Svg(e) => format!("candy-json missing/invalid: {e}"),
+            CandyError::LabelNotFound(l) => {
+                format!("label @{} not found in Typst layout", l.0)
+            }
+            CandyError::Interp(e) => format!("interpolation range: {e}"),
+            CandyError::Typst(e) => format!("Typst render failure: {e}"),
+            CandyError::Encode(e) => format!("encode failure: {e}"),
+            CandyError::NoCandyImport(e) => format!("candy package not imported: {e}"),
+            CandyError::Yee(e) => e.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for CandyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CandyError::Io(e) => write!(f, "[E001] I/O error: {e}"),
-            CandyError::Parse(e) => write!(f, "[E002] Invalid .tyx syntax: {e}"),
-            CandyError::Svg(e) => write!(f, "[E003] candy-json missing/invalid: {e}"),
-            CandyError::LabelNotFound(l) => {
-                write!(f, "[E004] label @{} not found in Typst layout", l.0)
-            }
-            CandyError::Interp(e) => write!(f, "[E005] interpolation range: {e}"),
-            CandyError::Typst(e) => write!(f, "[E006] Typst render failure: {e}"),
-            CandyError::Encode(e) => write!(f, "[E007] encode failure: {e}"),
-            CandyError::NoCandyImport(e) => {
-                write!(f, "[E008] candy package not imported: {e}")
-            }
-            CandyError::Yee(e) => write!(f, "[EYEE] {e}"),
-        }
+        write!(f, "[{}] {}", self.code(), self.message())
     }
 }
 
@@ -236,63 +244,62 @@ impl CandyWarn {
             CandyWarn::OutputNameInvalid(_) => "W013",
         }
     }
-}
 
-impl fmt::Display for CandyWarn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// The human-readable message, WITHOUT the `[Wxxx]` code prefix. The `warn!`
+    /// macro renders this separately from the code so the code can be shown bold
+    /// + colored while the message stays plain.
+    pub fn message(&self) -> String {
         match self {
-            CandyWarn::TimeDependent => write!(
-                f,
-                "[W001] .tyx uses the current date/time (datetime.today()); \
-                 the render depends on the wall clock and is not reproducible"
-            ),
+            CandyWarn::TimeDependent => ".tyx uses the current date/time \
+                 (datetime.today()); the render depends on the wall clock and is \
+                 not reproducible"
+                .into(),
             CandyWarn::GpuUnavailable(e) => {
-                write!(f, "[W002] GPU unavailable, falling back to CPU: {e}")
+                format!("GPU unavailable, falling back to CPU: {e}")
             }
-            CandyWarn::GpuFeatureDisabled => write!(
-                f,
-                "[W003] --gpu requested but candy was built without the 'gpu' feature; using CPU"
-            ),
+            CandyWarn::GpuFeatureDisabled => "--gpu requested but candy was built \
+                 without the 'gpu' feature; using CPU"
+                .into(),
             CandyWarn::EncodeFallback(d) => {
-                write!(f, "[W004] encode failed, wrote SVG draft to .candy: {d}")
+                format!("encode failed, wrote SVG draft to .candy: {d}")
             }
             CandyWarn::CodecFallback(d) => {
-                write!(f, "[W005] codec encode failed, falling back: {d}")
+                format!("codec encode failed, falling back: {d}")
             }
-            CandyWarn::AudioDropped(d) => write!(f, "[W006] dropping audio track: {d}"),
-            CandyWarn::EncodeRetry => write!(
-                f,
-                "[W007] rav1e inter-prediction panicked; retrying AV1 in all-intra mode \
-                 (valid but no temporal compression)"
-            ),
-            CandyWarn::AudioIgnored => {
-                write!(f, "[W008] MP4 only muxes AAC audio; ignoring non-AAC track")
-            }
+            CandyWarn::AudioDropped(d) => format!("dropping audio track: {d}"),
+            CandyWarn::EncodeRetry => "rav1e inter-prediction panicked; retrying \
+                 AV1 in all-intra mode (valid but no temporal compression)"
+                .into(),
+            CandyWarn::AudioIgnored => "MP4 only muxes AAC audio; ignoring non-AAC track".into(),
             CandyWarn::UnknownEasing(d) => {
-                write!(f, "[W009] unknown easing {d}; falling back to linear")
+                format!("unknown easing {d}; falling back to linear")
             }
-            CandyWarn::RevealFallback(d) => write!(
-                f,
-                "[W010] #reveal body is not a string literal; falling back to FadeIn: {d}"
-            ),
+            CandyWarn::RevealFallback(d) => {
+                format!("#reveal body is not a string literal; falling back to FadeIn: {d}")
+            }
             CandyWarn::CleanupFailed(d) => {
-                write!(f, "[W011] could not remove intermediate dir {d}")
+                format!("could not remove intermediate dir {d}")
             }
             CandyWarn::OutputNameCountMismatch(d) => {
-                write!(
-                    f,
-                    "[W012] {d}; ignoring custom --output names and using the default \
+                format!(
+                    "{d}; ignoring custom --output names and using the default \
                      dist/<stem>.<ext> for every input"
                 )
             }
             CandyWarn::OutputNameInvalid(d) => {
-                write!(
-                    f,
-                    "[W013] --output name '{d}' is not a plain file name (contains a path \
-                     separator / multi-level directory); using the default dist/<stem>.<ext>"
+                format!(
+                    "--output name '{d}' is not a plain file name (contains a path \
+                     separator / multi-level directory); using the default \
+                     dist/<stem>.<ext>"
                 )
             }
         }
+    }
+}
+
+impl fmt::Display for CandyWarn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}", self.code(), self.message())
     }
 }
 
@@ -331,41 +338,114 @@ pub const ERROR_EXIT_BASE: i32 = 64;
 /// allocation table.
 pub const BATCH_ERROR_EXIT: i32 = 111;
 
+/// Color a level label for a stream, but only when that stream is a terminal
+/// and `NO_COLOR` (https://no-color.org) is unset. Returns the plain label
+/// otherwise, so piped / captured output stays ANSI-free (and tests / CI, where
+/// the streams are not TTYs, see exactly the old uncolored text).
+fn paint_level(label: &str, color: Color, is_tty: bool) -> String {
+    if is_tty && std::env::var_os("NO_COLOR").is_none() {
+        label.color(color).bold().to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// Colored `error` level prefix (stderr).
+pub fn level_error() -> String {
+    paint_level("error", Color::Red, std::io::stderr().is_terminal())
+}
+/// Colored `warn` level prefix (stderr).
+pub fn level_warn() -> String {
+    paint_level("warn", Color::Yellow, std::io::stderr().is_terminal())
+}
+/// Colored `info` level prefix (stdout).
+pub fn level_info() -> String {
+    paint_level("info", Color::Green, std::io::stdout().is_terminal())
+}
+/// Colored `debug` level prefix (stdout).
+pub fn level_debug() -> String {
+    paint_level("debug", Color::BrightBlack, std::io::stdout().is_terminal())
+}
+
+/// Color a `[code]` token bold in `color`, but only when the target stream is a
+/// terminal and `NO_COLOR` (https://no-color.org) is unset; otherwise returns the
+/// plain `[code]`. Shared by the `error!` / `warn!` macros so the `Exxx` / `Wxxx`
+/// code is rendered bold in its level color (errors red, warnings yellow).
+fn paint_code(code: &str, color: Color, is_tty: bool) -> String {
+    if is_tty && std::env::var_os("NO_COLOR").is_none() {
+        format!("[{}]", code).color(color).bold().to_string()
+    } else {
+        format!("[{}]", code)
+    }
+}
+
+/// Bold error code `[Exxx]` / `[EYEE]` in red (stderr). TTY + NO_COLOR aware.
+pub fn code_error(code: &str) -> String {
+    paint_code(code, Color::Red, std::io::stderr().is_terminal())
+}
+
+/// Bold warning code `[Wxxx]` in yellow (stderr). TTY + NO_COLOR aware.
+pub fn code_warn(code: &str) -> String {
+    paint_code(code, Color::Yellow, std::io::stderr().is_terminal())
+}
+
 /// Fatal error — the "panic" path. Prints `error: [Exxx] <message>` to
-/// **stderr** and terminates the process with the error's exit code
-/// ([`CandyError::exit_code`]: `E001` → `64` … `E007` → `70`, and the special
+/// **stderr** (the `error` prefix and the `[Exxx]` code are both red + bold on a
+/// TTY) and terminates the process with the error's exit code
+/// ([`CandyError::exit_code`]: `E001` → `64` … `E008` → `71`, and the special
 /// `EYEE` → `111`). Invoked exactly once at the process boundary (see `main`).
 #[macro_export]
 macro_rules! error {
     ($err:expr $(,)?) => {{
         let __e = &$err;
-        ::std::eprintln!("error: {}", __e);
+        ::std::eprintln!(
+            "{}: {} {}",
+            $crate::core::diag::level_error(),
+            $crate::core::diag::code_error(__e.code()),
+            __e.message()
+        );
         ::std::process::exit($crate::core::diag::CandyError::exit_code(__e));
     }};
 }
 
-/// Non-fatal warning. Prints `warn: [Wxxx] <message>` to **stderr** and
-/// returns normally so the render continues.
+/// Non-fatal warning. Prints `warn: [Wxxx] <message>` to **stderr** (the `warn`
+/// prefix and the `[Wxxx]` code are both yellow + bold on a TTY) and returns
+/// normally so the render continues.
 #[macro_export]
 macro_rules! warn {
     ($w:expr $(,)?) => {{
         let __w: $crate::core::diag::CandyWarn = $w;
-        ::std::eprintln!("warn: {}", __w);
+        ::std::eprintln!(
+            "{}: {} {}",
+            $crate::core::diag::level_warn(),
+            $crate::core::diag::code_warn(__w.code()),
+            __w.message()
+        );
     }};
 }
 
-/// Developer diagnostic. Prints `debug: <message>` to **stdout** (no code).
+/// Developer diagnostic. Prints `debug: <message>` to **stdout** (the `debug`
+/// prefix is colored dim on a TTY; no code).
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {{
-        ::std::println!("debug: {}", format_args!($($arg)*));
+        ::std::println!(
+            "{}: {}",
+            $crate::core::diag::level_debug(),
+            format_args!($($arg)*)
+        );
     }};
 }
 
-/// User-facing progress. Prints `info: <message>` to **stdout** (no code).
+/// User-facing progress. Prints `info: <message>` to **stdout** (the `info`
+/// prefix is colored green on a TTY; no code).
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {{
-        ::std::println!("info: {}", format_args!($($arg)*));
+        ::std::println!(
+            "{}: {}",
+            $crate::core::diag::level_info(),
+            format_args!($($arg)*)
+        );
     }};
 }

@@ -54,6 +54,12 @@ candy build examples/dot_move.tyx --format webm --codec av1
 
 # SVG draft (one file per frame under .candy/<stem>/)
 candy build examples/dot_move.tyx --format svg
+
+# Animated GIF of every frame (looping) — no codec needed
+candy build examples/dot_move.tyx --format gif
+
+# Static PNG poster of the final frame
+candy build examples/dot_move.tyx --format png
 ```
 
 Every directive is *inert under standard Typst* (it either returns `body` or `none`),

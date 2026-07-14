@@ -30,8 +30,9 @@ DSL, see the [Typst package README](../typst/README.md).
   - [Renderer modules](#renderer-modules)
   - [Timing model](#timing-model)
   - [Codec \& container matrix](#codec--container-matrix)
-  - [Error model (E001–E007, EYEE) {#error-model-e001e007}](#error-model-e001e007-eyee-error-model-e001e007)
+  - [Error model (E001–E008, EYEE) {#error-model-e001e008}](#error-model-e001e008-eyee-error-model-e001e008)
     - [Process exit codes](#process-exit-codes)
+    - [Warnings (W001–W013)](#warnings-w001w013)
   - [Artifacts](#artifacts)
   - [Building \& features](#building--features)
 
@@ -92,9 +93,9 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E007) + CandyWarn (W001–W011) + `error!`/`warn!`/`debug!`/`info!` macros
+│   ├── diag.rs        # CandyError (E001–E008) + CandyWarn (W001–W013) + `error!`/`warn!`/`debug!`/`info!` macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
-│   ├── meta.rs        # PrivateMeta (internal bookkeeping)
+│   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
 │   └── scheduler.rs   # schedule(): Scene → keyframes (Vec<FrameData>)
 ├── parser/
@@ -299,8 +300,12 @@ morphing of formula characters.
 ### `core::diag` {#corediag}
 
 Unified diagnostics. All diagnostic output flows through this module's macros
-(`error!` / `warn!` / `debug!` / `info!`); see [Error model](#error-model-e001e007)
-below. (The module was renamed from `core::error` to `core::diag`.)
+(`error!` / `warn!` / `debug!` / `info!`); see [Error model](#error-model-e001e008)
+below. (The module was renamed from `core::error` to `core::diag`.) The level
+prefixes are colorized on a TTY — `error` red, `warn` yellow, `info` green,
+`debug` dim — via the `colored` crate; output falls back to plain text when the
+stream is not a terminal or `NO_COLOR` (https://no-color.org) is set, so piped /
+captured / CI output stays ANSI-free.
 
 ---
 
@@ -391,7 +396,7 @@ If ffmpeg is not found, candy falls back to the self-contained codecs or returns
 
 ---
 
-## Error model (E001–E007, EYEE) {#error-model-e001e007}
+## Error model (E001–E008, EYEE) {#error-model-e001e008}
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic
 (spec §6). `CandyError::code()` maps each variant to a mandatory error code:
@@ -404,8 +409,9 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 | E003 | `Svg` | `candy-json` missing/invalid (SVG extraction). |
 | E004 | `LabelNotFound` | `@label` not found in the Typst layout. |
 | E005 | `Interp` | Invalid interpolation range (clamped, non-fatal). |
-| E006 | `Typst` | Typst render failure. |
+| E006 | `Typst` | Typst render failure — the full `typst::diag::SourceDiagnostic` (message + any `hint:` lines) is captured and surfaced. |
 | E007 | `Encode` | Rav1e/openh264 encoding failure. |
+| E008 | `NoCandyImport` | The `.tyx` does not `#import "@preview/candy"` (or `candy` under any alias). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
 
 
 ### Process exit codes
@@ -413,10 +419,11 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 The terminal `error!` reporter prints `error: [Exxx] <message>` to **stderr** and
 terminates the process with `CandyError::exit_code()`:
 
-- **E001–E007** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
-  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`. This keeps all
-  candy fatal codes in a dedicated `64–78` segment that does not collide with
-  `0` (success), `1` (generic), `2` (clap usage), or `101` (Rust panic).
+- **E001–E008** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`, `E008` → `71`.
+  This keeps all candy fatal codes in a dedicated `64–78` segment that does not
+  collide with `0` (success), `1` (generic), `2` (clap usage), or `101` (Rust
+  panic).
 - **EYEE is the one exception**: it deliberately does **not** use the `64` rule.
   Its exit code is the dedicated `BATCH_ERROR_EXIT = 111`. A batch is run to
   completion (no fail-fast) so partial progress is preserved; callers can detect
@@ -430,6 +437,30 @@ the middle. When a batch fails, candy lists every failed input
 marker through the diag pipeline as `error: [EYEE] yee~ Batch failed` before
 exiting with `111`. A **single** failed input keeps its specific `E00x` code
 (e.g. `69` for `E006`) rather than `111`.
+
+### Warnings (W001–W013)
+
+Warnings are **non-fatal**: they are printed to **stderr** as `warn: [Wxxx] …`
+and the render continues. They describe recoverable or merely undesirable
+conditions (a non-reproducible render, a transparent codec fallback, a dropped
+audio track, …). `CandyWarn::code()` maps each variant to its `W` code; unknown
+names fall back to `linear` etc. as noted per warning.
+
+| Code | Variant | Meaning |
+|---|---|---|
+| W001 | `TimeDependent` | `.tyx` uses `datetime.today()`; the render depends on the wall clock and is not reproducible. |
+| W002 | `GpuUnavailable` | `--gpu` requested but the adapter/device could not be initialized; falling back to CPU rasterization. |
+| W003 | `GpuFeatureDisabled` | `--gpu` passed but candy was built without the `gpu` feature; using CPU. |
+| W004 | `EncodeFallback` | Video encoding failed; an SVG draft was written under `.candy/`. |
+| W005 | `CodecFallback` | A codec encode failed and candy transparently fell back to another self-contained codec. |
+| W006 | `AudioDropped` | An audio track was dropped (unsupported format or codec mismatch). |
+| W007 | `EncodeRetry` | `rav1e` inter-prediction panicked; retrying AV1 in all-intra mode. |
+| W008 | `AudioIgnored` | MP4 only muxes AAC audio; a non-AAC track was ignored. |
+| W009 | `UnknownEasing` | An unknown easing name was given; falling back to `linear`. |
+| W010 | `RevealFallback` | A `#reveal` body was not a string literal; falling back to `FadeIn`. |
+| W011 | `CleanupFailed` | An intermediate directory could not be removed after a build. |
+| W012 | `OutputNameCountMismatch` | The number of `--output` names does not match the number of inputs; custom names ignored, default `dist/<stem>.<ext>` used. |
+| W013 | `OutputNameInvalid` | An `--output` name contains a path separator / multi-level directory; default `dist/<stem>.<ext>` used. |
 
 ---
 

@@ -16,13 +16,15 @@
 //! For video builds, the per-build intermediate directory is removed
 //! automatically after a successful run unless `--keep-intermediates` is passed.
 
+use std::io::IsTerminal;
 use std::path::Path;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
 use candy::core::diag::CandyWarn;
-use candy::{error, info, warn};
 use candy::{CandyError, Codec, Input, OutputFormat, build_input_with_gpu};
+use candy::{error, info, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use colored::Colorize;
 
 #[derive(Parser)]
 #[command(
@@ -180,8 +182,15 @@ fn run() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Candy => {
-            // Hidden easter egg: `candy candy` / `candy tyx`.
-            eprintln!("Built for Candy(TYX). In memory of CChO2025.");
+            // Hidden easter egg: `candy candy` / `candy tyx`. The text is shown
+            // bold (the terminal analogue of Typst's `#strong` / 强调), but only
+            // on a TTY with `NO_COLOR` unset so piped / CI output stays plain.
+            let candy = "Built for Candy(TYX). In memory of CChO2025.";
+            if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+                eprintln!("{}", candy.bold());
+            } else {
+                eprintln!("{candy}");
+            }
         }
         Commands::Build {
             inputs,
@@ -345,9 +354,19 @@ fn run() -> Result<(), CandyError> {
                 // List every input that failed. This runs only *after* all
                 // inputs have been attempted (batch mode never aborts early), so
                 // the complete failure set is known here.
-                eprintln!("Batch failed on {} input(s):", failures.len());
+                eprintln!(
+                    "{}",
+                    format!("Batch failed on {} input(s):", failures.len())
+                        .red()
+                        .bold()
+                );
                 for (path, e) in &failures {
-                    eprintln!("  - {}: {}", path.display(), e);
+                    eprintln!(
+                        "  - {}: {} {}",
+                        path.display(),
+                        candy::core::diag::code_error(e.code()),
+                        e.message()
+                    );
                 }
                 if inputs.len() > 1 {
                     // Batch partial failure: surface through the unified
@@ -398,11 +417,7 @@ fn resolve_output(
 /// (`/` or `\\`), and not `.` / `..`. Multi-level directory paths are rejected
 /// so outputs never escape the chosen output directory.
 fn is_plain_filename(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('/')
-        && !name.contains('\\')
-        && name != "."
-        && name != ".."
+    !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
 /// The canvas size (Typst points) of a scene's root for resolution purposes.

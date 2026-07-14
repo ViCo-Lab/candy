@@ -28,6 +28,12 @@
     serde      = { version = "1", features = ["derive"] }
     serde_json = "1"
 
+    # Terminal coloring for diagnostic output (error / warn / info / debug).
+    # Pure Rust, no native deps, so it cross-compiles like the rest of candy.
+    # Coloring is applied only when the target stream is a TTY and `NO_COLOR`
+    # (https://no-color.org) is unset, so piped / captured output stays ANSI-free.
+    colored = "2"
+
     # Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
     # The internal typst crates are pulled in explicitly so we can build an in-memory
     # `World` to compile `.tyx` sources in-process.
