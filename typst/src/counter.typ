@@ -12,7 +12,7 @@
 ///   `duration`, the counter steps once per millisecond.
 /// - `duration`: lifetime in **milliseconds**. `none` (default) means
 ///   long-lived — the value ramps `seed → seed + step·elapsed` once per ms
-///   (linear). A positive number makes the value ramp `seed → seed + step·
+///   (linear). A positive number makes the value ramps `seed → seed + step·
 ///   duration` over that window, shaped by `easing`.
 /// - `easing`: rate curve for the ramp (default `"linear"`). Custom modes
 ///   `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are accepted.
@@ -36,7 +36,7 @@
 /// `rect(width: ecval(n) * 1cm)`).
 ///
 /// Under **standard Typst** there is no shared mutable registry, so pass the
-/// value returned by `ecounter` (which is the counter's `seed`) rather than the
+/// value returned by `ecounter` (which is the `seed`) rather than the
 /// name string:
 ///
 /// ```typ

@@ -377,7 +377,22 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     // the overly dramatic "pinhole" effect of scaling to 2%.
                     let small = (s.scale * 0.85).max(0.15);
                     // Old content: full → tiny + transparent, at `target`'s
-                    // current position/rotation.
+                    // current position/rotation. The old tmp is invisible until
+                    // the transform window starts, so insert a keyframe at `start`
+                    // with opacity 0; otherwise the interpolator fades it in from
+                    // the initial state all the way to `start_t`, producing a
+                    // premature ghost of the old content while the target is still
+                    // being translated.
+                    per_item.entry(old.clone()).or_default().push(FrameData {
+                        time_ms: start,
+                        target: old.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: 0.0,
+                        rotation: s.rotation,
+                        easing: Easing::Linear,
+                    });
                     per_item.entry(old.clone()).or_default().push(FrameData {
                         time_ms: start_t,
                         target: old.clone(),

@@ -9,28 +9,31 @@ DSL, see the [Typst package README](../typst/README.md).
 
 ## Table of contents
 
-- [Overview](#overview)
-- [Pipeline](#pipeline)
-- [Module layout](#module-layout)
-- [Public API](#public-api)
-  - [`candy::build` / `build_input` / `build_input_with_gpu`](#build-functions)
-  - [`Input`](#input)
-  - [`OutputFormat`](#outputformat)
-  - [`Codec`](#codec)
-- [Core modules](#core-modules)
-  - [`core::ast`](#coreast)
-  - [`core::scheduler`](#corescheduler)
-  - [`core::interpolator`](#coreinterpolator)
-  - [`core::easing`](#coreeasing)
-  - [`core::morph`](#coremorph)
-  - [`core::error`](#coreerror)
-- [Parser modules](#parser-modules)
-- [Renderer modules](#renderer-modules)
-- [Timing model](#timing-model)
-- [Codec & container matrix](#codec--container-matrix)
-- [Error model (E001–E007)](#error-model-e001e007)
-- [Artifacts](#artifacts)
-- [Building & features](#building--features)
+- [Candy Rust Backend — Architecture \& API](#candy-rust-backend--architecture--api)
+  - [Table of contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Pipeline](#pipeline)
+  - [Module layout](#module-layout)
+  - [Public API](#public-api)
+    - [`build` functions {#build-functions}](#build-functions-build-functions)
+    - [`Input` {#input}](#input-input)
+    - [`OutputFormat` {#outputformat}](#outputformat-outputformat)
+    - [`Codec` {#codec}](#codec-codec)
+  - [Core modules](#core-modules)
+    - [`core::ast` {#coreast}](#coreast-coreast)
+    - [`core::scheduler` {#corescheduler}](#corescheduler-corescheduler)
+    - [`core::interpolator` {#coreinterpolator}](#coreinterpolator-coreinterpolator)
+    - [`core::easing` {#coreeasing}](#coreeasing-coreeasing)
+    - [`core::morph` {#coremorph}](#coremorph-coremorph)
+    - [`core::diag` {#corediag}](#corediag-corediag)
+  - [Parser modules](#parser-modules)
+  - [Renderer modules](#renderer-modules)
+  - [Timing model](#timing-model)
+  - [Codec \& container matrix](#codec--container-matrix)
+  - [Error model (E001–E007, EYEE) {#error-model-e001e007}](#error-model-e001e007-eyee-error-model-e001e007)
+    - [Process exit codes](#process-exit-codes)
+  - [Artifacts](#artifacts)
+  - [Building \& features](#building--features)
 
 ---
 
@@ -293,9 +296,11 @@ Glyph outlines use **de Casteljau subdivision** (`flatten_quad` / `flatten_cubic
 flatten quadratic/cubic Bézier curves into polygon points, enabling true point-by-point
 morphing of formula characters.
 
-### `core::error` {#coreerror}
+### `core::diag` {#corediag}
 
-See [Error model](#error-model-e001e007) below.
+Unified diagnostics. All diagnostic output flows through this module's macros
+(`error!` / `warn!` / `debug!` / `info!`); see [Error model](#error-model-e001e007)
+below. (The module was renamed from `core::error` to `core::diag`.)
 
 ---
 
@@ -386,20 +391,45 @@ If ffmpeg is not found, candy falls back to the self-contained codecs or returns
 
 ---
 
-## Error model (E001–E007) {#error-model-e001e007}
+## Error model (E001–E007, EYEE) {#error-model-e001e007}
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic
 (spec §6). `CandyError::code()` maps each variant to a mandatory error code:
 
 | Code | Variant | Meaning |
 |---|---|---|
+| EYEE | `Yee` | Batch partial failure — `candy build a.tyx b.tyx …` ran **every** input but at least one failed midway. |
 | E001 | `Io` | `.tyx` file not found / generic I/O failure. |
 | E002 | `Parse` | Invalid `.tyx` syntax (or non-monotonic `time_ms` in `schedule`). |
-| E003 | `Dsl` | `candy-json` missing/invalid (DSL extraction). |
+| E003 | `Svg` | `candy-json` missing/invalid (SVG extraction). |
 | E004 | `LabelNotFound` | `@label` not found in the Typst layout. |
 | E005 | `Interp` | Invalid interpolation range (clamped, non-fatal). |
 | E006 | `Typst` | Typst render failure. |
 | E007 | `Encode` | Rav1e/openh264 encoding failure. |
+
+
+### Process exit codes
+
+The terminal `error!` reporter prints `error: [Exxx] <message>` to **stderr** and
+terminates the process with `CandyError::exit_code()`:
+
+- **E001–E007** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`. This keeps all
+  candy fatal codes in a dedicated `64–78` segment that does not collide with
+  `0` (success), `1` (generic), `2` (clap usage), or `101` (Rust panic).
+- **EYEE is the one exception**: it deliberately does **not** use the `64` rule.
+  Its exit code is the dedicated `BATCH_ERROR_EXIT = 111`. A batch is run to
+  completion (no fail-fast) so partial progress is preserved; callers can detect
+  "some inputs failed" via `111` without aborting the remaining inputs.
+
+**Where `111` (and `yee~`) comes from.** `111` reads as "yī yī yī" → *"yee~"*,
+the strangled little noise you make after biting into something spoiled — a
+fitting sound for a batch that mostly worked but had a bad input somewhere in
+the middle. When a batch fails, candy lists every failed input
+(`Batch failed on N input(s):` + `- <path>: <error>`) and then surfaces the
+marker through the diag pipeline as `error: [EYEE] yee~ Batch failed` before
+exiting with `111`. A **single** failed input keeps its specific `E00x` code
+(e.g. `69` for `E006`) rather than `111`.
 
 ---
 

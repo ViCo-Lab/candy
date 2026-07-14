@@ -220,106 +220,147 @@ fn run() -> Result<(), CandyError> {
                 )));
             }
             // Build each input in turn, writing a separate output per file.
-            // A failure on one file fails the whole batch (fail-fast); outputs
-            // already written are kept.
+            //
+            // Batch mode is **non-fatal per input**: a failure on one input does
+            // NOT abort the others — every input is attempted so partial
+            // progress is preserved (outputs already written are kept). Failures
+            // are collected and, once all inputs have been tried, surfaced
+            // together. When more than one input was given, the process exits
+            // with [`BATCH_ERROR_EXIT`] (111) if *any* input failed; for a single
+            // input the specific `E00x` code is preserved.
+            let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
             for (i, input) in inputs.iter().enumerate() {
-                let input = &input.0;
-                let stem = input
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "animation".into());
-                // Intermediate dir: under `--output-dir` when given (so the
-                // draft is also redirected), otherwise the usual `.candy/<stem>`.
-                let intermediate_dir = match &output_dir {
-                    Some(d) => Path::new(d).join(&stem),
-                    None => Path::new(".candy").join(&stem),
-                };
-                std::fs::create_dir_all(&intermediate_dir)?;
+                let input_path = input.0.clone();
+                // Run one input; `?` inside collects into `result` instead of
+                // aborting the whole batch.
+                let result: Result<(), CandyError> = (|| {
+                    let input = &input.0;
+                    let stem = input
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "animation".into());
+                    // Intermediate dir: under `--output-dir` when given (so the
+                    // draft is also redirected), otherwise the usual `.candy/<stem>`.
+                    let intermediate_dir = match &output_dir {
+                        Some(d) => Path::new(d).join(&stem),
+                        None => Path::new(".candy").join(&stem),
+                    };
+                    std::fs::create_dir_all(&intermediate_dir)?;
 
-                let (out_fmt, container_ext) = match format {
-                    FormatArg::Mp4 => (OutputFormat::Mp4, "mp4"),
-                    FormatArg::Mkv => (OutputFormat::Mkv, "mkv"),
-                    FormatArg::Webm => (OutputFormat::Webm, "webm"),
-                    FormatArg::Gif => (OutputFormat::Gif, "gif"),
-                    FormatArg::Png => (OutputFormat::Png, "png"),
-                    FormatArg::Svg => (OutputFormat::Svg, "svg"),
-                };
-                let codec = match codec {
-                    CodecArg::Av1 => Codec::Av1,
-                    CodecArg::H264 => Codec::H264,
-                    CodecArg::H265 => Codec::H265,
-                    CodecArg::X264 => Codec::X264,
-                    CodecArg::X265 => Codec::X265,
-                    CodecArg::H264Vaapi => Codec::H264Vaapi,
-                    CodecArg::H265Vaapi => Codec::H265Vaapi,
-                    CodecArg::H264VideoToolbox => Codec::H264VideoToolbox,
-                    CodecArg::H265VideoToolbox => Codec::H265VideoToolbox,
-                    CodecArg::H264Qsv => Codec::H264Qsv,
-                    CodecArg::H265Qsv => Codec::H265Qsv,
-                };
+                    let (out_fmt, container_ext) = match format {
+                        FormatArg::Mp4 => (OutputFormat::Mp4, "mp4"),
+                        FormatArg::Mkv => (OutputFormat::Mkv, "mkv"),
+                        FormatArg::Webm => (OutputFormat::Webm, "webm"),
+                        FormatArg::Gif => (OutputFormat::Gif, "gif"),
+                        FormatArg::Png => (OutputFormat::Png, "png"),
+                        FormatArg::Svg => (OutputFormat::Svg, "svg"),
+                    };
+                    let codec = match codec {
+                        CodecArg::Av1 => Codec::Av1,
+                        CodecArg::H264 => Codec::H264,
+                        CodecArg::H265 => Codec::H265,
+                        CodecArg::X264 => Codec::X264,
+                        CodecArg::X265 => Codec::X265,
+                        CodecArg::H264Vaapi => Codec::H264Vaapi,
+                        CodecArg::H265Vaapi => Codec::H265Vaapi,
+                        CodecArg::H264VideoToolbox => Codec::H264VideoToolbox,
+                        CodecArg::H265VideoToolbox => Codec::H265VideoToolbox,
+                        CodecArg::H264Qsv => Codec::H264Qsv,
+                        CodecArg::H265Qsv => Codec::H265Qsv,
+                    };
 
-                let input_kind = if from_svg {
-                    Input::Svg(input.to_path_buf())
-                } else {
-                    Input::from(input.as_path())
-                };
+                    let input_kind = if from_svg {
+                        Input::Svg(input.to_path_buf())
+                    } else {
+                        Input::from(input.as_path())
+                    };
 
-                // Derive the effective pixels-per-point. `--width` / `--height`
-                // pin one output edge in pixels (the other edge follows the
-                // scene's page aspect ratio); otherwise `--pixel-per-pt` is
-                // used as-is. The page size is read from the parsed scene.
-                let page_pt = input_kind
-                    .parse()
-                    .ok()
-                    .map(|s| root_page_pt(&s))
-                    .unwrap_or(DEFAULT_PAGE_PT);
-                let ppt = resolve_pixel_per_pt(pixel_per_pt, width, height, page_pt);
+                    // Derive the effective pixels-per-point. `--width` / `--height`
+                    // pin one output edge in pixels (the other edge follows the
+                    // scene's page aspect ratio); otherwise `--pixel-per-pt` is
+                    // used as-is. The page size is read from the parsed scene.
+                    let page_pt = input_kind
+                        .parse()
+                        .ok()
+                        .map(|s| root_page_pt(&s))
+                        .unwrap_or(DEFAULT_PAGE_PT);
+                    let ppt = resolve_pixel_per_pt(pixel_per_pt, width, height, page_pt);
 
-                if out_fmt == OutputFormat::Svg {
-                    // SVG draft → `intermediate_dir` (`.candy/<stem>` or the
-                    // redirected `--output-dir/<stem>`), never `dist/`. GPU flag
-                    // is irrelevant for SVG drafts (no rasterization). The draft
-                    // IS the deliverable here, so we never auto-clean it.
+                    if out_fmt == OutputFormat::Svg {
+                        // SVG draft → `intermediate_dir` (`.candy/<stem>` or the
+                        // redirected `--output-dir/<stem>`), never `dist/`. GPU flag
+                        // is irrelevant for SVG drafts (no rasterization). The draft
+                        // IS the deliverable here, so we never auto-clean it.
+                        build_input_with_gpu(
+                            input_kind,
+                            &intermediate_dir,
+                            &intermediate_dir.join("svg_draft"),
+                            out_fmt,
+                            codec,
+                            fps,
+                            ppt,
+                            false,
+                        )?;
+                        info!("draft: {}/frame_*.svg", intermediate_dir.display());
+                        return Ok(());
+                    }
+
+                    // Resolve the custom name for this input (1:1 with inputs, and
+                    // only if it is a plain file name — no path separators).
+                    let custom = if names_match {
+                        output.get(i).map(|s| s.as_str())
+                    } else {
+                        None
+                    };
+                    let out_path =
+                        resolve_output(custom, &stem, container_ext, output_dir.as_deref());
                     build_input_with_gpu(
                         input_kind,
                         &intermediate_dir,
-                        &intermediate_dir.join("svg_draft"),
+                        &out_path,
                         out_fmt,
                         codec,
                         fps,
                         ppt,
-                        false,
+                        gpu,
                     )?;
-                    info!("draft: {}/frame_*.svg", intermediate_dir.display());
-                    continue;
+                    // Successful build: drop the per-build intermediate dir unless
+                    // the user asked to keep it (the SVG draft `return`s above, so
+                    // it is never cleaned here).
+                    if !keep_intermediates {
+                        cleanup_intermediate(&intermediate_dir);
+                    }
+                    info!("built: {}", out_path.display());
+                    Ok(())
+                })();
+                if let Err(e) = result {
+                    failures.push((input_path, e));
                 }
-
-                // Resolve the custom name for this input (1:1 with inputs, and
-                // only if it is a plain file name — no path separators).
-                let custom = if names_match {
-                    output.get(i).map(|s| s.as_str())
+            }
+            // Surface any collected batch failures. In batch mode (more than one
+            // input) a midway error forces the exit code to `BATCH_ERROR_EXIT`
+            // (111) so callers can detect partial failure; for a single input we
+            // keep the specific `E00x` code.
+            if !failures.is_empty() {
+                // List every input that failed. This runs only *after* all
+                // inputs have been attempted (batch mode never aborts early), so
+                // the complete failure set is known here.
+                eprintln!("Batch failed on {} input(s):", failures.len());
+                for (path, e) in &failures {
+                    eprintln!("  - {}: {}", path.display(), e);
+                }
+                if inputs.len() > 1 {
+                    // Batch partial failure: surface through the unified
+                    // diagnostic pipeline as `EYEE` (exit code 111, which
+                    // deliberately bypasses the `64`-based rule). `111` ≈
+                    // "yī yī yī" → "yee~": the strangled little noise you make
+                    // after biting into something spoiled.
+                    error!(CandyError::Yee("yee~ Batch failed".to_string()));
                 } else {
-                    None
-                };
-                let out_path =
-                    resolve_output(custom, &stem, container_ext, output_dir.as_deref());
-                build_input_with_gpu(
-                    input_kind,
-                    &intermediate_dir,
-                    &out_path,
-                    out_fmt,
-                    codec,
-                    fps,
-                    ppt,
-                    gpu,
-                )?;
-                // Successful build: drop the per-build intermediate dir unless
-                // the user asked to keep it (the SVG draft `continue`s above, so
-                // it is never cleaned here).
-                if !keep_intermediates {
-                    cleanup_intermediate(&intermediate_dir);
+                    // Single input: keep the specific `E00x` code via the diag
+                    // pipeline.
+                    error!(failures.into_iter().next().unwrap().1);
                 }
-                info!("built: {}", out_path.display());
             }
         }
     }

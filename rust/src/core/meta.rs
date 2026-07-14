@@ -16,6 +16,13 @@ pub struct PrivateMeta {
     pub in_memory_of: String,
 }
 
+impl PrivateMeta {
+    /// Serialize to a compact JSON string for embedding in container metadata.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
 impl Default for PrivateMeta {
     fn default() -> Self {
         Self {

@@ -221,7 +221,7 @@ pub(crate) fn subtitle_doc(
     let warned = compile::<PagedDocument>(&world);
     warned
         .output
-        .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
+        .map_err(Into::into)
 }
 
 /// Render a subtitle to an SVG string (used by the SVG frame path).

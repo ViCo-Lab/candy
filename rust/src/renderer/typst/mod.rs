@@ -58,7 +58,8 @@ pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
-use crate::warn;
+use crate::core::meta::PrivateMeta;
+use crate::{info, warn};
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -128,6 +129,8 @@ pub struct Renderer {
     /// glyph, instead of the whole block dissolving at once (the previous
     /// "stiff" crossfade). Empty for shape transforms / non-inline content.
     transform_fragments: Vec<TransformFragmentPlan>,
+    /// Private metadata carried through the rendering pipeline (easter-egg only).
+    private_metadata: PrivateMeta,
     /// Cache of compiled Typst documents keyed by their exact source string.
     /// Intermediate frames that produce an identical source (e.g. paused or
     /// otherwise static objects) reuse the prior compile instead of re-running
@@ -167,6 +170,7 @@ impl Renderer {
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
         scene.validate().map_err(CandyError::Parse)?;
+        let private_metadata = scene.private_metadata.clone();
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -179,6 +183,7 @@ impl Renderer {
             pages: PageScheduler::empty(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
+            private_metadata,
             body_cache: Mutex::new(HashMap::new()),
             sprite_cache: Mutex::new(HashMap::new()),
             bg_cache: Mutex::new(HashMap::new()),
@@ -196,7 +201,7 @@ impl Renderer {
         }
         warned
             .output
-            .map_err(|errs| CandyError::Typst(format!("{:?}", errs)))
+            .map_err(Into::into)
     }
     /// Compile a Typst source, memoized by the exact source string.
     ///
@@ -481,6 +486,10 @@ impl Renderer {
         if self.natural_computed {
             return Ok(());
         }
+        info!(
+            "candy renderer: version codename = {}",
+            self.private_metadata.version_codename
+        );
         // Use the page size from the .tyx source if set (`#set page(width:..,
         // height:..)`), otherwise default to 16:9 (16cm × 9cm).
         let (page_w_cm, page_h_cm) = self
@@ -509,6 +518,23 @@ impl Renderer {
             }
         }
         let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
+        // Synthetic mobjects created by `#transform` (e.g. `__xf_eq_0`) are parked
+        // copies of the *target* content. They must share the target's natural
+        // position — if they were laid out as separate blocks they would push
+        // the target and every later mobject down the page, making formulas fall
+        // off-screen and causing the old content to render as a displaced ghost
+        // while the target is translated.
+        let mut tmp_to_target: HashMap<Label, Label> = HashMap::new();
+        for p in &self.scene.transform_plans {
+            if p.old.0.starts_with("__xf_") {
+                tmp_to_target.insert(p.old.clone(), p.target.clone());
+            }
+        }
+        for p in &self.scene.morph_pairs {
+            if p.from.0.starts_with("__xf_") {
+                tmp_to_target.insert(p.from.clone(), p.to.clone());
+            }
+        }
         // Number of pages each scene's natural layout spilled onto. A scene that
         // overflows its single page becomes a *cross-page scene*: its mobjects
         // stay in ONE scene (data shared) but are laid out across several pages,
@@ -531,6 +557,11 @@ impl Renderer {
             let mut palette: Vec<(Label, String)> = Vec::new();
             let mut blocks = String::new();
             for (i, label) in labels.iter().enumerate() {
+                // Synthetic `#transform` tmps are not laid out as their own
+                // blocks; they inherit the target's natural position below.
+                if tmp_to_target.contains_key(label) {
+                    continue;
+                }
                 let natural = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
                 // Frame-0 body (content-timeline resolved at t=0). A mobject that
                 // is revealed / transformed / hidden so nothing shows at t=0 yet
@@ -618,6 +649,18 @@ impl Renderer {
                     nat.insert(label.clone(), (lx, ly));
                     page_of.insert(label.clone(), k);
                 }
+            }
+        }
+        // Synthetic `#transform` tmps inherit their target's natural position (and
+        // page). The scheduler positions them relative to the target, so this keeps
+        // old-content crossfades / morphs aligned with the target instead of
+        // drifting down the page and ghosting as a duplicate.
+        for (tmp, target) in &tmp_to_target {
+            if let Some((x, y)) = nat.get(target).copied() {
+                nat.insert(tmp.clone(), (x, y));
+            }
+            if let Some(p) = page_of.get(target).copied() {
+                page_of.insert(tmp.clone(), p);
             }
         }
         self.nat = nat;
@@ -1329,7 +1372,7 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
                 .ok_or_else(|| CandyError::Typst("no pages".into()))?;
             Ok(typst_svg::svg(page, &SvgOptions::default()))
         }
-        Err(e) => Err(CandyError::Typst(format!("{:?}", e))),
+        Err(e) => Err(e.into()),
     }
 }
 #[test]
@@ -2069,6 +2112,81 @@ fn transform_translation_animate_shifts_all_fragments() {
         );
     }
 }
+
+/// Regression: chained `#transform`s on the same label must not let the *future*
+/// transform's temporary old-content mobject (`__xf_eq_1`) become visible during
+/// the first transform's window. The scheduler must keep every tmp invisible
+/// until its own transform starts, and the renderer must not let tmp mobjects
+/// push the target down the page via the natural layout (which would place the
+/// formula fragments off-screen or create a displaced duplicate).
+#[test]
+fn chained_transforms_hide_future_tmp_during_first_window() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #animate(\"eq\", to: (0cm, 3cm), duration: 60)\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_chain.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Midpoint of the FIRST transform window: animate 0-60, first transform 61-120,
+    // second transform 121-180. Mid of first window = 90.
+    let mid = 90u32;
+    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    std::fs::remove_file(&tmp).ok();
+
+    // Fragment groups are single-line `<g opacity="..." transform="translate(...) ...">`.
+    // Object groups are `<g opacity="...">` followed by a nested `<svg>` on the next line.
+    // During the first transform the target and both tmps should be hidden, so there
+    // must be NO object groups with positive opacity.
+    let mut visible_object_groups = 0usize;
+    for line in svg.lines() {
+        if line.starts_with("<g opacity=\"") && !line.contains("transform=") {
+            if let Some(start) = line.find("opacity=\"") {
+                let rest = &line[start + 9..];
+                if let Some(end) = rest.find('"') {
+                    if let Ok(op) = rest[..end].parse::<f64>() {
+                        if op > 0.01 {
+                            visible_object_groups += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        visible_object_groups, 0,
+        "during first transform window, no object group should be visible (future tmp ghost); found {visible_object_groups} visible"
+    );
+    // Fragments must be present and land inside the page (not pushed off-screen by tmps).
+    let fragments: Vec<&str> = svg
+        .lines()
+        .filter(|l| l.contains("opacity=") && l.contains("transform=\"translate("))
+        .collect();
+    assert!(!fragments.is_empty(), "expected fragment overlay");
+    for line in &fragments {
+        let p = line.find("transform=\"translate(").unwrap();
+        let rest = &line[p + "transform=\"translate(".len()..];
+        if let Some(comma) = rest.find(',') {
+            let y_part = &rest[comma + 1..];
+            if let Some(end) = y_part.find(')') {
+                let y = y_part[..end].trim().parse::<f64>().unwrap();
+                assert!(
+                    y < r.page_h,
+                    "fragment y={y} must be inside page height {page_h}",
+                    page_h = r.page_h
+                );
+            }
+        }
+    }
+}
+
 /// Regression: a scene whose content overflows its page becomes a **cross-page
 /// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
 /// timeline) but are laid out across the overflow pages, and the renderer plays

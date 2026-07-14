@@ -72,8 +72,8 @@ pub(crate) struct TransformFragmentPlan {
     pub(crate) new_inner: String,
     /// Per-glyph animation fragments.
     pub(crate) anims: Vec<GlyphAnim>,
-    /// Pixel-path cache of whole-formula RGBA, keyed by `(which: 0/1, ppi_q)`.
-    pub(crate) formula_cache: Mutex<HashMap<(u8, u32), Arc<RenderedFrame>>>,
+    /// Pixel-path cache of whole-formula RGBA, keyed by `(which: 0/1, ppi_q, page_w, page_h)`.
+    pub(crate) formula_cache: Mutex<HashMap<(u8, u32, u64, u64), Arc<RenderedFrame>>>,
 }
 
 /// Build the Typst source that places a single mobject body at `(x_cm, y_cm)`
@@ -506,7 +506,7 @@ impl Renderer {
         ph: f64,
     ) -> Result<Arc<RenderedFrame>, CandyError> {
         let ppi_q = (ppi * 100.0).round() as u32;
-        let key = (src, ppi_q);
+        let key = (src, ppi_q, pw.to_bits(), ph.to_bits());
         if let Some(f) = p.formula_cache.lock().unwrap().get(&key) {
             return Ok(f.clone());
         }

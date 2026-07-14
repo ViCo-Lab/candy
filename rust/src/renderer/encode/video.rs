@@ -31,6 +31,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::core::meta::PrivateMeta;
 use crate::core::diag::{CandyWarn, CandyError};
 use crate::warn;
 use crate::renderer::RenderedFrame;
@@ -147,10 +148,14 @@ impl Codec {
 /// in-process encoder. For ffmpeg codecs (X264, X265, VAAPI, VideoToolbox,
 /// QSV), use [`crate::renderer::encode::ffmpeg::encode_via_ffmpeg`] instead — that
 /// function returns already-muxed bytes and bypasses this path entirely.
+///
+/// `private_metadata` is accepted for pipeline continuity; video codec metadata
+/// embedding is reserved for a future container-muxer update.
 pub fn encode_frames(
     frames: &[RenderedFrame],
     fps: u32,
     codec: Codec,
+    _private_metadata: &PrivateMeta,
 ) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {
         return Err(CandyError::Encode(
@@ -218,10 +223,14 @@ pub fn encode_frames(
 }
 
 /// Package an [`EncodedVideo`] (plus optional audio) into a container byte buffer.
+///
+/// `private_metadata` is currently accepted for pipeline continuity; future
+/// muxer updates may embed it as container metadata.
 pub fn mux(
     video: &EncodedVideo,
     audio: Option<&AudioData>,
     container: Container,
+    _private_metadata: &PrivateMeta,
 ) -> Result<Vec<u8>, CandyError> {
     match container {
         Container::Mp4 => container::mux_mp4(video, audio),
@@ -292,8 +301,9 @@ pub fn write_gif(
     frames: &[RenderedFrame],
     fps: u32,
     path: &Path,
+    private_metadata: &PrivateMeta,
 ) -> Result<(), CandyError> {
-    use gif::{Encoder, Frame, Repeat};
+    use gif::{AnyExtension, Encoder, Extension, Frame, Repeat};
     if frames.is_empty() {
         return Err(CandyError::Encode("cannot write an empty GIF".into()));
     }
@@ -310,6 +320,14 @@ pub fn write_gif(
     encoder
         .set_repeat(Repeat::Infinite)
         .map_err(|e| CandyError::Encode(format!("gif repeat failed: {e}")))?;
+    // Embed private metadata as a GIF comment extension before the frames.
+    let meta_json = private_metadata.to_json();
+    encoder
+        .write_raw_extension(
+            AnyExtension(Extension::Comment as u8),
+            &[meta_json.as_bytes()],
+        )
+        .map_err(|e| CandyError::Encode(format!("gif comment extension failed: {e}")))?;
     // Frame delay in centiseconds (GIF's time unit); round to at least 1.
     let delay_cs = ((1000 / fps as u64) / 10).clamp(1, u64::MAX) as u16;
     for f in frames {
@@ -327,9 +345,14 @@ pub fn write_gif(
 /// Encode a single [`RenderedFrame`] as an RGBA PNG bitmap written to `path`.
 ///
 /// Used by the `--format png` target, which exports the animation's final
-/// frame as a static bitmap (the "poster" of the animation).
-pub fn write_png(frame: &RenderedFrame, path: &Path) -> Result<(), CandyError> {
-    use png::{BitDepth, ColorType};
+/// frame as a static bitmap (the "poster" of the animation). The private
+/// metadata is embedded as a `candy-meta` tEXt chunk.
+pub fn write_png(
+    frame: &RenderedFrame,
+    path: &Path,
+    private_metadata: &PrivateMeta,
+) -> Result<(), CandyError> {
+    use png::{BitDepth, ColorType, text_metadata::TEXtChunk};
     let file = fs::File::create(path)?;
     let mut enc = png::Encoder::new(file, frame.width as u32, frame.height as u32);
     enc.set_color(ColorType::Rgba);
@@ -337,8 +360,82 @@ pub fn write_png(frame: &RenderedFrame, path: &Path) -> Result<(), CandyError> {
     let mut writer = enc
         .write_header()
         .map_err(|e| CandyError::Encode(format!("png header encode failed: {e}")))?;
+    // Embed private metadata as a tEXt chunk right after the header.
+    let meta_json = private_metadata.to_json();
+    let text_chunk = TEXtChunk::new("candy-meta", meta_json);
+    writer
+        .write_text_chunk(&text_chunk)
+        .map_err(|e| CandyError::Encode(format!("png text chunk failed: {e}")))?;
     writer
         .write_image_data(&frame.rgba)
         .map_err(|e| CandyError::Encode(format!("png data encode failed: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::meta::PrivateMeta;
+
+    fn sample_meta() -> PrivateMeta {
+        PrivateMeta {
+            tyx: "tyx-test".into(),
+            candy: "candy-test".into(),
+            version_codename: "TestMeta".into(),
+            in_memory_of: "memory-test".into(),
+        }
+    }
+
+    fn sample_frame() -> RenderedFrame {
+        RenderedFrame {
+            width: 4,
+            height: 4,
+            rgba: vec![255u8; 4 * 4 * 4],
+        }
+    }
+
+    #[test]
+    fn write_gif_embeds_private_metadata_comment_extension() {
+        let tmp = std::env::temp_dir().join("candy_test_gif_meta.gif");
+        let meta = sample_meta();
+        let frames = vec![sample_frame()];
+        write_gif(&frames, 10, &tmp, &meta).unwrap();
+
+        let bytes = std::fs::read(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // Comment extension label byte 0xFE follows the extension introducer 0x21.
+        // The JSON content itself is written verbatim in the sub-blocks, so a
+        // substring search is sufficient to confirm it was embedded.
+        assert!(
+            bytes.windows(2).any(|w| w == [0x21, 0xFE]),
+            "GIF should contain a comment extension (0x21 0xFE)"
+        );
+        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        assert!(
+            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            "GIF comment extension should contain private metadata JSON"
+        );
+    }
+
+    #[test]
+    fn write_png_embeds_private_metadata_text_chunk() {
+        let tmp = std::env::temp_dir().join("candy_test_png_meta.png");
+        let meta = sample_meta();
+        write_png(&sample_frame(), &tmp, &meta).unwrap();
+
+        let bytes = std::fs::read(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // tEXt chunk keyword "candy-meta" followed by null and then the JSON text.
+        assert!(
+            bytes.windows("candy-meta".len()).any(|w| w == b"candy-meta"),
+            "PNG should contain a candy-meta tEXt chunk"
+        );
+        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        assert!(
+            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            "PNG tEXt chunk should contain private metadata JSON"
+        );
+    }
 }

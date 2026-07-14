@@ -29,9 +29,10 @@ pub mod core;
 pub mod parser;
 pub mod renderer;
 
-/// Unified error type (E001–E007, fatal → exit code 64–70) and non-fatal
-/// warning type (W001–W011); see `core::diag::{CandyError, CandyWarn}` and the
-/// `core::diag::{error, warn, debug, info}` reporters.
+/// Unified error type (E001–E007 → exit code 64–70; `EYEE` → exit code 111, a
+/// batch partial-failure marker that deliberately bypasses the `64` rule) and
+/// non-fatal warning type (W001–W011); see `core::diag::{CandyError, CandyWarn}`
+/// and the `core::diag::{error, warn, debug, info}` reporters.
 pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
 
@@ -308,14 +309,14 @@ pub fn build_input_with_gpu(
         OutputFormat::Svg => unreachable!(),
         // Animated GIF: all frames, looping forever. Self-contained.
         OutputFormat::Gif => {
-            encode::write_gif(&probe, fps, output)?;
+            encode::write_gif(&probe, fps, output, &scene.private_metadata)?;
         }
         // Static PNG bitmap of the final frame (the animation "poster").
         OutputFormat::Png => {
             let last = probe
                 .last()
                 .ok_or_else(|| CandyError::Encode("no frames to write as PNG".into()))?;
-            encode::write_png(last, output)?;
+            encode::write_png(last, output, &scene.private_metadata)?;
         }
         // Video containers (MP4 / MKV / WebM): encode + mux.
         OutputFormat::Mp4 | OutputFormat::Mkv | OutputFormat::Webm => {
@@ -361,7 +362,7 @@ pub fn build_input_with_gpu(
                 }
             } else {
                 // Self-contained path: rav1e/openh264 + candy's muxer.
-                let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec) {
+                let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec, &scene.private_metadata) {
                     Ok(v) => v,
                     Err(e) => {
                         warn!(CandyWarn::EncodeFallback(format!(
@@ -378,7 +379,7 @@ pub fn build_input_with_gpu(
                     }
                 };
                 let audio = encode::collect_audio(&scene.audio, fps);
-                encode::mux(&video, audio.as_ref(), container)?
+                encode::mux(&video, audio.as_ref(), container, &scene.private_metadata)?
             };
 
             std::fs::write(output, bytes)?;
