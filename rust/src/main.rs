@@ -351,24 +351,24 @@ fn run() -> Result<(), CandyError> {
             // (111) so callers can detect partial failure; for a single input we
             // keep the specific `E00x` code.
             if !failures.is_empty() {
-                // List every input that failed. This runs only *after* all
-                // inputs have been attempted (batch mode never aborts early), so
-                // the complete failure set is known here.
-                eprintln!(
-                    "{}",
-                    format!("Batch failed on {} input(s):", failures.len())
-                        .red()
-                        .bold()
-                );
-                for (path, e) in &failures {
-                    eprintln!(
-                        "  - {}: {} {}",
-                        path.display(),
-                        candy::core::diag::code_error(e.code()),
-                        e.message()
-                    );
-                }
                 if inputs.len() > 1 {
+                    // Batch mode: list every input that failed. This runs only
+                    // *after* all inputs have been attempted (batch mode never
+                    // aborts early), so the complete failure set is known here.
+                    eprintln!(
+                        "{}",
+                        format!("Batch failed on {} input(s):", failures.len())
+                            .red()
+                            .bold()
+                    );
+                    for (path, e) in &failures {
+                        eprintln!(
+                            "  - {}: {} {}",
+                            path.display(),
+                            candy::core::diag::code_error(e.code()),
+                            e.message()
+                        );
+                    }
                     // Batch partial failure: surface through the unified
                     // diagnostic pipeline as `EYEE` (exit code 111, which
                     // deliberately bypasses the `64`-based rule). `111` ≈
@@ -376,8 +376,8 @@ fn run() -> Result<(), CandyError> {
                     // after biting into something spoiled.
                     error!(CandyError::Yee("yee~ Batch failed".to_string()));
                 } else {
-                    // Single input: keep the specific `E00x` code via the diag
-                    // pipeline.
+                    // Single input (non-batch): keep the specific `E00x` code
+                    // via the diagnostic pipeline — no "Batch failed" summary.
                     error!(failures.into_iter().next().unwrap().1);
                 }
             }
