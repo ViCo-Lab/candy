@@ -149,8 +149,8 @@ impl Codec {
 /// QSV), use [`crate::renderer::encode::ffmpeg::encode_via_ffmpeg`] instead — that
 /// function returns already-muxed bytes and bypasses this path entirely.
 ///
-/// `private_metadata` is accepted for pipeline continuity; video codec metadata
-/// embedding is reserved for a future container-muxer update.
+/// `private_metadata` is accepted for pipeline continuity. Metadata embedding
+/// happens at mux time (see [`mux`]), not in the codec encoder.
 pub fn encode_frames(
     frames: &[RenderedFrame],
     fps: u32,
@@ -224,18 +224,20 @@ pub fn encode_frames(
 
 /// Package an [`EncodedVideo`] (plus optional audio) into a container byte buffer.
 ///
-/// `private_metadata` is currently accepted for pipeline continuity; future
-/// muxer updates may embed it as container metadata.
+/// `private_metadata` is embedded in the container's metadata area: an
+/// iTunes-style `meta`/`ilst`/`©cmt` entry for MP4, and a `Tags`/`SimpleTag`
+/// element for Matroska (WebM/MKV) — mirroring the metadata embedded in GIF
+/// comments and PNG tEXt chunks.
 pub fn mux(
     video: &EncodedVideo,
     audio: Option<&AudioData>,
     container: Container,
-    _private_metadata: &PrivateMeta,
+    private_metadata: &PrivateMeta,
 ) -> Result<Vec<u8>, CandyError> {
     match container {
-        Container::Mp4 => container::mux_mp4(video, audio),
-        Container::Mkv => container::mux_matroska(video, audio, false),
-        Container::Webm => container::mux_matroska(video, audio, true),
+        Container::Mp4 => container::mux_mp4(video, audio, private_metadata),
+        Container::Mkv => container::mux_matroska(video, audio, false, private_metadata),
+        Container::Webm => container::mux_matroska(video, audio, true, private_metadata),
     }
 }
 

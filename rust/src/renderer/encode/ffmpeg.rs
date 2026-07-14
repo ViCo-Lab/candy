@@ -35,6 +35,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::diag::CandyError;
+use crate::core::meta::PrivateMeta;
 use crate::info;
 use crate::renderer::RenderedFrame;
 use crate::renderer::encode::{Codec, Container};
@@ -94,6 +95,7 @@ fn container_format(container: Container) -> &'static str {
 /// * `fps` — frames per second.
 /// * `codec` — which ffmpeg encoder to use (X264/X265/Vaapi/...).
 /// * `container` — output container (MP4/MKV/WebM).
+/// * `private_metadata` — embedded as a `candy-meta` container metadata entry.
 ///
 /// # Errors
 /// Returns `CandyError::Encode` (E007) if ffmpeg is not found, exits non-zero,
@@ -103,6 +105,7 @@ pub fn encode_via_ffmpeg(
     fps: u32,
     codec: Codec,
     container: Container,
+    private_metadata: &PrivateMeta,
 ) -> Result<Vec<u8>, CandyError> {
     let ffmpeg = find_ffmpeg().ok_or_else(|| {
         CandyError::Encode("ffmpeg not found on $PATH (E007)".into())
@@ -193,6 +196,12 @@ pub fn encode_via_ffmpeg(
         // is only called for ffmpeg-backed codecs — but the match must be total.
         _ => {}
     }
+
+    // Embed private metadata as a `candy-meta` container metadata entry.
+    // ffmpeg stores this in the moov/udta area (MP4) or Tags (Matroska),
+    // mirroring the metadata embedded by candy's hand-written muxer.
+    cmd.arg("-metadata")
+        .arg(format!("candy-meta={}", private_metadata.to_json()));
 
     // Output container (written to the temp file).
     cmd.args(["-f", format])

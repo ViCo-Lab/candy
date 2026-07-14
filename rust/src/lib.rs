@@ -356,7 +356,7 @@ pub fn build_input_with_gpu(
                 let composed: Vec<_> =
                     probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
                 match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(
-                    &composed, fps, codec, container,
+                    &composed, fps, codec, container, &scene.private_metadata,
                 ) {
                     Ok(bytes) => bytes,
                     Err(e) => {

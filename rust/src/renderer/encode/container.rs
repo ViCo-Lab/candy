@@ -8,12 +8,21 @@
 //! All byte layout is written by hand so `candy` is fully self-contained.
 
 use crate::core::diag::{CandyWarn, CandyError};
+use crate::core::meta::PrivateMeta;
 use crate::warn;
 use crate::renderer::audio::AudioData;
 use crate::renderer::EncodedVideo;
 
 /// Mux an encoded video (and optional audio) into an MP4 file.
-pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, CandyError> {
+///
+/// `private_metadata` is embedded in the `moov`/`udta` user-data area as an
+/// iTunes-style `meta`/`ilst`/`©cmt` (comment) entry containing the compact
+/// JSON, mirroring the metadata embedded in GIF comments and PNG tEXt chunks.
+pub fn mux_mp4(
+    v: &EncodedVideo,
+    audio: Option<&AudioData>,
+    private_metadata: &PrivateMeta,
+) -> Result<Vec<u8>, CandyError> {
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
         return Err(CandyError::Encode("cannot mux an empty video (E007)".into()));
@@ -55,7 +64,7 @@ pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, C
         },
     );
 
-    let moov0 = build_moov(v, audio, &v_sizes, &a_sizes, &a_dur_samples, total_ms, 0, 0);
+    let moov0 = build_moov(v, audio, &v_sizes, &a_sizes, &a_dur_samples, total_ms, 0, 0, private_metadata);
     let moov_len = moov0.len();
     let mdat_offset = ftyp.len() + moov_len + 8;
     let video_offset = mdat_offset;
@@ -69,6 +78,7 @@ pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, C
         total_ms,
         video_offset as u32,
         audio_offset as u32,
+        private_metadata,
     );
 
     let mut out = Vec::with_capacity(ftyp.len() + moov.len() + 8 + v_bytes + a_bytes);
@@ -87,7 +97,9 @@ pub fn mux_mp4(v: &EncodedVideo, audio: Option<&AudioData>) -> Result<Vec<u8>, C
 }
 
 /// Build the `moov` box. `v_off`/`a_off` are the absolute file offsets of the
-/// first sample of each track (0 means "measure pass").
+/// first sample of each track (0 means "measure pass"). `private_metadata` is
+/// embedded in a `udta` user-data box so the metadata survives in the
+/// container's metadata area.
 fn build_moov(
     v: &EncodedVideo,
     audio: Option<&AudioData>,
@@ -97,6 +109,7 @@ fn build_moov(
     total_ms: u64,
     v_off: u32,
     a_off: u32,
+    private_metadata: &PrivateMeta,
 ) -> Vec<u8> {
     let nframes = v.frames.len() as u32;
     let has_audio = !a_sizes.is_empty();
@@ -135,8 +148,65 @@ fn build_moov(
     for t in traks {
         moov_payload.extend_from_slice(&t);
     }
+    // Embed private metadata in the moov user-data area.
+    moov_payload.extend_from_slice(&build_meta_udta(&private_metadata.to_json()));
     // moov is a plain box (not a full box) containing mvhd + trak children.
     b(b"moov", moov_payload)
+}
+
+/// Build a `udta` box holding the private metadata as an iTunes-style
+/// `meta`/`ilst`/`©cmt` (comment) entry.
+///
+/// Layout:
+/// ```text
+/// udta
+///   meta (full box, v0/flags0)
+///     hdlr (handler_type = "mdir", name = "candy")
+///     ilst
+///       ©cmt
+///         data (full box, type=UTF-8, locale=0) -> JSON bytes
+/// ```
+fn build_meta_udta(json: &str) -> Vec<u8> {
+    let data = full_box(
+        b"data",
+        0,
+        0,
+        {
+            let mut p = vec![];
+            p.extend_from_slice(&1u32.to_be_bytes()); // data_type = UTF-8
+            p.extend_from_slice(&0u32.to_be_bytes()); // locale = 0
+            p.extend_from_slice(json.as_bytes());
+            p
+        },
+    );
+    // ©cmt = 0xA9 'c' 'm' 't'
+    let cmt = b(&[0xA9, 0x63, 0x6D, 0x74], data);
+    let ilst = b(b"ilst", cmt);
+    let hdlr = full_box(
+        b"hdlr",
+        0,
+        0,
+        {
+            let mut p = vec![];
+            p.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+            p.extend_from_slice(b"mdir"); // handler_type
+            p.extend_from_slice(&[0u8; 12]); // reserved
+            p.extend_from_slice(b"candy\0"); // name (null-terminated)
+            p
+        },
+    );
+    let meta = full_box(
+        b"meta",
+        0,
+        0,
+        {
+            let mut p = vec![];
+            p.extend_from_slice(&hdlr);
+            p.extend_from_slice(&ilst);
+            p
+        },
+    );
+    b(b"udta", meta)
 }
 
 fn build_video_trak(
@@ -540,11 +610,14 @@ fn full_box(name: &[u8; 4], version: u8, flags: u32, payload: Vec<u8>) -> Vec<u8
 // ======================== Matroska (WebM / MKV) ========================
 
 /// Mux into Matroska. `webm` selects the `webm` doctype (AV1 + Opus), otherwise
-/// `matroska` (AV1/H.264 + Opus/AAC).
+/// `matroska` (AV1/H.264 + Opus/AAC). `private_metadata` is embedded in a
+/// `Tags`/`SimpleTag` element (`TagName` = `candy-meta`) containing the compact
+/// JSON, mirroring the metadata embedded in GIF comments and PNG tEXt chunks.
 pub fn mux_matroska(
     v: &EncodedVideo,
     audio: Option<&AudioData>,
     webm: bool,
+    private_metadata: &PrivateMeta,
 ) -> Result<Vec<u8>, CandyError> {
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
@@ -622,9 +695,11 @@ pub fn mux_matroska(
     let info_el = ebml_elem(&[0x15, 0x49, 0xA9, 0x66], &info);
 
     // Segment.
+    let tags_el = build_tags(&private_metadata.to_json());
     let mut segment = Vec::new();
     segment.extend_from_slice(&info_el);
     segment.extend_from_slice(&tracks_el);
+    segment.extend_from_slice(&tags_el);
     segment.extend_from_slice(&cluster_bytes);
     // Segment size: candy builds the whole file in memory, so the exact size is
     // known. A known-size vint is fully valid EBML and is what `mkvmerge`
@@ -695,6 +770,28 @@ fn audio_track_entry(a: &AudioData) -> Vec<u8> {
     aud.extend_from_slice(&ebml_elem(&[0x9F], &u64_to_bytes(a.channels as u64))); // Channels
     e.extend_from_slice(&ebml_elem(&[0xE1], &aud));
     ebml_elem(&[0xAE], &e)
+}
+
+/// Build a Matroska `Tags` element embedding the private metadata as a
+/// `SimpleTag` (`TagName` = `candy-meta`, `TagString` = JSON).
+///
+/// Layout:
+/// ```text
+/// Tags (0x1254C367)
+///   Tag (0x7373)
+///     SimpleTag (0x67C8)
+///       TagName (0x45A3)  = "candy-meta"
+///       TagLanguage (0x447A) = "und"
+///       TagString (0x4484) = JSON
+/// ```
+fn build_tags(json: &str) -> Vec<u8> {
+    let mut simple = Vec::new();
+    simple.extend_from_slice(&ebml_elem(&[0x45, 0xA3], b"candy-meta")); // TagName
+    simple.extend_from_slice(&ebml_elem(&[0x44, 0x7A], b"und")); // TagLanguage
+    simple.extend_from_slice(&ebml_elem(&[0x44, 0x84], json.as_bytes())); // TagString
+    let simple_el = ebml_elem(&[0x67, 0xC8], &simple); // SimpleTag
+    let tag_el = ebml_elem(&[0x73, 0x73], &simple_el); // Tag
+    ebml_elem(&[0x12, 0x54, 0xC3, 0x67], &tag_el) // Tags
 }
 
 /// Build a Matroska SimpleBlock.
@@ -769,4 +866,79 @@ fn u64_to_bytes(v: u64) -> Vec<u8> {
 
 fn f64_to_bytes(v: f64) -> Vec<u8> {
     v.to_be_bytes().to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::meta::PrivateMeta;
+
+    fn sample_meta() -> PrivateMeta {
+        PrivateMeta {
+            tyx: "tyx-test".into(),
+            candy: "candy-test".into(),
+            version_codename: "TestMeta".into(),
+            in_memory_of: "memory-test".into(),
+        }
+    }
+
+    fn sample_video() -> EncodedVideo {
+        EncodedVideo {
+            width: 16,
+            height: 16,
+            fps: 10,
+            is_av1: false,
+            frames: vec![vec![0u8; 16], vec![0u8; 16]],
+            codec_private: vec![0u8; 4],
+            keyframes: vec![true, false],
+        }
+    }
+
+    #[test]
+    fn mux_mp4_embeds_private_metadata_in_udta() {
+        let v = sample_video();
+        let meta = sample_meta();
+        let bytes = mux_mp4(&v, None, &meta).unwrap();
+
+        // udta / meta / ilst / ©cmt markers should all be present.
+        assert!(bytes.windows(4).any(|w| w == b"udta"), "MP4 should contain a udta box");
+        assert!(bytes.windows(4).any(|w| w == b"meta"), "MP4 should contain a meta box");
+        assert!(
+            bytes.windows(4).any(|w| w == [0xA9, 0x63, 0x6D, 0x74]),
+            "MP4 should contain a ©cmt entry"
+        );
+        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        assert!(
+            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            "MP4 metadata should contain private metadata JSON"
+        );
+    }
+
+    #[test]
+    fn mux_matroska_embeds_private_metadata_in_tags() {
+        for webm in [false, true] {
+            let v = sample_video();
+            let meta = sample_meta();
+            let bytes = mux_matroska(&v, None, webm, &meta).unwrap();
+
+            // Tags / SimpleTag / TagName markers should be present.
+            assert!(
+                bytes.windows(4).any(|w| w == [0x12, 0x54, 0xC3, 0x67]),
+                "Matroska should contain a Tags element"
+            );
+            assert!(
+                bytes.windows(2).any(|w| w == [0x67, 0xC8]),
+                "Matroska should contain a SimpleTag element"
+            );
+            assert!(
+                bytes.windows("candy-meta".len()).any(|w| w == b"candy-meta"),
+                "Matroska tag should be named candy-meta"
+            );
+            let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+            assert!(
+                bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+                "Matroska metadata should contain private metadata JSON"
+            );
+        }
+    }
 }
