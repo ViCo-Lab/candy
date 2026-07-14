@@ -6,7 +6,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use typst::compile;
 use typst_layout::PagedDocument;
 use typst_syntax::ast::{self, Expr};
-use typst_syntax::{LinkedNode, Source as TypstSource, parse_code};
+use typst_syntax::{LinkedNode, parse_code};
 use typst_svg::{SvgOptions, svg};
 
 use crate::core::ast::{Label, Scene, SubPos, Subtitle};
@@ -196,6 +196,7 @@ fn subtitle_place_expr(sub: &Subtitle, margin: f64) -> String {
 /// Compile a subtitle's body to a single-page Typst document, placed at the
 /// subtitle's resolved anchor and with `ecval(...)` counters substituted.
 pub(crate) fn subtitle_doc(
+    state: &WorldState,
     scene: &Scene,
     sub: &Subtitle,
     page_w: f64,
@@ -216,9 +217,8 @@ pub(crate) fn subtitle_doc(
         pw = page_w,
         ph = page_h,
     );
-    let state = WorldState::new(std::path::PathBuf::new());
-    let source = TypstSource::detached(src);
-    let world = CandyWorld::new(&state, source);
+    let source = state.detached_cached(&src);
+    let world = CandyWorld::new(state, source);
     // Mirror `Renderer::compile`: a malformed body can make typst panic rather
     // than return a diagnostic — catch it so the error is always reported as
     // `E006` instead of crashing the process (notably in release builds).
@@ -242,13 +242,14 @@ pub(crate) fn subtitle_doc(
 
 /// Render a subtitle to an SVG string (used by the SVG frame path).
 pub(crate) fn render_subtitle_svg_impl(
+    state: &WorldState,
     scene: &Scene,
     sub: &Subtitle,
     page_w: f64,
     page_h: f64,
     time_ms: u32,
 ) -> Result<String, CandyError> {
-    let doc = subtitle_doc(scene, sub, page_w, page_h, time_ms)?;
+    let doc = subtitle_doc(state, scene, sub, page_w, page_h, time_ms)?;
     let page = doc
         .pages()
         .first()

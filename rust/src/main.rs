@@ -112,6 +112,15 @@ enum Commands {
         /// output *is* the `.candy/` draft).
         #[arg(long, default_value_t = false)]
         keep_intermediates: bool,
+        /// Parallel rasterization jobs (render thread pool size). Caps how many
+        /// frames are rasterized in parallel and — via the bounded streaming
+        /// channel — how many frames' RGBA may be live in memory at once. This
+        /// is the resource-limit knob for the streaming pipeline: memory peak is
+        /// bounded by `jobs` in-flight frames regardless of total frame count.
+        /// Defaults to the number of logical CPUs. Pass `1` for a fully serial,
+        /// minimal-memory build.
+        #[arg(long, default_value_t = 0)]
+        jobs: usize,
     },
     /// Hidden easter-egg command. Invoked as `candy candy` or `candy tyx`.
     #[command(alias = "tyx", hide = true)]
@@ -205,6 +214,7 @@ fn run() -> Result<(), CandyError> {
             gpu,
             keep_intermediates,
             output_dir,
+            jobs,
         } => {
             // No inputs: print the build subcommand's help and exit cleanly
             // (the user asked for help on an empty `candy build`).
@@ -309,6 +319,8 @@ fn run() -> Result<(), CandyError> {
                             fps,
                             ppt,
                             false,
+                            jobs,
+                            keep_intermediates,
                         )?;
                         info!("draft: {}/frame_*.svg", intermediate_dir.display());
                         return Ok(());
@@ -332,6 +344,8 @@ fn run() -> Result<(), CandyError> {
                         fps,
                         ppt,
                         gpu,
+                        jobs,
+                        keep_intermediates,
                     )?;
                     // Successful build: drop the per-build intermediate dir unless
                     // the user asked to keep it (the SVG draft `return`s above, so

@@ -7,8 +7,10 @@
 //! across every frame compile. `CandyWorld` is a per-compile view that fixes a
 //! specific `main` source over the shared state.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use typst::{Library, LibraryExt, World};
 use typst_kit::datetime::Time;
@@ -104,6 +106,15 @@ pub(crate) struct WorldState {
     /// Guards the "time-dependent render is not reproducible" warning so it is
     /// printed at most once per renderer, not once per compiled frame.
     time_warned: AtomicBool,
+    /// Parsed-source cache. Typst re-parses its input on every `compile` call,
+    /// so the same source string (a static mobject body, the natural-layout
+    /// probe, a repeated counter value, …) would be re-parsed N times across an
+    /// animation's frames. We memoize the parsed `TypstSource` here (keyed by the
+    /// exact source text) so repeated compiles skip the parse and reuse the
+    /// already-built AST — this is the "render cache" the per-frame recompiler
+    /// relies on. `TypstSource` is `Arc`-backed, so cloning out of the cache is
+    /// cheap and shares the parsed tree.
+    source_cache: Mutex<HashMap<String, TypstSource>>,
 }
 
 impl WorldState {
@@ -148,7 +159,29 @@ impl WorldState {
             files,
             now: Time::system(),
             time_warned: AtomicBool::new(false),
+            source_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Parse `src` into a `TypstSource`, memoized by the exact source text.
+    ///
+    /// Consecutive frames that compile the same source (a static / paused
+    /// mobject body, the natural-layout probe, a repeated `ecval` value, …)
+    /// reuse the already-parsed AST instead of re-parsing — this is what lets
+    /// the per-frame recompiler build up a render cache instead of paying the
+    /// full parse cost on every frame. The `WorldState` (fonts + file resolver
+    /// + standard library) is already shared across frames via `Arc`; this
+    /// cache additionally shares the *parsed* source.
+    pub(crate) fn detached_cached(&self, src: &str) -> TypstSource {
+        if let Some(cached) = self.source_cache.lock().unwrap().get(src) {
+            return cached.clone();
+        }
+        let parsed = TypstSource::detached(src.to_string());
+        self.source_cache
+            .lock()
+            .unwrap()
+            .insert(src.to_string(), parsed.clone());
+        parsed
     }
 }
 

@@ -29,7 +29,10 @@
 //! seen (the `move` offset is already baked into the pixels), then encode.
 
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin};
 
 use crate::core::meta::PrivateMeta;
 use crate::core::diag::{CandyWarn, CandyError};
@@ -142,12 +145,161 @@ impl Codec {
     }
 }
 
+/// A streaming video encoder: frames are pushed one at a time and the muxed
+/// container bytes are produced only at [`finish`](Self::finish).
+///
+/// This is the memory-bounded replacement for the batch [`encode_frames`]: the
+/// caller never has to hold every RGBA frame at once. For the ffmpeg-backed
+/// codecs the frames are piped to ffmpeg's stdin as they arrive (ffmpeg buffers
+/// only its own working set); for the self-contained AV1/H.264 codecs each frame
+/// is encoded to a small coded sample immediately and its RGBA is dropped, so
+/// peak memory is the (bounded) coded stream plus at most a few in-flight frames
+/// from the parallel renderer. `audio` (if any) is muxed in at `finish`.
+pub(crate) struct StreamingVideo {
+    container: Container,
+    meta: PrivateMeta,
+    tw: usize,
+    th: usize,
+    audio: Option<AudioData>,
+    ffmpeg: Option<(Child, ChildStdin, PathBuf)>,
+    rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
+    h264: Option<crate::renderer::encode::h264::H264Stream>,
+}
+
+impl StreamingVideo {
+    /// Begin a streaming encode. `tw`/`th` are the uniform canvas size every
+    /// frame is composited onto (must match what the caller pushes). `audio` is
+    /// muxed in at `finish` (pass `None` for the no-audio batch path).
+    pub(crate) fn new(
+        fps: u32,
+        codec: Codec,
+        container: Container,
+        meta: &PrivateMeta,
+        tw: usize,
+        th: usize,
+        audio: Option<AudioData>,
+    ) -> Result<Self, CandyError> {
+        if fps < 1 {
+            return Err(CandyError::Encode("fps must be >= 1".into()));
+        }
+        let uses_ffmpeg = codec.uses_ffmpeg()
+            || (codec == Codec::H265
+                && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some());
+        if uses_ffmpeg {
+            let (child, stdin, tmp) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
+                codec, container, tw as u32, th as u32, fps, meta,
+            )?;
+            Ok(Self {
+                container,
+                meta: meta.clone(),
+                tw,
+                th,
+                audio,
+                ffmpeg: Some((child, stdin, tmp)),
+                rav1e: None,
+                h264: None,
+            })
+        } else if codec == Codec::H264 {
+            Ok(Self {
+                container,
+                meta: meta.clone(),
+                tw,
+                th,
+                audio,
+                ffmpeg: None,
+                rav1e: None,
+                h264: Some(crate::renderer::encode::h264::H264Stream::new(tw, th, fps)?),
+            })
+        } else if codec == Codec::Av1 {
+            Ok(Self {
+                container,
+                meta: meta.clone(),
+                tw,
+                th,
+                audio,
+                ffmpeg: None,
+                // Streaming AV1 uses all-intra: the streaming pipeline drops each
+                // frame's RGBA after encoding, so it cannot retry a panicked
+                // inter-prediction pass the way the batch `encode` does. all-intra
+                // disables motion estimation entirely, sidestepping the rav1e
+                // 0.8.1 tiling assert that panics during ME for some geometries.
+                rav1e: Some(crate::renderer::encode::rav1e::Rav1eStream::new(tw, th, fps, true)?),
+                h264: None,
+            })
+        } else {
+            // H265 without ffmpeg, or any other unsupported codec.
+            Err(CandyError::Encode(
+                "HEVC/H.265 encoding is not available: no pure-Rust encoder and no system \
+                 ffmpeg. Install ffmpeg with x265 support, or use AV1 (default) / H.264."
+                    .into(),
+            ))
+        }
+    }
+
+    /// Encode and absorb one composited frame. The frame's RGBA is consumed and
+    /// dropped here, so the caller is free to release it immediately.
+    pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
+        let composed = compose(frame, self.tw, self.th);
+        if let Some((_, stdin, _)) = self.ffmpeg.as_mut() {
+            stdin
+                .write_all(&composed.rgba)
+                .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
+            return Ok(());
+        }
+        if let Some(r) = self.rav1e.as_mut() {
+            // Safety net: rav1e 0.8.1 can still panic in rare geometries even in
+            // all-intra mode. Convert that to a clean error (no process abort).
+            // The streaming path cannot transparently fall back to H.264 here
+            // because each frame's RGBA has already been dropped, so we surface
+            // E007 and let the caller retry with `--codec h264` if desired.
+            return match catch_unwind(AssertUnwindSafe(|| r.push(&composed))) {
+                Ok(res) => res,
+                Err(_) => Err(CandyError::Encode(
+                    "rav1e aborted during AV1 streaming encode (E007); try `--codec h264`"
+                        .into(),
+                )),
+            };
+        }
+        if let Some(h) = self.h264.as_mut() {
+            return h.push(&composed);
+        }
+        Err(CandyError::Encode("streaming encoder not initialized".into()))
+    }
+
+    /// Finish encoding and return the muxed container bytes (audio included).
+    pub(crate) fn finish(self) -> Result<Vec<u8>, CandyError> {
+        if let Some((child, stdin, tmp)) = self.ffmpeg {
+            drop(stdin);
+            return crate::renderer::encode::ffmpeg::finish_ffmpeg(child, &tmp);
+        }
+        let video = if let Some(r) = self.rav1e {
+            r.finish()?
+        } else if let Some(h) = self.h264 {
+            h.finish()?
+        } else {
+            return Err(CandyError::Encode("streaming encoder not initialized".into()));
+        };
+        mux(&video, self.audio.as_ref(), self.container, &self.meta)
+    }
+
+    /// Finish encoding and return the raw [`EncodedVideo`] (no mux, no audio).
+    /// Used by the batch [`encode_frames`] entry point and tests.
+    pub(crate) fn finish_video(self) -> Result<EncodedVideo, CandyError> {
+        if let Some(r) = self.rav1e {
+            r.finish()
+        } else if let Some(h) = self.h264 {
+            h.finish()
+        } else {
+            Err(CandyError::Encode("streaming encoder not initialized".into()))
+        }
+    }
+}
+
 /// Encode composed RGBA frames into an [`EncodedVideo`] with the chosen codec.
 ///
-/// For self-contained codecs (Av1, H264, H265-without-ffmpeg), this runs the
-/// in-process encoder. For ffmpeg codecs (X264, X265, VAAPI, VideoToolbox,
-/// QSV), use [`crate::renderer::encode::ffmpeg::encode_via_ffmpeg`] instead — that
-/// function returns already-muxed bytes and bypasses this path entirely.
+/// Batch wrapper over [`StreamingVideo`] (no audio, no mux) kept for callers
+/// that already hold every frame in memory (tests, small drafts). The streaming
+/// pipeline in `lib.rs` uses [`StreamingVideo`] directly to avoid that buffering.
 ///
 /// `private_metadata` is accepted for pipeline continuity. Metadata embedding
 /// happens at mux time (see [`mux`]), not in the codec encoder.
@@ -174,35 +326,41 @@ pub fn encode_frames(
     // visible cropping occurs.
     let tw = max_w.max(16).next_multiple_of(2);
     let th = max_h.max(16).next_multiple_of(2);
-    let composed: Vec<RenderedFrame> = frames.iter().map(|f| compose(f, tw, th)).collect();
 
     match codec {
         // H.264 is the default self-contained codec. If openh264 fails for any
         // reason, transparently fall back to AV1 (rav1e) so a valid,
         // self-contained video is still produced.
-        Codec::H264 => match crate::renderer::encode::h264::encode(&composed, fps) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                warn!(CandyWarn::CodecFallback(format!("H.264 -> AV1: {e}")));
-                crate::renderer::encode::rav1e::encode(&composed, fps)
+        Codec::H264 => {
+            let mut s = StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
+            for f in frames {
+                s.push(f)?;
             }
-        },
+            s.finish_video()
+        }
         // AV1 (opt-in via `--codec av1`). `rav1e` 0.8.1 can panic on some frame
-        // geometries; `encode` already retries in all-intra mode, and only if
-        // that also fails do we fall back to H.264.
-        Codec::Av1 => match crate::renderer::encode::rav1e::encode(&composed, fps) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                warn!(CandyWarn::CodecFallback(format!("AV1 -> H.264: {e}")));
-                crate::renderer::encode::h264::encode(&composed, fps)
+        // geometries; `Rav1eStream` surfaces that as an error so we fall back to
+        // H.264.
+        Codec::Av1 => {
+            let mut s = StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
+            for f in frames {
+                s.push(f)?;
             }
-        },
+            match s.finish_video() {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    warn!(CandyWarn::CodecFallback(format!("AV1 -> H.264: {e}")));
+                    let mut s2 =
+                        StreamingVideo::new(fps, Codec::H264, Container::Mp4, _private_metadata, tw, th, None)?;
+                    for f in frames {
+                        s2.push(f)?;
+                    }
+                    s2.finish_video()
+                }
+            }
+        }
         Codec::H265 => {
-            // Try ffmpeg + x265 first; if ffmpeg is not available, return E007.
             if crate::renderer::encode::ffmpeg::find_ffmpeg().is_some() {
-                // This path returns muxed bytes, so callers must use the
-                // ffmpeg path directly. Here we return an error to signal
-                // the caller should use encode_via_ffmpeg instead.
                 Err(CandyError::Encode(
                     "H.265 requires the ffmpeg path — use encode_via_ffmpeg (E007 fallback)".into(),
                 ))
@@ -298,19 +456,82 @@ pub fn write_rgba_draft(
     Ok(())
 }
 
+/// A streaming GIF encoder: frames are pushed one at a time and written to the
+/// output file immediately, so the caller never holds more than one frame's
+/// RGBA at once.
+pub(crate) struct GifStream {
+    encoder: gif::Encoder<std::fs::File>,
+    tw: u16,
+    th: u16,
+    delay_cs: u16,
+}
+
+impl GifStream {
+    /// Open `path` for an animated GIF of `tw × th` (uniform) frames at `fps`.
+    pub(crate) fn new(
+        path: &Path,
+        fps: u32,
+        meta: &PrivateMeta,
+        tw: usize,
+        th: usize,
+    ) -> Result<Self, CandyError> {
+        if fps < 1 {
+            return Err(CandyError::Encode("fps must be >= 1".into()));
+        }
+        let tw = tw.max(1) as u16;
+        let th = th.max(1) as u16;
+        let file = fs::File::create(path)?;
+        let mut encoder = gif::Encoder::new(file, tw, th, &[])
+            .map_err(|e| CandyError::Encode(format!("gif encoder init failed: {e}")))?;
+        encoder
+            .set_repeat(gif::Repeat::Infinite)
+            .map_err(|e| CandyError::Encode(format!("gif repeat failed: {e}")))?;
+        // Embed private metadata as a GIF comment extension before the frames.
+        let meta_json = meta.to_json();
+        encoder
+            .write_raw_extension(
+                gif::AnyExtension(gif::Extension::Comment as u8),
+                &[meta_json.as_bytes()],
+            )
+            .map_err(|e| CandyError::Encode(format!("gif comment extension failed: {e}")))?;
+        // Frame delay in centiseconds (GIF's time unit); round to at least 1.
+        let delay_cs = ((1000 / fps as u64) / 10).clamp(1, u64::MAX) as u16;
+        Ok(Self {
+            encoder,
+            tw,
+            th,
+            delay_cs,
+        })
+    }
+
+    /// Encode and write one composited frame.
+    pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
+        let composed = compose(frame, self.tw as usize, self.th as usize);
+        let mut rgba = composed.rgba;
+        let mut f = gif::Frame::from_rgba_speed(self.tw, self.th, &mut rgba, 10);
+        f.delay = self.delay_cs;
+        self.encoder
+            .write_frame(&f)
+            .map_err(|e| CandyError::Encode(format!("gif frame encode failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Finish the GIF (flushes the encoder).
+    pub(crate) fn finish(self) -> Result<(), CandyError> {
+        Ok(())
+    }
+}
+
 /// Encode `frames` into an animated GIF written to `path`.
 ///
-/// Every frame is composed onto a uniform opaque-white canvas of the largest
-/// frame size (the same compositing the video path uses, so per-frame sizes
-/// that vary with Typst's auto-sizing still produce a valid GIF). The frame
-/// delay is derived from `fps` (centiseconds). The GIF loops forever.
+/// Batch wrapper over [`GifStream`]; the streaming pipeline in `lib.rs` uses
+/// [`GifStream`] directly to avoid buffering every frame's RGBA at once.
 pub fn write_gif(
     frames: &[RenderedFrame],
     fps: u32,
     path: &Path,
     private_metadata: &PrivateMeta,
 ) -> Result<(), CandyError> {
-    use gif::{AnyExtension, Encoder, Extension, Frame, Repeat};
     if frames.is_empty() {
         return Err(CandyError::Encode("cannot write an empty GIF".into()));
     }
@@ -321,32 +542,11 @@ pub fn write_gif(
     let max_h = frames.iter().map(|f| f.height).max().unwrap();
     let tw = max_w.max(1);
     let th = max_h.max(1);
-    let file = fs::File::create(path)?;
-    let mut encoder = Encoder::new(file, tw as u16, th as u16, &[])
-        .map_err(|e| CandyError::Encode(format!("gif encoder init failed: {e}")))?;
-    encoder
-        .set_repeat(Repeat::Infinite)
-        .map_err(|e| CandyError::Encode(format!("gif repeat failed: {e}")))?;
-    // Embed private metadata as a GIF comment extension before the frames.
-    let meta_json = private_metadata.to_json();
-    encoder
-        .write_raw_extension(
-            AnyExtension(Extension::Comment as u8),
-            &[meta_json.as_bytes()],
-        )
-        .map_err(|e| CandyError::Encode(format!("gif comment extension failed: {e}")))?;
-    // Frame delay in centiseconds (GIF's time unit); round to at least 1.
-    let delay_cs = ((1000 / fps as u64) / 10).clamp(1, u64::MAX) as u16;
+    let mut g = GifStream::new(path, fps, private_metadata, tw, th)?;
     for f in frames {
-        let composed = compose(f, tw, th);
-        let mut rgba = composed.rgba;
-        let mut frame = Frame::from_rgba_speed(tw as u16, th as u16, &mut rgba, 10);
-        frame.delay = delay_cs;
-        encoder
-            .write_frame(&frame)
-            .map_err(|e| CandyError::Encode(format!("gif frame encode failed: {e}")))?;
+        g.push(f)?;
     }
-    Ok(())
+    g.finish()
 }
 
 /// Encode a single [`RenderedFrame`] as an RGBA PNG bitmap written to `path`.

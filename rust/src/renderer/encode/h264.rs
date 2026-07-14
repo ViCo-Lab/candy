@@ -10,51 +10,75 @@ use crate::core::diag::CandyError;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
 
-/// Encode rasterized frames into H.264 and return an [`EncodedVideo`].
-pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
-    if frames.is_empty() {
-        return Err(CandyError::Encode(
-            "cannot encode an empty animation".into(),
-        ));
+/// Stateful, frame-by-frame H.264 encoder.
+///
+/// Unlike the batch [`encode`], an `H264Stream` keeps the `openh264` encoder
+/// alive across [`push`](Self::push) calls and emits one coded sample per
+/// frame. This is what lets the renderer stream frames to the muxer without
+/// holding every RGBA frame in memory at once: each `push` consumes exactly one
+/// frame and produces a small length-prefixed NAL sample, so peak memory is
+/// bounded by the coded stream rather than `N × width × height × 4` RGBA.
+pub(crate) struct H264Stream {
+    encoder: openh264::encoder::Encoder,
+    w: usize,
+    h: usize,
+    fps: u32,
+    sps: Option<Vec<u8>>,
+    pps: Option<Vec<u8>>,
+    samples: Vec<Vec<u8>>,
+    keyframes: Vec<bool>,
+}
+
+impl H264Stream {
+    /// Create a streaming H.264 encoder for `width × height` frames at `fps`.
+    pub(crate) fn new(width: usize, height: usize, fps: u32) -> Result<Self, CandyError> {
+        if fps < 1 {
+            return Err(CandyError::Encode("fps must be >= 1".into()));
+        }
+        // H.264 needs even dimensions for 4:2:0 chroma.
+        let w = width.next_multiple_of(2);
+        let h = height.next_multiple_of(2);
+
+        // The default `EncoderConfig` leaves `max_frame_rate` at 0 Hz, which
+        // makes OpenH264's `initialize_ext` return `Native:5`. We must set a
+        // valid frame rate (and a bitrate scaled to the resolution) before
+        // encoding.
+        let target_bps = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000) as u32;
+        // Insert an IDR at least once per second (≈ `fps` frames). A lone
+        // keyframe at frame 0 makes scrubbing/thumbnail extraction decode the
+        // whole stream from the start; a periodic IDR keeps seeking snappy. The
+        // *exact* set of keyframes is reported back via `keyframes` so the
+        // MP4/Matroska muxer can build an honest sync-sample table.
+        let gop = (fps as u32).max(1);
+        let config = openh264::encoder::EncoderConfig::new()
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
+            .bitrate(openh264::encoder::BitRate::from_bps(target_bps))
+            .intra_frame_period(openh264::encoder::IntraFramePeriod::from_num_frames(gop));
+
+        let encoder = openh264::encoder::Encoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            config,
+        )
+        .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
+
+        Ok(Self {
+            encoder,
+            w,
+            h,
+            fps,
+            sps: None,
+            pps: None,
+            samples: Vec::new(),
+            keyframes: Vec::new(),
+        })
     }
-    if fps < 1 {
-        return Err(CandyError::Encode("fps must be >= 1".into()));
-    }
 
-    let width = frames[0].width;
-    let height = frames[0].height;
-    // H.264 needs even dimensions for 4:2:0 chroma.
-    let w = width.next_multiple_of(2);
-    let h = height.next_multiple_of(2);
-
-    // The default `EncoderConfig` leaves `max_frame_rate` at 0 Hz, which makes
-    // OpenH264's `initialize_ext` return `Native:5`. We must set a valid frame
-    // rate (and a bitrate scaled to the resolution) before encoding.
-    let target_bps = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000) as u32;
-    // Insert an IDR at least once per second (≈ `fps` frames). A lone keyframe
-    // at frame 0 makes scrubbing/thumbnail extraction decode the whole stream
-    // from the start; a periodic IDR keeps seeking snappy. The *exact* set of
-    // keyframes is reported back via `keyframes` so the MP4/Matroska muxer can
-    // build an honest sync-sample table.
-    let gop = (fps as u32).max(1);
-    let config = openh264::encoder::EncoderConfig::new()
-        .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
-        .bitrate(openh264::encoder::BitRate::from_bps(target_bps))
-        .intra_frame_period(openh264::encoder::IntraFramePeriod::from_num_frames(gop));
-
-    let mut encoder =
-        openh264::encoder::Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
-            .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
-
-    let mut samples: Vec<Vec<u8>> = Vec::with_capacity(frames.len());
-    let mut keyframes: Vec<bool> = Vec::with_capacity(frames.len());
-    let mut sps: Option<Vec<u8>> = None;
-    let mut pps: Option<Vec<u8>> = None;
-
-    for frame in frames {
-        let (y, u, v) = rgba_to_i420_packed(&frame.rgba, width, height, w, h);
-        let yuv = openh264::formats::YUVBuffer::from_vec([y, u, v].concat(), w, h);
-        let encoded = encoder
+    /// Encode one RGBA frame and append its coded sample.
+    pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
+        let (y, u, v) = rgba_to_i420_packed(&frame.rgba, frame.width, frame.height, self.w, self.h);
+        let yuv = openh264::formats::YUVBuffer::from_vec([y, u, v].concat(), self.w, self.h);
+        let encoded = self
+            .encoder
             .encode(&yuv)
             .map_err(|e| CandyError::Encode(format!("openh264 encode failed: {e}")))?;
 
@@ -77,43 +101,63 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
                 if nal_type == 5 {
                     is_idr = true;
                 }
-                if sps.is_none() && nal_type == 7 {
-                    sps = Some(payload.to_vec());
-                } else if pps.is_none() && nal_type == 8 {
-                    pps = Some(payload.to_vec());
+                if self.sps.is_none() && nal_type == 7 {
+                    self.sps = Some(payload.to_vec());
+                } else if self.pps.is_none() && nal_type == 8 {
+                    self.pps = Some(payload.to_vec());
                 }
                 sample.extend_from_slice(&(payload.len() as u32).to_be_bytes());
                 sample.extend_from_slice(payload);
             }
         }
-        samples.push(sample);
-        keyframes.push(is_idr);
+        self.samples.push(sample);
+        self.keyframes.push(is_idr);
+        Ok(())
     }
 
-    let (sps, pps) = match (sps, pps) {
-        (Some(s), Some(p)) => (s, p),
-        _ => {
-            return Err(CandyError::Encode(
-                "openh264 did not emit SPS/PPS (E007)".into(),
-            ));
+    /// Finish encoding and assemble the [`EncodedVideo`].
+    pub(crate) fn finish(mut self) -> Result<EncodedVideo, CandyError> {
+        let (sps, pps) = match (self.sps, self.pps) {
+            (Some(s), Some(p)) => (s, p),
+            _ => {
+                return Err(CandyError::Encode(
+                    "openh264 did not emit SPS/PPS (E007)".into(),
+                ));
+            }
+        };
+
+        // The first sample must always be seekable (IDR). If the encoder somehow
+        // left it unmarked, force it so the stream has a valid decode entry point.
+        if self.keyframes.first() == Some(&false) {
+            self.keyframes[0] = true;
         }
-    };
 
-    // The first sample must always be seekable (IDR). If the encoder somehow
-    // left it unmarked, force it so the stream has a valid decode entry point.
-    if keyframes.first() == Some(&false) {
-        keyframes[0] = true;
+        Ok(EncodedVideo {
+            width: self.w as u32,
+            height: self.h as u32,
+            fps: self.fps,
+            is_av1: false,
+            frames: self.samples,
+            codec_private: build_avcc(&sps, &pps),
+            keyframes: self.keyframes,
+        })
     }
+}
 
-    Ok(EncodedVideo {
-        width: w as u32,
-        height: h as u32,
-        fps,
-        is_av1: false,
-        frames: samples,
-        codec_private: build_avcc(&sps, &pps),
-        keyframes,
-    })
+/// Encode rasterized frames into H.264 and return an [`EncodedVideo`].
+///
+/// Batch entry point; the streaming path uses [`H264Stream`] directly.
+pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
+    if frames.is_empty() {
+        return Err(CandyError::Encode(
+            "cannot encode an empty animation".into(),
+        ));
+    }
+    let mut stream = H264Stream::new(frames[0].width, frames[0].height, fps)?;
+    for f in frames {
+        stream.push(f)?;
+    }
+    stream.finish()
 }
 
 /// Convert an RGBA frame to planar I420, padded to `(w, h)` (even). Returns

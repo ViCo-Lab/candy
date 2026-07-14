@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::core::ast::{Action, FrameData, Label, ParseArtifacts, PathMode, Scene};
+use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
+#[cfg(test)]
+use crate::core::ast::ParseArtifacts;
 use crate::core::easing::Easing;
 use crate::core::diag::CandyError;
 

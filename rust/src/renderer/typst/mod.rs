@@ -56,7 +56,9 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-use crate::core::ast::{FrameData, Label, ParseArtifacts, Scene, Subtitle};
+use crate::core::ast::{FrameData, Label, Scene, Subtitle};
+#[cfg(test)]
+use crate::core::ast::ParseArtifacts;
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::warn;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
@@ -74,6 +76,7 @@ use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
 #[cfg(test)]
 use typst_syntax::FileId;
+#[cfg(test)]
 use typst_syntax::Source as TypstSource;
 #[cfg(test)]
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
@@ -187,7 +190,7 @@ impl Renderer {
     }
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
-        let source = TypstSource::detached(src.to_string());
+        let source = self.state.detached_cached(src);
         let world = CandyWorld::new(&self.state, source);
         // Typst can *panic* (rather than return a diagnostic) on certain
         // malformed input — especially in release builds, where such a panic
@@ -238,6 +241,29 @@ impl Renderer {
             .unwrap()
             .insert(src.to_string(), doc.clone());
         Ok(doc)
+    }
+    /// The uniform output canvas size (pixels) every frame is composited onto:
+    /// the largest scene page (or the document page when there are no scenes)
+    /// scaled by `pixel_per_pt`. The streaming encoder composes each frame onto
+    /// this fixed size so per-scene page-size variation never produces mismatched
+    /// frame dimensions. Mirrors the `max(…)` the legacy `compose` used, but
+    /// derived cheaply from scene metadata instead of from already-rendered
+    /// frames (so it is known *before* any frame is rasterized).
+    pub(crate) fn uniform_canvas(&self, pixel_per_pt: f32) -> (usize, usize) {
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            let mut mw = self.page_w;
+            let mut mh = self.page_h;
+            for &(w, h) in self.scene_pages.values() {
+                mw = mw.max(w);
+                mh = mh.max(h);
+            }
+            (mw, mh)
+        };
+        let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
+        let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
+        (w, h)
     }
     /// Resolve the Typst body for `label` at frame time `time_ms`, choosing the
     /// SAME source for every render path (SVG, pixels, isolated). During an
@@ -1290,7 +1316,7 @@ impl Renderer {
     }
     /// Render a subtitle to an SVG string using the scene's page size.
     fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
-        render_subtitle_svg_impl(&self.scene, sub, self.page_w, self.page_h, time_ms)
+        render_subtitle_svg_impl(&self.state, &self.scene, sub, self.page_w, self.page_h, time_ms)
     }
     /// Render a subtitle to an RGBA frame (page-sized) for the pixel path.
     fn render_subtitle_pixels(
@@ -1299,7 +1325,7 @@ impl Renderer {
         time_ms: u32,
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        let doc = subtitle_doc(&self.scene, sub, self.page_w, self.page_h, time_ms)?;
+        let doc = subtitle_doc(&self.state, &self.scene, sub, self.page_w, self.page_h, time_ms)?;
         let page = doc
             .pages()
             .first()

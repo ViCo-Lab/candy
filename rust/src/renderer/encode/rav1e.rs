@@ -58,116 +58,151 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
     }
 }
 
+/// Stateful, frame-by-frame AV1 encoder.
+///
+/// Unlike the batch [`encode`], a `Rav1eStream` keeps the `rav1e` `Context`
+/// alive across [`push`](Self::push) calls and emits one coded sample per
+/// frame. This is what lets the renderer stream frames to the muxer without
+/// holding every RGBA frame in memory at once: each `push` consumes exactly one
+/// frame and produces a small coded sample, so peak memory is bounded by the
+/// (small) coded stream rather than `N × width × height × 4` RGBA.
+///
+/// `all_intra` forces every frame to be a keyframe (disabling inter-prediction
+/// / motion estimation), which sidesteps the `rav1e` 0.8.1 tiling assert that
+/// panics during ME for some frame geometries.
+#[cfg(feature = "video")]
+pub(crate) struct Rav1eStream {
+    ctx: Context<u8>,
+    w: usize,
+    h: usize,
+    fps: u32,
+    seq_header: Option<Vec<u8>>,
+    frames_out: Vec<Vec<u8>>,
+    keyframes: Vec<bool>,
+}
+
+#[cfg(feature = "video")]
+impl Rav1eStream {
+    /// Create a streaming AV1 encoder for `width × height` frames at `fps`.
+    pub(crate) fn new(width: usize, height: usize, fps: u32, all_intra: bool) -> Result<Self, CandyError> {
+        if fps < 1 {
+            return Err(CandyError::Encode("fps must be >= 1".into()));
+        }
+        // rav1e's tiling/superblock layout asserts frame dims are a multiple of
+        // the 64px superblock; arbitrary sizes trip an internal assert (and can
+        // abort). Round up to 64; extra edge pixels stay black.
+        let w = width.max(64).next_multiple_of(64);
+        let h = height.max(64).next_multiple_of(64);
+
+        // Insert a keyframe at least once per second (`gop` frames ≈ 1 s) so
+        // seeking stays snappy. The exact keyframe positions are read back from
+        // each packet (`FrameType::KEY`) and reported via `EncodedVideo::keyframes`.
+        let gop = (fps as u32).max(1);
+
+        let mut enc_cfg = EncoderConfig::with_speed_preset(8);
+        enc_cfg.width = w;
+        enc_cfg.height = h;
+        enc_cfg.bit_depth = 8;
+        // Cs420 trips an internal rav1e tiling assert for some geometries; Cs444
+        // (no chroma subsampling) shares the luma geometry and stays stable.
+        enc_cfg.chroma_sampling = ChromaSampling::Cs444;
+        enc_cfg.time_base = Rational::new(1, fps as u64);
+        enc_cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
+        enc_cfg.min_key_frame_interval = 0;
+        enc_cfg.max_key_frame_interval = if all_intra { 1 } else { gop as u64 };
+
+        let cfg = Config::default().with_encoder_config(enc_cfg);
+        let ctx = cfg
+            .new_context()
+            .map_err(|e| CandyError::Encode(format!("invalid rav1e config: {:?}", e)))?;
+
+        Ok(Self {
+            ctx,
+            w,
+            h,
+            fps,
+            seq_header: None,
+            frames_out: Vec::new(),
+            keyframes: Vec::new(),
+        })
+    }
+
+    /// Encode one RGBA frame and append its coded sample(s).
+    pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
+        let mut rav1e_frame = Frame::new_with_padding(self.w, self.h, ChromaSampling::Cs444, 0);
+        fill_frame_from_rgba(&mut rav1e_frame, &frame.rgba, frame.width, frame.height);
+
+        self.ctx
+            .send_frame(rav1e_frame)
+            .map_err(|e| CandyError::Encode(format!("rav1e send_frame failed: {:?}", e)))?;
+
+        while let Ok(packet) = self.ctx.receive_packet() {
+            self.capture(&packet.data, packet.frame_type == FrameType::KEY);
+        }
+        Ok(())
+    }
+
+    fn capture(&mut self, data: &[u8], is_key: bool) {
+        if self.seq_header.is_none() {
+            if let Some(sh) = first_obu_of_type(data, 1) {
+                self.seq_header = Some(sh);
+            }
+        }
+        self.frames_out.push(data.to_vec());
+        self.keyframes.push(is_key);
+    }
+
+    /// Finish encoding, flush the encoder, and assemble the [`EncodedVideo`].
+    pub(crate) fn finish(mut self) -> Result<EncodedVideo, CandyError> {
+        self.ctx.flush();
+        while let Ok(packet) = self.ctx.receive_packet() {
+            self.capture(&packet.data, packet.frame_type == FrameType::KEY);
+        }
+
+        let codec_private = match self.seq_header {
+            Some(sh) => {
+                let mut p = vec![0x81u8, 0x01];
+                p.extend_from_slice(&sh);
+                p
+            }
+            None => vec![0x81u8, 0x01],
+        };
+
+        // The first sample must always be seekable (a key frame). If the encoder
+        // left it unmarked, force it so the stream has a valid decode entry point.
+        if self.keyframes.first() == Some(&false) {
+            self.keyframes[0] = true;
+        }
+
+        Ok(EncodedVideo {
+            width: self.w as u32,
+            height: self.h as u32,
+            fps: self.fps,
+            is_av1: true,
+            frames: self.frames_out,
+            codec_private,
+            keyframes: self.keyframes,
+        })
+    }
+}
+
 /// Core AV1 encoder (compiled only with the `video` feature).
 ///
 /// `all_intra` forces every frame to be a keyframe (disabling inter-prediction
 /// / motion estimation), which sidesteps the `rav1e` 0.8.1 tiling assert that
 /// panics during ME for some frame geometries. It is only set by [`encode`] on
-/// the fallback retry.
+/// the fallback retry. This is the batch entry point; the streaming path uses
+/// [`Rav1eStream`] directly.
 #[cfg(feature = "video")]
 fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {
         return Err(CandyError::Encode("cannot encode an empty animation".into()));
     }
-    if fps < 1 {
-        return Err(CandyError::Encode("fps must be >= 1".into()));
+    let mut stream = Rav1eStream::new(frames[0].width, frames[0].height, fps, all_intra)?;
+    for f in frames {
+        stream.push(f)?;
     }
-
-    let width = frames[0].width;
-    let height = frames[0].height;
-    // rav1e's tiling/superblock layout asserts frame dims are a multiple of the
-    // 64px superblock; arbitrary sizes trip an internal assert (and can abort).
-    // Round up to 64; extra edge pixels stay black.
-    let w = width.max(64).next_multiple_of(64);
-    let h = height.max(64).next_multiple_of(64);
-
-    // Insert a keyframe at least once per second (`gop` frames ≈ 1 s) so
-    // seeking stays snappy. The exact keyframe positions are read back from each
-    // packet (`FrameType::KEY`) and reported via `EncodedVideo::keyframes` for an
-    // honest sync-sample table.
-    let gop = (fps as u32).max(1);
-
-    let mut enc_cfg = EncoderConfig::with_speed_preset(8);
-    enc_cfg.width = w;
-    enc_cfg.height = h;
-    enc_cfg.bit_depth = 8;
-    // Cs420 trips an internal rav1e tiling assert for some geometries; Cs444
-    // (no chroma subsampling) shares the luma geometry and stays stable.
-    enc_cfg.chroma_sampling = ChromaSampling::Cs444;
-    enc_cfg.time_base = Rational::new(1, fps as u64);
-    enc_cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
-    // Default: allow inter-prediction (temporal compression). When `all_intra`
-    // is set (the panic-retry path) we force a keyframe on every frame, which
-    // disables ME and avoids the 0.8.1 tiling panic (`rect.y >= -(cfg.yorigin)`
-    // in tiling/plane_region.rs). Otherwise we cap the GOP at `gop` so seeking
-    // stays snappy while still getting temporal compression.
-    enc_cfg.min_key_frame_interval = 0;
-    enc_cfg.max_key_frame_interval = if all_intra { 1 } else { gop as u64 };
-
-    let cfg = Config::default().with_encoder_config(enc_cfg);
-    let mut ctx: Context<u8> = cfg
-        .new_context()
-        .map_err(|e| CandyError::Encode(format!("invalid rav1e config: {:?}", e)))?;
-
-    let mut frames_out: Vec<Vec<u8>> = Vec::with_capacity(frames.len());
-    let mut keyframes: Vec<bool> = Vec::with_capacity(frames.len());
-    let mut seq_header: Option<Vec<u8>> = None;
-
-    for frame in frames {
-        let mut rav1e_frame = Frame::new_with_padding(w, h, ChromaSampling::Cs444, 0);
-        fill_frame_from_rgba(&mut rav1e_frame, &frame.rgba, width, height);
-
-        ctx.send_frame(rav1e_frame)
-            .map_err(|e| CandyError::Encode(format!("rav1e send_frame failed: {:?}", e)))?;
-
-        while let Ok(packet) = ctx.receive_packet() {
-            if seq_header.is_none() {
-                if let Some(sh) = first_obu_of_type(&packet.data, 1) {
-                    seq_header = Some(sh);
-                }
-            }
-            frames_out.push(packet.data.to_vec());
-            keyframes.push(packet.frame_type == FrameType::KEY);
-        }
-    }
-
-    ctx.flush();
-    while let Ok(packet) = ctx.receive_packet() {
-        if seq_header.is_none() {
-            if let Some(sh) = first_obu_of_type(&packet.data, 1) {
-                seq_header = Some(sh);
-            }
-        }
-        frames_out.push(packet.data.to_vec());
-        keyframes.push(packet.frame_type == FrameType::KEY);
-    }
-
-    let codec_private = match seq_header {
-        Some(sh) => {
-            // AV1CodecConfigurationRecord: marker(0x81) + version(0x01) + the
-            // Sequence Header OBU. Decoders read the in-band sequence header.
-            let mut p = vec![0x81u8, 0x01];
-            p.extend_from_slice(&sh);
-            p
-        }
-        None => vec![0x81u8, 0x01],
-    };
-
-    // The first sample must always be seekable (a key frame). If the encoder
-    // left it unmarked, force it so the stream has a valid decode entry point.
-    if keyframes.first() == Some(&false) {
-        keyframes[0] = true;
-    }
-
-    Ok(EncodedVideo {
-        width: w as u32,
-        height: h as u32,
-        fps,
-        is_av1: true,
-        frames: frames_out,
-        codec_private,
-        keyframes,
-    })
+    stream.finish()
 }
 
 /// Extract the first OBU of the given `obu_type` (1 = Sequence Header) from a

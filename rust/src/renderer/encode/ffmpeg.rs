@@ -30,8 +30,8 @@
 //! handle all container/codec combinations.
 
 use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::diag::CandyError;
@@ -88,39 +88,27 @@ fn container_format(container: Container) -> &'static str {
     }
 }
 
-/// Encode `frames` to a muxed container byte buffer via system ffmpeg.
+/// Spawn an ffmpeg child that reads raw RGBA frames of size `w×h` from stdin
+/// and writes a muxed `container` to a temp file. Returns the child process, its
+/// stdin handle (the caller writes frames to it, then drops it), and the temp
+/// file path (passed back to [`finish_ffmpeg`]).
 ///
-/// # Arguments
-/// * `frames` — RGBA8 frames, all composed to the same `width × height`.
-/// * `fps` — frames per second.
-/// * `codec` — which ffmpeg encoder to use (X264/X265/Vaapi/...).
-/// * `container` — output container (MP4/MKV/WebM).
-/// * `private_metadata` — embedded as a `candy-meta` container metadata entry.
-///
-/// # Errors
-/// Returns `CandyError::Encode` (E007) if ffmpeg is not found, exits non-zero,
-/// or writes no output.
-pub fn encode_via_ffmpeg(
-    frames: &[RenderedFrame],
-    fps: u32,
+/// This is the streaming primitive behind [`encode_via_ffmpeg`]: the caller can
+/// feed frames one at a time instead of buffering every RGBA frame up front.
+pub(crate) fn spawn_ffmpeg(
     codec: Codec,
     container: Container,
+    w: u32,
+    h: u32,
+    fps: u32,
     private_metadata: &PrivateMeta,
-) -> Result<Vec<u8>, CandyError> {
-    let ffmpeg = find_ffmpeg().ok_or_else(|| {
-        CandyError::Encode("ffmpeg not found on $PATH (E007)".into())
-    })?;
+) -> Result<(Child, ChildStdin, PathBuf), CandyError> {
+    let ffmpeg = find_ffmpeg()
+        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E007)".into()))?;
 
-    let (encoder, _default_ext) = ffmpeg_args(codec).ok_or_else(|| {
-        CandyError::Encode(format!("codec {codec:?} does not use ffmpeg"))
-    })?;
+    let (encoder, _default_ext) = ffmpeg_args(codec)
+        .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
     let format = container_format(container);
-
-    if frames.is_empty() {
-        return Err(CandyError::Encode("no frames to encode".into()));
-    }
-    let w = frames[0].width;
-    let h = frames[0].height;
 
     // ffmpeg's MP4/MKV/WebM muxers require *seekable* output, and MP4's
     // `faststart` moov rewrite is impossible on a pipe — so piping ffmpeg's
@@ -140,101 +128,78 @@ pub fn encode_via_ffmpeg(
     // encoders need the raw RGBA frames uploaded to a hardware surface (not
     // passed straight through). Software lib encoders (x264/x265) instead want
     // `-preset`/`-crf` — options that VAAPI / VideoToolbox / QSV reject.
-    //
-    //   ffmpeg [-vaapi_device /dev/dri/renderD128] \
-    //          -f rawvideo -pix_fmt rgba -s WxH -r FPS -i - \
-    //          -c:v <encoder> [-vf ...] [-qp|-b:v|-preset|-crf ...] \
-    //          -f <format> -movflags +faststart <tmpfile>
-    let bitrate = ((w as u64 * h as u64 * fps as u64) / 20)
-        .clamp(120_000, 20_000_000);
+    let bitrate = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000);
     let bitrate_str = bitrate.to_string();
 
     let mut cmd = Command::new(&ffmpeg);
-    // VAAPI needs its render node declared up front (a global option, before -i).
     if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi) {
         cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        // Input: raw RGBA from stdin.
         .args(["-f", "rawvideo"])
         .args(["-pix_fmt", "rgba"])
         .args(["-s", &format!("{w}x{h}")])
         .args(["-r", &fps.to_string()])
         .args(["-i", "-"])
-        // Output codec.
         .args(["-c:v", encoder]);
 
-    // Per-codec options.
     match codec {
-        // Software lib encoders: quality preset + CRF + strip alpha (x265 rejects
-        // the alpha channel; yuv420p is the universally-supported format).
         Codec::X264 | Codec::X265 | Codec::H265 => {
             cmd.args(["-preset", "medium"]);
             cmd.args(["-crf", "23"]);
             cmd.args(["-vf", "format=yuv420p"]);
         }
-        // VAAPI hardware encoders: upload the RGBA frames to a VAAPI hardware
-        // surface (nv12) before encoding. `-qp` is VAAPI's constant-quality
-        // control — it does NOT accept `-crf`/`-preset`.
         Codec::H264Vaapi | Codec::H265Vaapi => {
             cmd.args(["-vf", "format=nv12,hwupload"]);
             cmd.args(["-qp", "24"]);
         }
-        // VideoToolbox (macOS): constant-bitrate control.
         Codec::H264VideoToolbox | Codec::H265VideoToolbox => {
             cmd.args(["-b:v", &bitrate_str]);
         }
-        // Intel QSV: init the QSV device, upload to hardware, constant-bitrate.
         Codec::H264Qsv | Codec::H265Qsv => {
             cmd.args(["-init_hw_device", "qsv=qsv:/dev/dri/renderD128"]);
             cmd.args(["-vf", "format=nv12,hwupload=extra_hw_frames=64"]);
             cmd.args(["-b:v", &bitrate_str]);
         }
-        // Self-contained codecs (Av1/H264) never reach here — `encode_via_ffmpeg`
-        // is only called for ffmpeg-backed codecs — but the match must be total.
         _ => {}
     }
 
-    // Embed private metadata as a `candy-meta` container metadata entry.
-    // ffmpeg stores this in the moov/udta area (MP4) or Tags (Matroska),
-    // mirroring the metadata embedded by candy's hand-written muxer.
     cmd.arg("-metadata")
         .arg(format!("candy-meta={}", private_metadata.to_json()));
 
-    // Output container (written to the temp file).
     cmd.args(["-f", format])
         .args(["-y", tmp_path.to_str().unwrap_or("/dev/null")]);
 
-    // MP4 with faststart for web streaming (valid because the output is a
-    // seekable file, not a pipe).
     if matches!(container, Container::Mp4) {
         cmd.args(["-movflags", "+faststart"]);
     }
 
-    let mut child = cmd.spawn().map_err(|e| {
-        CandyError::Encode(format!("failed to spawn ffmpeg: {e}"))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| CandyError::Encode(format!("failed to spawn ffmpeg: {e}")))?;
 
-    // Feed RGBA frames to stdin.
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        CandyError::Encode("ffmpeg stdin not captured".into())
-    })?;
-    for f in frames {
-        stdin.write_all(&f.rgba).map_err(|e| {
-            CandyError::Encode(format!("ffmpeg stdin write: {e}"))
-        })?;
-    }
-    drop(stdin); // close stdin → ffmpeg finishes encoding
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| CandyError::Encode("ffmpeg stdin not captured".into()))?;
 
-    let output = child.wait_with_output().map_err(|e| {
-        CandyError::Encode(format!("ffmpeg wait: {e}"))
-    })?;
+    info!("spawned ffmpeg -c:v {encoder} -f {format} (streaming)");
+    Ok((child, stdin, tmp_path))
+}
+
+/// Finish an ffmpeg encode started by [`spawn_ffmpeg`]: the child's stdin must
+/// already be dropped/closed so ffmpeg flushes, then we wait and read back the
+/// muxed container bytes.
+pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, CandyError> {
+    let output = child
+        .wait_with_output()
+        .map_err(|e| CandyError::Encode(format!("ffmpeg wait: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = std::fs::remove_file(tmp_path);
         return Err(CandyError::Encode(format!(
             "ffmpeg exited with {}: {}",
             output.status,
@@ -242,21 +207,43 @@ pub fn encode_via_ffmpeg(
         )));
     }
 
-    let bytes = std::fs::read(&tmp_path).map_err(|e| {
-        CandyError::Encode(format!("ffmpeg temp read: {e}"))
-    })?;
-    let _ = std::fs::remove_file(&tmp_path);
+    let bytes = std::fs::read(tmp_path)
+        .map_err(|e| CandyError::Encode(format!("ffmpeg temp read: {e}")))?;
+    let _ = std::fs::remove_file(tmp_path);
 
     if bytes.is_empty() {
-        return Err(CandyError::Encode(
-            "ffmpeg produced no output (E007)".into(),
-        ));
+        return Err(CandyError::Encode("ffmpeg produced no output (E007)".into()));
     }
-
-    info!(
-        "encoded {} frames via ffmpeg -c:v {encoder} -f {format} ({} bytes)",
-        frames.len(),
-        bytes.len()
-    );
     Ok(bytes)
+}
+
+/// Encode `frames` to a muxed container byte buffer via system ffmpeg.
+///
+/// Batch wrapper over [`spawn_ffmpeg`]/[`finish_ffmpeg`]; the streaming path
+/// feeds frames one at a time instead of buffering them all.
+///
+/// # Errors
+/// Returns `CandyError::Encode` (E007) if ffmpeg is not found, exits non-zero,
+/// or writes no output.
+pub fn encode_via_ffmpeg(
+    frames: &[RenderedFrame],
+    fps: u32,
+    codec: Codec,
+    container: Container,
+    private_metadata: &PrivateMeta,
+) -> Result<Vec<u8>, CandyError> {
+    if frames.is_empty() {
+        return Err(CandyError::Encode("no frames to encode".into()));
+    }
+    let w = frames[0].width;
+    let h = frames[0].height;
+    let (child, mut stdin, tmp_path) =
+        spawn_ffmpeg(codec, container, w as u32, h as u32, fps, private_metadata)?;
+    for f in frames {
+        stdin
+            .write_all(&f.rgba)
+            .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
+    }
+    drop(stdin); // close stdin → ffmpeg finishes encoding
+    finish_ffmpeg(child, &tmp_path)
 }

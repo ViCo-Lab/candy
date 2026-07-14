@@ -37,17 +37,21 @@ pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::core::ast::{CounterEventKind, Label, Scene};
+use crate::core::ast::{CounterEventKind, FrameData, Label, Scene};
 use crate::core::interpolator;
+use crate::core::meta::PrivateMeta;
 use crate::core::scheduler;
 use crate::parser::extract_scene_from_svg;
 use crate::parser::parse_tyx;
+use crate::renderer::RenderedFrame;
+use crate::renderer::audio::AudioData;
 use crate::renderer::Renderer;
-use crate::renderer::encode::{self, Container, EncodedVideo};
+use crate::renderer::encode::{self, Container};
 
 /// Input source for the `build` pipeline.
 ///
@@ -133,6 +137,8 @@ pub fn build(
     codec: Codec,
     fps: u32,
     pixel_per_pt: f32,
+    jobs: usize,
+    keep_intermediates: bool,
 ) -> Result<(), CandyError> {
     build_input(
         Input::from(input),
@@ -142,6 +148,8 @@ pub fn build(
         codec,
         fps,
         pixel_per_pt,
+        jobs,
+        keep_intermediates,
     )
 }
 
@@ -156,6 +164,8 @@ pub fn build_input(
     codec: Codec,
     fps: u32,
     pixel_per_pt: f32,
+    jobs: usize,
+    keep_intermediates: bool,
 ) -> Result<(), CandyError> {
     build_input_with_gpu(
         input,
@@ -166,6 +176,8 @@ pub fn build_input(
         fps,
         pixel_per_pt,
         false,
+        jobs,
+        keep_intermediates,
     )
 }
 
@@ -185,6 +197,8 @@ pub fn build_input_with_gpu(
     fps: u32,
     pixel_per_pt: f32,
     use_gpu: bool,
+    jobs: usize,
+    keep_intermediates: bool,
 ) -> Result<(), CandyError> {
     let scene: Scene = input.parse()?; // Steps 1–2
     let project_root = input.project_root();
@@ -282,144 +296,294 @@ pub fn build_input_with_gpu(
         warn!(CandyWarn::GpuFeatureDisabled);
     }
 
-    let probe: Vec<_> = {
-        // GPU path is serial (single device); CPU path is parallel (rayon).
-        #[cfg(feature = "gpu")]
-        if let Some(g) = gpu_renderer.as_mut() {
-            let mut out = Vec::with_capacity(sample_times.len());
-            for &t_ms in &sample_times {
-                out.push(renderer.render_frame_pixels_gpu(t_ms, &frames, pixel_per_pt, g)?);
-            }
-            out
-        } else {
-            sample_times
-                .par_iter()
-                .map(|&t_ms| renderer.render_frame_pixels_par(t_ms, &frames, pixel_per_pt))
-                .collect::<Result<_, _>>()?
-        }
-        #[cfg(not(feature = "gpu"))]
-        {
-            sample_times
-                .par_iter()
-                .map(|&t_ms| renderer.render_frame_pixels_par(t_ms, &frames, pixel_per_pt))
-                .collect::<Result<_, _>>()?
-        }
-    };
-
-    // Draft: persist the RGBA frames under `intermediate_dir` for inspection.
-    std::fs::create_dir_all(intermediate_dir)?;
-    encode::write_rgba_draft(&probe, intermediate_dir, "frames")?;
+    // Uniform canvas size every frame is composited onto (largest scene page ×
+    // ppi). Known up front (from scene metadata, not from already-rendered
+    // frames) so the streaming encoder can size its output without buffering
+    // every frame first.
+    let (tw, th) = renderer.uniform_canvas(pixel_per_pt);
+    let meta = scene.private_metadata.clone();
+    let audio = encode::collect_audio(&scene.audio, fps);
 
     // Ensure the output's parent directory exists (e.g. `dist/` or a custom
-    // `--output-dir`). Done once here for every rasterized target (video,
-    // GIF, PNG).
+    // `--output-dir`).
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Step 6: encode + mux / write, branching on the output container.
-    match format {
-        OutputFormat::Svg => unreachable!(),
-        // Animated GIF: all frames, looping forever. Self-contained.
-        OutputFormat::Gif => {
-            encode::write_gif(&probe, fps, output, &scene.private_metadata)?;
-        }
-        // Static PNG bitmap of the final frame (the animation "poster").
-        OutputFormat::Png => {
-            let last = probe
-                .last()
-                .ok_or_else(|| CandyError::Encode("no frames to write as PNG".into()))?;
-            encode::write_png(last, output, &scene.private_metadata)?;
-        }
-        // Video containers (MP4 / MKV / WebM): encode + mux.
-        OutputFormat::Mp4 | OutputFormat::Mkv | OutputFormat::Webm => {
-            let container = match format {
-                OutputFormat::Mp4 => Container::Mp4,
-                OutputFormat::Mkv => Container::Mkv,
-                OutputFormat::Webm => Container::Webm,
-                _ => unreachable!(),
-            };
-            // FFmpeg codecs (X264, X265, VAAPI, VideoToolbox, QSV) shell out to
-            // system ffmpeg and return already-muxed bytes — they bypass candy's
-            // hand-written muxer. Self-contained codecs (AV1, H264) go through
-            // candy's rav1e/openh264 + container muxer. H265 tries ffmpeg, falls
-            // back to E007.
-            let bytes: Vec<u8> = if codec.uses_ffmpeg()
-                || (codec == Codec::H265
-                    && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some())
-            {
-                // FFmpeg path: compose frames to uniform size, then pipe to ffmpeg.
-                let max_w = probe.iter().map(|f| f.width).max().unwrap_or(16);
-                let max_h = probe.iter().map(|f| f.height).max().unwrap_or(16);
-                let tw = max_w.max(16).next_multiple_of(2);
-                let th = max_h.max(16).next_multiple_of(2);
-                let composed: Vec<_> =
-                    probe.iter().map(|f| compose_uniform(f, tw, th)).collect();
-                match crate::renderer::encode::ffmpeg::encode_via_ffmpeg(
-                    &composed, fps, codec, container, &scene.private_metadata,
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        warn!(CandyWarn::EncodeFallback(format!(
-                            "ffmpeg encode failed: {e}"
-                        )));
-                        for (i, &t_ms) in sample_times.iter().enumerate() {
-                            let svg = renderer.render_frame_at(t_ms, &frames)?;
-                            std::fs::write(
-                                intermediate_dir.join(format!("frame_{:016}.svg", i)),
-                                svg,
-                            )?;
-                        }
-                        return Err(e);
-                    }
-                }
-            } else {
-                // Self-contained path: rav1e/openh264 + candy's muxer.
-                let video: EncodedVideo = match encode::encode_frames(&probe, fps, codec, &scene.private_metadata) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(CandyWarn::EncodeFallback(format!(
-                            "video encode failed: {e}"
-                        )));
-                        for (i, &t_ms) in sample_times.iter().enumerate() {
-                            let svg = renderer.render_frame_at(t_ms, &frames)?;
-                            std::fs::write(
-                                intermediate_dir.join(format!("frame_{:016}.svg", i)),
-                                svg,
-                            )?;
-                        }
-                        return Err(e);
-                    }
-                };
-                let audio = encode::collect_audio(&scene.audio, fps);
-                encode::mux(&video, audio.as_ref(), container, &scene.private_metadata)?
-            };
-
-            std::fs::write(output, bytes)?;
-        }
+    // GPU path (feature-gated, serial): render one frame at a time on the GPU
+    // and push it straight into the streaming encoder, so at most one frame's
+    // RGBA is ever live. The CPU path below does the same with bounded
+    // parallelism.
+    #[cfg(feature = "gpu")]
+    if let Some(g) = gpu_renderer.as_mut() {
+        stream_encode_gpu(
+            &renderer, &frames, sample_times, pixel_per_pt, fps, codec,
+            container_for(format), is_gif(format), &meta, tw, th,
+            audio, keep_intermediates, intermediate_dir, output, g,
+        )?;
+        return Ok(());
     }
+
+    // CPU path: bounded-parallel render → bounded channel → streaming encoder.
+    // Frames are encoded and dropped one at a time, so peak memory is bounded by
+    // `jobs` in-flight frames plus the (small) coded stream — never all N frames
+    // at once. This is the core OOM fix: the old code collected every frame's
+    // RGBA into `probe` before encoding.
+    stream_encode_cpu(
+        &renderer, &frames, &sample_times, pixel_per_pt, fps, codec,
+        container_for(format), is_gif(format), meta, tw, th,
+        audio, jobs, keep_intermediates, intermediate_dir, output,
+    )?;
     Ok(())
 }
 
-/// Compose a frame onto a uniform `tw × th` opaque-white canvas (copies source
-/// pixels to top-left). Used by the ffmpeg path to give ffmpeg a uniform frame
-/// size (its rawvideo input doesn't support per-frame dimensions).
-fn compose_uniform(
-    frame: &crate::renderer::RenderedFrame,
+/// Map an [`OutputFormat`] to its container (video targets only).
+fn container_for(f: OutputFormat) -> Container {
+    match f {
+        OutputFormat::Mp4 => Container::Mp4,
+        OutputFormat::Mkv => Container::Mkv,
+        OutputFormat::Webm => Container::Webm,
+        _ => Container::Mp4,
+    }
+}
+
+/// Whether `f` is the animated-GIF target (vs. a video container).
+fn is_gif(f: OutputFormat) -> bool {
+    matches!(f, OutputFormat::Gif)
+}
+
+/// A frame encoder that streams: frames are pushed one at a time and the output
+/// is written/finalized at [`finish`](StreamEncoder::finish). Unifies the GIF
+/// and video (self-contained + ffmpeg) paths so the caller never has to hold
+/// more than one frame's RGBA at once.
+enum StreamEncoder {
+    Gif(encode::video::GifStream),
+    Video(encode::video::StreamingVideo),
+}
+
+impl StreamEncoder {
+    fn new(
+        is_gif: bool,
+        fps: u32,
+        codec: Codec,
+        container: Container,
+        meta: &PrivateMeta,
+        tw: usize,
+        th: usize,
+        audio: Option<AudioData>,
+        output: &Path,
+    ) -> Result<Self, CandyError> {
+        if is_gif {
+            Ok(StreamEncoder::Gif(encode::video::GifStream::new(
+                output, fps, meta, tw, th,
+            )?))
+        } else {
+            Ok(StreamEncoder::Video(encode::video::StreamingVideo::new(
+                fps, codec, container, meta, tw, th, audio,
+            )?))
+        }
+    }
+
+    fn push(&mut self, f: &RenderedFrame) -> Result<(), CandyError> {
+        match self {
+            StreamEncoder::Gif(g) => g.push(f),
+            StreamEncoder::Video(v) => v.push(f),
+        }
+    }
+
+    fn finish(self, output: &Path) -> Result<(), CandyError> {
+        match self {
+            StreamEncoder::Gif(g) => g.finish(),
+            StreamEncoder::Video(v) => {
+                let bytes = v.finish()?;
+                std::fs::write(output, bytes)?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Consumer side of the streaming pipeline: pulls frames from `rx`, writes the
+/// optional RGBA draft incrementally, and pushes each frame into the encoder
+/// (which writes it out / drops its RGBA immediately). Runs on its own thread so
+/// the producer (parallel renderer) is never blocked except by the bounded
+/// channel's back-pressure.
+fn consume_frames(
+    rx: std::sync::mpsc::Receiver<Result<RenderedFrame, CandyError>>,
+    is_gif: bool,
+    fps: u32,
+    codec: Codec,
+    container: Container,
+    meta: PrivateMeta,
     tw: usize,
     th: usize,
-) -> crate::renderer::RenderedFrame {
-    let mut rgba = vec![255u8; tw * th * 4];
-    for y in 0..frame.height.min(th) {
-        let src = y * frame.width * 4;
-        let dst = y * tw * 4;
-        rgba[dst..dst + frame.width * 4].copy_from_slice(&frame.rgba[src..src + frame.width * 4]);
+    audio: Option<AudioData>,
+    keep: bool,
+    intermediate_dir: PathBuf,
+    output: PathBuf,
+    frame_count: usize,
+) -> Result<(), CandyError> {
+    let mut enc =
+        StreamEncoder::new(is_gif, fps, codec, container, &meta, tw, th, audio, &output)?;
+    let mut draft = if keep {
+        std::fs::create_dir_all(&intermediate_dir)?;
+        let mut f = std::fs::File::create(intermediate_dir.join("frames.rgba"))?;
+        // Streaming draft format: [u32 count][u32 tw][u32 th] then per frame
+        // [u32 w][u32 h][rgba...]. Self-describing so it needs no other metadata.
+        f.write_all(&(frame_count as u32).to_le_bytes())?;
+        f.write_all(&(tw as u32).to_le_bytes())?;
+        f.write_all(&(th as u32).to_le_bytes())?;
+        Some(f)
+    } else {
+        None
+    };
+    let mut first_err: Option<CandyError> = None;
+    for item in rx {
+        match item {
+            Ok(f) => {
+                if first_err.is_none() {
+                    if let Some(d) = draft.as_mut() {
+                        d.write_all(&(f.width as u32).to_le_bytes())?;
+                        d.write_all(&(f.height as u32).to_le_bytes())?;
+                        d.write_all(&f.rgba)?;
+                    }
+                    if let Err(e) = enc.push(&f) {
+                        first_err = Some(e);
+                    }
+                }
+            }
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
     }
-    crate::renderer::RenderedFrame {
-        width: tw,
-        height: th,
-        rgba,
+    if let Some(e) = first_err {
+        return Err(e);
     }
+    enc.finish(&output)
+}
+
+/// CPU streaming pipeline: render frames with bounded parallelism (at most
+/// `jobs` in flight, back-pressured by a bounded channel) and stream them into
+/// the encoder on a dedicated consumer thread. Peak memory ≈ `jobs` frames'
+/// RGBA + the small coded stream — independent of the total frame count `N`.
+fn stream_encode_cpu(
+    renderer: &Renderer,
+    frames: &[FrameData],
+    sample_times: &[u32],
+    pixel_per_pt: f32,
+    fps: u32,
+    codec: Codec,
+    container: Container,
+    is_gif: bool,
+    meta: PrivateMeta,
+    tw: usize,
+    th: usize,
+    audio: Option<AudioData>,
+    jobs: usize,
+    keep: bool,
+    intermediate_dir: &Path,
+    output: &Path,
+) -> Result<(), CandyError> {
+    // Bounded channel: at most `jobs` frames may be buffered between producer
+    // and consumer, so in-flight RGBA is capped regardless of `N`.
+    let cap = jobs.max(1);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<RenderedFrame, CandyError>>(cap);
+    // Hoist owned/Copy values out of the thread closure so it captures *no*
+    // references to this function's locals (the closure must be `'static` for
+    // `std::thread::spawn`). `meta` is owned and moved in; the others are
+    // `Copy`/`PathBuf` so they're safe to move across the thread boundary.
+    let idir = intermediate_dir.to_path_buf();
+    let opath = output.to_path_buf();
+    let frame_count = sample_times.len();
+    let enc_handle = std::thread::Builder::new()
+        .name("candy-encoder".into())
+        .spawn(move || {
+            consume_frames(
+                rx, is_gif, fps, codec, container, meta, tw, th,
+                audio, keep, idir, opath, frame_count,
+            )
+        })
+        .map_err(|e| CandyError::Encode(format!("spawn encoder thread: {e}")))?;
+
+    // Producers: data-parallel over frames, each sending its rendered RGBA into
+    // the bounded channel. `tx.send` blocks when the channel is full, which is
+    // exactly the back-pressure that bounds memory.
+    let render = |t: u32| renderer.render_frame_pixels_par(t, frames, pixel_per_pt);
+    if jobs > 0 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build()
+            .map_err(|e| CandyError::Encode(format!("rayon pool init: {e}")))?;
+        pool.install(|| {
+            sample_times
+                .par_iter()
+                .map(|&t| {
+                    let _ = tx.send(render(t));
+                })
+                .count();
+        });
+    } else {
+        sample_times
+            .par_iter()
+            .map(|&t| {
+                let _ = tx.send(render(t));
+            })
+            .count();
+    }
+    drop(tx); // close the channel so the consumer thread terminates
+    enc_handle
+        .join()
+        .map_err(|e| CandyError::Encode(format!("encoder thread panicked: {:?}", e)))??;
+    Ok(())
+}
+
+/// GPU streaming pipeline (feature-gated, serial): render one frame at a time
+/// on the GPU and stream it into the encoder immediately. Memory stays bounded
+/// to a single frame's RGBA since there is no parallelism to buffer.
+#[cfg(feature = "gpu")]
+fn stream_encode_gpu(
+    renderer: &Renderer,
+    frames: &[FrameData],
+    sample_times: &[u32],
+    pixel_per_pt: f32,
+    fps: u32,
+    codec: Codec,
+    container: Container,
+    is_gif: bool,
+    meta: &PrivateMeta,
+    tw: usize,
+    th: usize,
+    audio: Option<AudioData>,
+    keep: bool,
+    intermediate_dir: &Path,
+    output: &Path,
+    gpu: &mut crate::renderer::raster::gpu::GpuRenderer,
+) -> Result<(), CandyError> {
+    let mut enc =
+        StreamEncoder::new(is_gif, fps, codec, container, meta, tw, th, audio, output)?;
+    let mut draft = if keep {
+        std::fs::create_dir_all(intermediate_dir)?;
+        let mut f = std::fs::File::create(intermediate_dir.join("frames.rgba"))?;
+        f.write_all(&(sample_times.len() as u32).to_le_bytes())?;
+        f.write_all(&(tw as u32).to_le_bytes())?;
+        f.write_all(&(th as u32).to_le_bytes())?;
+        Some(f)
+    } else {
+        None
+    };
+    for &t in sample_times {
+        let f = renderer.render_frame_pixels_gpu(t, frames, pixel_per_pt, gpu)?;
+        if let Some(d) = draft.as_mut() {
+            d.write_all(&(f.width as u32).to_le_bytes())?;
+            d.write_all(&(f.height as u32).to_le_bytes())?;
+            d.write_all(&f.rgba)?;
+        }
+        enc.push(&f)?;
+    }
+    enc.finish(output)
 }
 
 /// Resolve the path to the `@preview/candy` Typst package manifest
