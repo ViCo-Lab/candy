@@ -10,7 +10,7 @@
 //! handler.
 
 use typst_syntax::LinkedNode;
-use typst_syntax::ast::{self, Expr};
+use typst_syntax::ast::{self, AstNode, Expr};
 
 use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
@@ -23,7 +23,7 @@ use crate::core::easing::Easing;
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
     call_symbol, current_scope, expr_src, expr_to_bool, expr_to_f64, expr_to_i64, parse_sub_pos,
-    resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
+    range_of, resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
 };
 
 /// Register `label` as owned by `scene`, recording its first-seen (declaration)
@@ -115,9 +115,15 @@ fn process_mobject(
     let body_expr = pos.get(1).or_else(|| named.get("body"));
     let Some(body_expr) = body_expr else { return };
     let body = expr_src(raw, node, body_expr).to_string();
+    // Record the body's absolute source range so the per-frame whole-document
+    // recompiler (Phase 2) can splice the wrapped body back into the source.
+    let body_range = range_of(node, body_expr.to_untyped()).map(|r| (r.start, r.end));
 
     let label = Label(label_str);
     ctx.items.insert(label.clone(), body);
+    if let Some(r) = body_range {
+        ctx.mobject_body_ranges.insert(label.clone(), r);
+    }
     register_label(ctx, label.clone(), ctx.current_scene);
     ctx.initial.insert(
         label.clone(),

@@ -56,7 +56,7 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-use crate::core::ast::{FrameData, Label, Scene, Subtitle};
+use crate::core::ast::{FrameData, Label, ParseArtifacts, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::warn;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
@@ -65,6 +65,7 @@ use std::hash::Hash;
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use typst_layout::PagedDocument;
 use typst_library::foundations::Smart;
@@ -188,7 +189,26 @@ impl Renderer {
     fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
         let source = TypstSource::detached(src.to_string());
         let world = CandyWorld::new(&self.state, source);
-        let warned = typst::compile::<PagedDocument>(&world);
+        // Typst can *panic* (rather than return a diagnostic) on certain
+        // malformed input — especially in release builds, where such a panic
+        // would otherwise abort the process with no diagnostic. Catch it and
+        // surface it as `E006` so a syntax error is always reported, never
+        // swallowed or crashed on.
+        let warned = match catch_unwind(AssertUnwindSafe(|| {
+            typst::compile::<PagedDocument>(&world)
+        })) {
+            Ok(w) => w,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "typst panicked during compilation".to_string()
+                };
+                return Err(CandyError::Typst(format!("typst panicked: {msg}")));
+            }
+        };
         // If the body consulted the wall clock (`datetime.today()`), the render
         // is time-dependent and not reproducible — warn once per renderer.
         if world.used_time() && self.state.note_time_used() {
@@ -238,32 +258,33 @@ impl Renderer {
     /// hand-rolled string parser. A non-color paint (e.g. a gradient) or an
     /// unresolvable expression falls back to opaque white. Results are memoized
     /// per distinct expression.
-    fn resolve_bg_hex(&self, bg: &str) -> String {
+    fn resolve_bg_hex(&self, bg: &str) -> Result<String, CandyError> {
         if let Some(c) = self.bg_cache.lock().unwrap().get(bg) {
-            return c.clone();
+            return Ok(c.clone());
         }
-        let resolved = {
-            let src =
-                format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
-            self.compile(&src)
-                .ok()
-                .and_then(|doc| {
-                    doc.pages().first().and_then(|p| match &p.fill {
-                        Smart::Custom(Some(Paint::Solid(c))) => Some(c.to_hex().to_string()),
-                        _ => None,
-                    })
-                })
-                .unwrap_or_else(|| "white".to_string())
-        };
+        let src =
+            format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
+        // A compile failure (e.g. a syntax error inside `bg`) is a real error and
+        // must propagate as `E006`. Only a *successful* compile whose fill is not
+        // a solid colour legitimately falls back to opaque white.
+        let resolved = self
+            .compile(&src)?
+            .pages()
+            .first()
+            .and_then(|p| match &p.fill {
+                Smart::Custom(Some(Paint::Solid(c))) => Some(c.to_hex().to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "white".to_string());
         self.bg_cache
             .lock()
             .unwrap()
             .insert(bg.to_string(), resolved.clone());
-        resolved
+        Ok(resolved)
     }
     /// Effective background hex for `scene_id`, walking up the scene tree to
     /// inherit a parent's `bg` (root with none ⇒ opaque white).
-    fn scene_bg_hex(&self, scene_id: usize) -> String {
+    fn scene_bg_hex(&self, scene_id: usize) -> Result<String, CandyError> {
         let mut cur = Some(scene_id);
         while let Some(id) = cur {
             if let Some(s) = self.scene.scenes.iter().find(|s| s.id == id) {
@@ -275,7 +296,7 @@ impl Renderer {
                 break;
             }
         }
-        "white".to_string()
+        Ok("white".to_string())
     }
     /// Parse a `#rrggbb(aa)` hex (or a bare `#rgb`) into `(r, g, b, a)`, with
     /// full opacity as the default alpha. Used to seed the video canvas.
@@ -603,7 +624,11 @@ impl Renderer {
             );
             let doc = match self.compile(&src) {
                 Ok(d) => d,
-                Err(_) => continue,
+                // A scene whose blocks fail to compile is a real error — it must
+                // propagate as `E006`, not be silently skipped (which would leave
+                // the scene's `page_of` / page-count entries missing and surface as
+                // a confusing downstream error later).
+                Err(e) => return Err(e),
             };
             // A scene is laid out in plain Typst document flow, so content that
             // overflows its single page spills onto *subsequent* pages (page 1,
@@ -698,11 +723,17 @@ impl Renderer {
             let (Some(fb), Some(tb)) = (fb, tb) else {
                 continue;
             };
-            let Some((fr, _, _)) = self.body_largest_shape(fb) else {
-                continue;
+            let (fr, _, _) = match self.body_largest_shape(fb) {
+                Ok(Some(r)) => r,
+                // No extractable outline → not morphable; skip this pair
+                // (legitimate fallback to a plain crossfade), not an error.
+                Ok(None) => continue,
+                Err(e) => return Err(e),
             };
-            let Some((tr, fill, stroke)) = self.body_largest_shape(tb) else {
-                continue;
+            let (tr, fill, stroke) = match self.body_largest_shape(tb) {
+                Ok(Some(r)) => r,
+                Ok(None) => continue,
+                Err(e) => return Err(e),
             };
             let fl = localize_ring(fr);
             let tl = localize_ring(tr);
@@ -939,7 +970,7 @@ impl Renderer {
         let bg_rgba = if self.scene.scenes.is_empty() {
             [255u8, 255, 255, 255]
         } else {
-            Self::hex_to_rgba(&self.scene_bg_hex(active))
+            Self::hex_to_rgba(&self.scene_bg_hex(active)?)
         };
         let mut canvas = vec![0u8; w * h * 4];
         for chunk in canvas.chunks_mut(4) {
@@ -1090,7 +1121,7 @@ impl Renderer {
         let bg_hex = if self.scene.scenes.is_empty() {
             "white".to_string()
         } else {
-            self.scene_bg_hex(active)
+            self.scene_bg_hex(active)?
         };
         let mut out = String::new();
         out.push_str(&format!(
@@ -1291,7 +1322,7 @@ impl Renderer {
     fn body_largest_shape(
         &self,
         body: &str,
-    ) -> Option<(Vec<[f64; 2]>, Option<String>, Option<String>)> {
+    ) -> Result<Option<(Vec<[f64; 2]>, Option<String>, Option<String>)>, CandyError> {
         let preamble = imports_preamble(&self.scene);
         let pre = if preamble.is_empty() {
             String::new()
@@ -1303,11 +1334,18 @@ impl Renderer {
             w = self.page_w,
             h = self.page_h,
         );
-        let doc = self.compile(&src).ok()?;
-        let page = doc.pages().first()?;
+        // A compile failure (e.g. a syntax error in a morphable body) is a real
+        // error and must propagate as `E006`. Only a *successful* compile that
+        // yields no extractable outline legitimately returns `None` (the body
+        // falls back to a plain crossfade).
+        let doc = self.compile(&src)?;
+        let page = doc
+            .pages()
+            .first()
+            .ok_or_else(|| CandyError::Typst("body produced no pages".into()))?;
         let svg = typst_svg::svg(page, &SvgOptions::default());
         let shapes = extract_shapes_from_svg(&svg);
-        shapes
+        Ok(shapes
             .into_iter()
             .max_by(|a, b| {
                 polygon_area(&a.ring)
@@ -1315,7 +1353,7 @@ impl Renderer {
                     .partial_cmp(&polygon_area(&b.ring).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|s| (s.ring, s.fill, s.stroke))
+            .map(|s| (s.ring, s.fill, s.stroke)))
     }
     /// If `label` is the `to` target of an active `#morph` pair at `time_ms`,
     /// return the morphed shape as a Typst `polygon(...)` body (without a
@@ -1441,6 +1479,7 @@ fn content_timeline_swaps_rendered_body() {
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -1489,6 +1528,7 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     // The canonical `ecval("name")` form: a real AST call expanded to an integer.
@@ -1558,6 +1598,7 @@ fn subtitle_stays_in_viewport() {
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -1622,6 +1663,7 @@ fn morph_renders_interpolated_polygon() {
         scenes: Vec::new(),
         root_scene: None,
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -1741,6 +1783,7 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -1832,6 +1875,7 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();

@@ -19,17 +19,18 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use typst_syntax::ast::{self, Expr};
+use typst_syntax::ast::{self, AstNode, Expr};
 use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
-    AudioTrack, CounterDef, CounterEvent, FrameData, Label, Scene, SceneInfo, Slide, Subtitle,
+    AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene, SceneInfo,
+    Slide, Subtitle,
 };
 use crate::core::diag::CandyError;
 use crate::core::meta::PrivateMeta;
 
 use crate::parser::directives::process_call;
-use crate::parser::expr::{CANDY, call_symbol};
+use crate::parser::expr::{CANDY, call_symbol, range_of};
 
 /// Centimeters per Typst point. Must match renderer::typst::PT_PER_CM.
 pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
@@ -161,6 +162,11 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         scenes: ctx.scenes,
         root_scene: Some(0),
         groups: ctx.groups.clone(),
+        artifacts: ParseArtifacts {
+            source: raw,
+            mobject_body: ctx.mobject_body_ranges.clone(),
+            scene_body: ctx.scene_body_ranges.clone(),
+        },
         private_metadata: private,
     };
     scene.validate().map_err(CandyError::Parse)?; // E002
@@ -243,6 +249,14 @@ pub(crate) struct ParseCtx {
     pub(crate) label_order: Vec<Label>,
     /// Monotonic id for synthetic subtitles.
     pub(crate) subtitle_id: usize,
+    /// Source range of each `#mobject(label, body)` call's `body` argument,
+    /// keyed by label. Fed into `Scene::artifacts` for the per-frame
+    /// whole-document recompiler (Phase 2).
+    pub(crate) mobject_body_ranges: HashMap<Label, (usize, usize)>,
+    /// Source range of each explicit `#scene(...)` call's body, keyed by scene
+    /// id. Fed into `Scene::artifacts` so non-active scenes can be `#hide[…]`-ed
+    /// in the whole-document recompile.
+    pub(crate) scene_body_ranges: HashMap<usize, (usize, usize)>,
 }
 
 /// Recursively walk the syntax tree.
@@ -343,6 +357,20 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
                 _ => None,
             };
+            // Capture the scene body's source range for Phase 2: the
+            // whole-document recompiler `#hide[…]`-es a non-active scene's body
+            // so scene auto-hide stays faithful. The body is the single
+            // positional argument of `#scene(...)`.
+            if let Some(r) = call
+                .args()
+                .items()
+                .find_map(|a| match a {
+                    ast::Arg::Pos(p) => range_of(node, p.to_untyped()).map(|r| (r.start, r.end)),
+                    _ => None,
+                })
+            {
+                ctx.scene_body_ranges.insert(id, r);
+            }
             let start = ctx.cursor;
             ctx.scenes.push(SceneInfo {
                 id,

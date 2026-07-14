@@ -531,7 +531,37 @@ pub struct Scene {
     /// not in `private_metadata`.
     #[serde(default)]
     pub groups: HashMap<Label, Label>,
+    /// Parse artifacts needed by the **per-frame whole-document recompiler**
+    /// (Phase 2): the original `.tyx` source plus the source ranges of every
+    /// `#mobject(label, body)` body and every `#scene(...)`. The renderer
+    /// reconstructs each frame as a complete Typst document by splicing the
+    /// per-frame wrapped mobject bodies back into the original source, so it
+    /// keeps the document's natural layout, Z-order and all non-candy Typst
+    /// content (prose, equations, `#play` blocks, …) faithful to `typst
+    /// compile`. Skipped from serialization (it is a re-derivable cache of the
+    /// source) and defaulted so synthetic `Scene`s (tests) stay trivial.
+    #[serde(skip, default)]
+    pub artifacts: ParseArtifacts,
     pub private_metadata: PrivateMeta,
+}
+
+/// Re-derivable parse artifacts for the per-frame whole-document recompiler.
+///
+/// See `Scene::artifacts`. All fields are default-empty so a `Scene` built
+/// without parsing (e.g. unit tests) carries no artifacts and the renderer
+/// transparently falls back to its legacy per-object compositing path.
+#[derive(Debug, Clone, Default)]
+pub struct ParseArtifacts {
+    /// The original `.tyx` source text (markup, as parsed by `typst_syntax`).
+    pub source: String,
+    /// Source range `(start, end)` of each `#mobject(label, body)` call's
+    /// `body` argument expression, keyed by label. Used to splice the
+    /// per-frame wrapped body back into `source`.
+    pub mobject_body: HashMap<Label, (usize, usize)>,
+    /// Source range `(start, end)` of each explicit `#scene(...)` call's body,
+    /// keyed by scene id. Used to `#hide[…]` non-active scenes so scene
+    /// auto-hide stays faithful in the whole-document recompile.
+    pub scene_body: HashMap<usize, (usize, usize)>,
 }
 
 impl Scene {
@@ -1102,6 +1132,7 @@ mod tests {
             morph_pairs: Vec::new(),
             transform_plans: Vec::new(),
             groups: HashMap::new(),
+            artifacts: ParseArtifacts::default(),
             private_metadata: PrivateMeta::default(),
         }
     }

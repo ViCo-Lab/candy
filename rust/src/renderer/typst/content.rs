@@ -2,6 +2,7 @@
 //! timeline (`content_for`), AST-driven `ecval(...)` counter substitution, and
 //! subtitle placement / compilation.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use typst::compile;
 use typst_layout::PagedDocument;
 use typst_syntax::ast::{self, Expr};
@@ -218,7 +219,22 @@ pub(crate) fn subtitle_doc(
     let state = WorldState::new(std::path::PathBuf::new());
     let source = TypstSource::detached(src);
     let world = CandyWorld::new(&state, source);
-    let warned = compile::<PagedDocument>(&world);
+    // Mirror `Renderer::compile`: a malformed body can make typst panic rather
+    // than return a diagnostic — catch it so the error is always reported as
+    // `E006` instead of crashing the process (notably in release builds).
+    let warned = match catch_unwind(AssertUnwindSafe(|| compile::<PagedDocument>(&world))) {
+        Ok(w) => w,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "typst panicked during compilation".to_string()
+            };
+            return Err(CandyError::Typst(format!("typst panicked: {msg}")));
+        }
+    };
     warned
         .output
         .map_err(Into::into)

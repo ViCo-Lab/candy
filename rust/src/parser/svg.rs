@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::core::ast::Scene;
+use crate::core::ast::{ParseArtifacts, Scene};
 use crate::core::diag::CandyError;
 
 /// Extract a `Scene` AST from an SVG rendered by `@preview/candy`.
@@ -81,6 +81,7 @@ mod tests {
             morph_pairs: Vec::new(),
             transform_plans: Vec::new(),
             groups: HashMap::new(),
+            artifacts: ParseArtifacts::default(),
             private_metadata: PrivateMeta::default(),
         };
         let json = serde_json::to_string(&scene).unwrap();

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
+use crate::core::ast::{Action, FrameData, Label, ParseArtifacts, PathMode, Scene};
 use crate::core::easing::Easing;
 use crate::core::diag::CandyError;
 
@@ -679,6 +679,7 @@ mod tests {
             morph_pairs: Vec::new(),
             transform_plans: Vec::new(),
             groups: std::collections::HashMap::new(),
+            artifacts: ParseArtifacts::default(),
             private_metadata: PrivateMeta::default(),
         }
     }
