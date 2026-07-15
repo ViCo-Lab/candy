@@ -409,7 +409,7 @@ impl StreamEncoder {
 /// the producer (parallel renderer) is never blocked except by the bounded
 /// channel's back-pressure.
 fn consume_frames(
-    rx: std::sync::mpsc::Receiver<Result<RenderedFrame, CandyError>>,
+    rx: std::sync::mpsc::Receiver<(usize, Result<RenderedFrame, CandyError>)>,
     is_gif: bool,
     fps: u32,
     codec: Codec,
@@ -438,25 +438,61 @@ fn consume_frames(
         None
     };
     let mut first_err: Option<CandyError> = None;
+    // Reorder buffer: frames arrive in arbitrary parallel order, but the encoder
+    // needs them strictly in `sample_times` order. We hold out-of-order frames
+    // here and emit the next expected index as soon as it arrives. The buffer
+    // is bounded by the channel capacity (`cap` ≤ `jobs`), so peak memory stays
+    // bounded regardless of the total frame count `N`.
+    let mut next: usize = 0;
+    let mut pending: std::collections::HashMap<usize, Result<RenderedFrame, CandyError>> =
+        std::collections::HashMap::new();
     for item in rx {
-        match item {
-            Ok(f) => {
+        let (i, frame) = item;
+        if i == next {
+            // Fast path: in order. Emit it, then drain any now-contiguous
+            // buffered frames.
+            if let Some(d) = draft.as_mut() {
                 if first_err.is_none() {
-                    if let Some(d) = draft.as_mut() {
+                    if let Ok(f) = &frame {
                         d.write_all(&(f.width as u32).to_le_bytes())?;
                         d.write_all(&(f.height as u32).to_le_bytes())?;
                         d.write_all(&f.rgba)?;
                     }
+                }
+            }
+            if first_err.is_none() {
+                if let Ok(f) = frame {
                     if let Err(e) = enc.push(&f) {
                         first_err = Some(e);
                     }
-                }
-            }
-            Err(e) => {
-                if first_err.is_none() {
+                } else if let Err(e) = frame {
                     first_err = Some(e);
                 }
             }
+            next += 1;
+            while let Some(f) = pending.remove(&next) {
+                if let Some(d) = draft.as_mut() {
+                    if first_err.is_none() {
+                        if let Ok(fr) = &f {
+                            d.write_all(&(fr.width as u32).to_le_bytes())?;
+                            d.write_all(&(fr.height as u32).to_le_bytes())?;
+                            d.write_all(&fr.rgba)?;
+                        }
+                    }
+                }
+                if first_err.is_none() {
+                    if let Ok(fr) = f {
+                        if let Err(e) = enc.push(&fr) {
+                            first_err = Some(e);
+                        }
+                    } else if let Err(e) = f {
+                        first_err = Some(e);
+                    }
+                }
+                next += 1;
+            }
+        } else {
+            pending.insert(i, frame);
         }
     }
     if let Some(e) = first_err {
@@ -489,8 +525,17 @@ fn stream_encode_cpu(
 ) -> Result<(), CandyError> {
     // Bounded channel: at most `jobs` frames may be buffered between producer
     // and consumer, so in-flight RGBA is capped regardless of `N`.
+    //
+    // IMPORTANT: the producer renders frames in *parallel*, so it finishes them
+    // in arbitrary (non-time) order. The consumer encodes strictly in time
+    // order, so we must NOT send bare frames down the channel — doing so
+    // scrambles the output (frames appear out of order → the whole video
+    // flickers / is time-shuffled). Instead we tag every frame with its
+    // `sample_times` index and let the consumer reassemble them in order via a
+    // small reorder buffer (bounded by `cap`, so peak memory stays bounded).
     let cap = jobs.max(1);
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<RenderedFrame, CandyError>>(cap);
+    let (tx, rx) =
+        std::sync::mpsc::sync_channel::<(usize, Result<RenderedFrame, CandyError>)>(cap);
     // Hoist owned/Copy values out of the thread closure so it captures *no*
     // references to this function's locals (the closure must be `'static` for
     // `std::thread::spawn`). `meta` is owned and moved in; the others are
@@ -520,16 +565,18 @@ fn stream_encode_cpu(
         pool.install(|| {
             sample_times
                 .par_iter()
-                .map(|&t| {
-                    let _ = tx.send(render(t));
+                .enumerate()
+                .map(|(i, &t)| {
+                    let _ = tx.send((i, render(t)));
                 })
                 .count();
         });
     } else {
         sample_times
             .par_iter()
-            .map(|&t| {
-                let _ = tx.send(render(t));
+            .enumerate()
+            .map(|(i, &t)| {
+                let _ = tx.send((i, render(t)));
             })
             .count();
     }
