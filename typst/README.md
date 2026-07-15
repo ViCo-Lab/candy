@@ -205,8 +205,8 @@ like a mobject). Under standard Typst the body is shown in the first frame.
 ```typst
 #play([
   #text(28pt, weight: "bold")[Step 1 of 3]
-], duration: 60)
-#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 60)
+], duration: 1000)
+#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 1000)
 ```
 
 #### `#audio(path, blocking: false, loop: false, volume: 1.0, slice: none)` {#audio}
@@ -285,7 +285,7 @@ current renderer treats it as a no-op (Typst bodies are opaque strings). Future
 versions with structured mobjects will apply it. Mirrors `set_color`.
 
 ```typst
-#set_color("dot", color: "red", duration: 30, easing: "smooth")
+#set_color("dot", color: "red", duration: 300, easing: "smooth")
 ```
 
 #### `#transition(kind: "cut", duration: 100)` {#transition}
@@ -334,7 +334,7 @@ absolute). The scheduler generates a keyframe at each point, distributed across
 polylines).
 
 ```typst
-#move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 40, easing: "smooth")
+#move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 2000, easing: "smooth")
 ```
 
 #### `#morph(from, to, duration: 24, easing: "smooth")` {#morph}

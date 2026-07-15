@@ -1,0 +1,11 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #appear / #disappear — docs/reference/directives.md
+// Instant visibility toggle (no interpolation). Useful for
+// appear/disappear-without-fading effects.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #appear("dot")
+  #pause(duration: 500)
+  #disappear("dot")
+]

@@ -1,0 +1,13 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #zoom-to — docs/reference/directives.md
+// Zoom-to-region: enlarge a rectangle of the canvas to fill the frame over
+// `duration` milliseconds (a "camera zoom"). `rect` is (x, y, w, h) in cm,
+// relative to the page origin.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #mobject("b", rect(width: 1.5cm, height: 1.5cm, fill: red))
+  #animate("a", to: (4cm, 2cm), duration: 600, easing: "smooth")
+  #animate("b", to: (10cm, 4cm), duration: 600, easing: "smooth")
+  #zoom-to((8, 2, 6, 5), duration: 1000, easing: "smooth")
+]

@@ -1,0 +1,17 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #track — docs/reference/directives.md
+// Drive a single target through several keyframes (a timeline track that
+// removes the need for many sequential #animate calls). `keys` is an array of
+// (t, (x, y, scale, opacity, rotation)) tuples; t is the time offset (ms) from
+// the slide start, omitted properties carry their previous value forward.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("p", circle(radius: 0.8cm, fill: blue))
+  #track("p",
+    keys: (
+      (0,    (0cm, 0cm, 1, 1, 0)),
+      (1000, (3cm, 2cm, 1.5, 1, 90)),
+      (2000, (4cm, 0cm, 1, 0, 0)),
+    ),
+    duration: 2000, easing: "smooth")
+]

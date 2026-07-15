@@ -1,0 +1,10 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #reveal — docs/reference/directives.md
+// Progressively reveal a *string* mobject by swapping its body to longer and
+// longer prefixes over `duration`. `by: "word"` reveals word-by-word;
+// `by: "char"` reveals character-by-character.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("cap", "Step 1: divide by a.")
+  #reveal("cap", by: "word", duration: 1500, easing: "linear")
+]

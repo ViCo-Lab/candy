@@ -1,0 +1,13 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #scene — docs/tutorial/scenes-camera-groups.md
+// Define a sized, backgrounded canvas. Multiple scenes are mutually exclusive
+// slides; only the active one is drawn.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+]
+#scene(width: 16cm, height: 9cm, bg: black)[
+  #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+  #animate("box", rotate: 90, duration: 800, easing: "smooth")
+]

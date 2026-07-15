@@ -1,0 +1,9 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #set_color — docs/reference/directives.md
+// Record a color change on the timeline. The current renderer treats it as a
+// no-op (Typst bodies are opaque strings); future structured mobjects apply it.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+  #set_color("box", color: "green", duration: 300, easing: "smooth")
+]

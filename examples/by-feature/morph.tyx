@@ -1,0 +1,10 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #morph — docs/reference/directives.md
+// Morph one mobject into another by crossfade + scale (simplified Morph).
+// Both must be registered via #mobject.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("from", circle(radius: 1cm, fill: blue))
+  #mobject("to", rect(width: 2cm, height: 2cm, fill: red))
+  #morph("from", "to", duration: 1000, easing: "smooth")
+]

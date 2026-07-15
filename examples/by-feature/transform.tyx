@@ -1,0 +1,9 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #transform — docs/reference/directives.md
+// Morph a single mobject's content into new inline content (glyph-by-glyph for
+// formulas / text). The original label keeps the new content afterwards.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("eq", [$a + b = c$])
+  #transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
+]

@@ -1,0 +1,9 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #video — docs/reference/directives.md
+// Insert a video reference as a placeholder mobject (Typst cannot embed video).
+// The placeholder behaves like any other mobject body (can be animated).
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
+  #animate("clip", scale: 1.2, duration: 500, easing: "smooth")
+]

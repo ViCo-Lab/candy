@@ -37,7 +37,7 @@ Morph — true point-by-point morphing (Manim's `Transform`) requires structured
 which Candy's opaque-content model does not support; the crossfade + scale variant is a
 reasonable approximation.
 
-`#fade-transform(from, to, duration: 20, easing: "smooth")` is the even simpler variant:
+`#fade-transform(from, to, duration: 300, easing: "smooth")` is the even simpler variant:
 fade out `from` while fading in `to`.
 
 ## `#reveal` / `#typewriter` — progressive text
@@ -82,7 +82,7 @@ These mirror Manim Community Edition primitives. Each is inert under standard Ty
 #animate("dot", to: (3cm, 2cm), duration: 800)
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 
-#move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 40, easing: "smooth")
+#move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 2000, easing: "smooth")
 ```
 
 Full signatures: [Reference · Directives](../reference/directives.md).

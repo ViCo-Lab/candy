@@ -50,8 +50,8 @@ unit (block-level, controllable like a mobject). Under standard Typst the body i
 in the first frame.
 
 ```typst
-#play([#text(28pt, weight: "bold")[Step 1 of 3]], duration: 60)
-#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 60)
+#play([#text(28pt, weight: "bold")[Step 1 of 3]], duration: 1000)
+#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 1000)
 ```
 
 ## `#audio` — a voice / music track

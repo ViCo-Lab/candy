@@ -1,0 +1,8 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #typewriter — docs/reference/directives.md
+// Convenience alias for #reveal(.., by: "char") — a classic typewriter reveal.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("cap", "Step 1: divide by a.")
+  #typewriter("cap", duration: 1500, easing: "linear")
+]

@@ -1,0 +1,8 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #indicate — docs/reference/directives.md
+// Briefly scale + shift a mobject, then return — a transient "look here" effect.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+  #indicate("box", factor: 1.2, dx: 0.3cm, dy: -0.3cm, duration: 300, easing: "smooth")
+]

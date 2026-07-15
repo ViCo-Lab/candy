@@ -1,0 +1,8 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #focus-on — docs/reference/directives.md
+// Shrink a "spotlight" onto the target (scale down + dim).
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+  #focus-on("box", factor: 0.5, duration: 300, easing: "smooth")
+]

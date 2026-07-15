@@ -1,0 +1,12 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #group — docs/reference/directives.md
+// Group several mobjects under a synthetic parent so they move / scale / rotate
+// together. Animate the `name` afterwards to transform every member at once.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("hub", circle(radius: 0.6cm, fill: black))
+  #mobject("spoke1", circle(radius: 0.4cm, fill: red))
+  #mobject("spoke2", circle(radius: 0.4cm, fill: blue))
+  #group("wheel", members: ("spoke1", "spoke2", "hub"))
+  #animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+]

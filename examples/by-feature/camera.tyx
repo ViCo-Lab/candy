@@ -1,0 +1,12 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #camera — docs/reference/directives.md
+// A global camera move (pan + zoom + rotate) applied to the whole scene.
+// `x` / `y` are a pan offset in cm from the page center; `zoom > 1` magnifies;
+// `rotate` tilts clockwise in degrees. Scene-scoped.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #mobject("b", rect(width: 1.5cm, height: 1.5cm, fill: red))
+  #camera(zoom: 1.5, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+  #camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+]

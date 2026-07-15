@@ -1,0 +1,10 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #pause — docs/reference/directives.md
+// Hold the current frame for `duration` milliseconds. Inert under standard Typst.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+  #pause(duration: 500)
+  #animate("dot", to: (8cm, 0pt), duration: 1000, easing: "linear")
+]

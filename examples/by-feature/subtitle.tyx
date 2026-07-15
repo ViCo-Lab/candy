@@ -1,0 +1,14 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #subtitle — docs/reference/directives.md
+// Overlay `body` (any Typst block content) on top of the animation.
+// `duration: none` persists; a positive number gives an explicit lifetime in ms.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #animate("dot", to: (8cm, 0pt), duration: 1000, easing: "linear")
+  #subtitle([A blue dot glides across the screen.], position: "bottom")
+  #[
+    #subtitle([Child scope caption], position: "top", duration: 800)
+    #pause(duration: 800)
+  ]
+]

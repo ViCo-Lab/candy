@@ -1,0 +1,8 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #blink — docs/reference/directives.md
+// Alternate opacity 1↔0 `blinks` times.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #blink("dot", blinks: 3, duration: 500, easing: "linear")
+]

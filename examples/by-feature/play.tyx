@@ -1,0 +1,10 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #play — docs/reference/directives.md
+// Show a block of content for `duration` milliseconds as its own animation
+// unit (block-level, controllable like a mobject).
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #play([#text(28pt, weight: "bold")[Step 1 of 3]], duration: 1000)
+  #play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 1000)
+  #play([#text(28pt, weight: "bold")[Step 3 of 3]], duration: 1000)
+]

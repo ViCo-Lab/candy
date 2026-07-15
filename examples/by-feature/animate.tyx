@@ -1,0 +1,11 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #animate — docs/reference/directives.md
+// Animate a target over `duration` milliseconds (default 500). Absolute and
+// relative transforms can be combined; each produces a parallel action.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("dot", circle(radius: 1cm, fill: blue))
+  #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+  #animate("dot", scale: 1.5, duration: 800, easing: "smooth")
+  #animate("dot", rotate: 90, duration: 600, easing: "cubic-in-out")
+]

@@ -1,0 +1,13 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #transition — docs/reference/directives.md
+// Mark a slide transition ("cut" between scenes). Only "cut" is fully
+// implemented; "fade"/"slide" are recorded for future versions. Inert under
+// standard Typst.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #animate("a", to: (4cm, 2cm), duration: 600, easing: "smooth")
+  #transition(kind: "cut", duration: 100)
+  #mobject("b", rect(width: 1.5cm, height: 1.5cm, fill: red))
+  #animate("b", to: (10cm, 4cm), duration: 600, easing: "smooth")
+]

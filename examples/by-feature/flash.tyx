@@ -1,0 +1,8 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #flash — docs/reference/directives.md
+// Briefly scale up and fade toward transparent, then restore — a "flash".
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
+  #flash("box", factor: 2.0, duration: 200, easing: "smooth")
+]

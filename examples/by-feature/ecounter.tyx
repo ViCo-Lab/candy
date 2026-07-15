@@ -1,0 +1,11 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #ecounter / #ecval — docs/reference/counters.md
+// Register an animatable integer counter; read it via #ecval. Under standard
+// Typst the counter shows its `seed`; the Candy pipeline steps the value over
+// time, shaped by `easing`.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #let n = ecounter("n", seed: 1, step: 1, duration: 2000, easing: "linear")
+  #mobject("dot", circle(radius: ecval(n) * 1pt + 1cm, fill: blue))
+  #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "smooth")
+]

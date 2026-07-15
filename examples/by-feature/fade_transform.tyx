@@ -1,0 +1,9 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #fade-transform — docs/reference/directives.md
+// Crossfade two pre-registered mobjects: fade out `from` while fading in `to`.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  #mobject("old", circle(radius: 1cm, fill: blue))
+  #mobject("new", rect(width: 2cm, height: 2cm, fill: red))
+  #fade-transform("old", "new", duration: 300, easing: "smooth")
+]
