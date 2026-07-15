@@ -585,12 +585,7 @@ mod tests {
     use crate::core::meta::PrivateMeta;
 
     fn sample_meta() -> PrivateMeta {
-        PrivateMeta {
-            tyx: "tyx-test".into(),
-            candy: "candy-test".into(),
-            version_codename: "TestMeta".into(),
-            in_memory_of: "memory-test".into(),
-        }
+        PrivateMeta::default()
     }
 
     fn sample_frame() -> RenderedFrame {
@@ -618,7 +613,7 @@ mod tests {
             bytes.windows(2).any(|w| w == [0x21, 0xFE]),
             "GIF should contain a comment extension (0x21 0xFE)"
         );
-        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        let expected = format!("\"codename\":\"{}\"", meta.codename);
         assert!(
             bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
             "GIF comment extension should contain private metadata JSON"
@@ -639,7 +634,7 @@ mod tests {
             bytes.windows("candy-meta".len()).any(|w| w == b"candy-meta"),
             "PNG should contain a candy-meta tEXt chunk"
         );
-        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        let expected = format!("\"codename\":\"{}\"", meta.codename);
         assert!(
             bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
             "PNG tEXt chunk should contain private metadata JSON"

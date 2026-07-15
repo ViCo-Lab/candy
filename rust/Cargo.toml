@@ -2,15 +2,25 @@
     # Published to crates.io as `candy-animation` (the name `candy` is taken),
     # but the library crate and binary both keep the id `candy` (see [lib]/[[bin]]
     # below) so existing `use candy::...` imports and the `candy` CLI are unchanged.
-    name        = "candy-animation"
-    version     = "0.1.0"
-    edition     = "2024"
+    name    = "candy-animation"
+    version = "0.1.0"
+    edition = "2024"
+    # Minimum Supported Rust Version: edition 2024 requires Rust 1.85+.
+    rust-version = "1.85"
     description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
-    license     = "MIT"
-    readme      = "README.md"
-    repository  = "https://github.com/ViCo-Lab/candy"
-    keywords    = ["animation", "typst", "graphics", "manim", "video"]
-    categories  = ["graphics", "multimedia::video", "command-line-utilities"]
+    license = "MIT"
+    authors = [
+        "Shining Yang <97453940+ShiningYangYXN@users.noreply.github.com>",
+    ]
+    readme = "README.md"
+    homepage = "https://github.com/ViCo-Lab/candy"
+    repository = "https://github.com/ViCo-Lab/candy"
+    documentation = "https://docs.rs/candy-animation"
+    keywords = ["animation", "typst", "graphics", "manim", "video"]
+    categories = ["graphics", "multimedia::video", "command-line-utilities"]
+    # Keep the published crate lean: CI config, build intermediates and large
+    # example assets are not needed by consumers.
+    exclude = ["/.github", "/target", "/.candy", "/dist"]
 
     [package.metadata.candy]
         codename = "Ribose"

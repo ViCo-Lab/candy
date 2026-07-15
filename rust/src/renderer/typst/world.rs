@@ -7,7 +7,6 @@
 //! across every frame compile. `CandyWorld` is a per-compile view that fixes a
 //! specific `main` source over the shared state.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -24,6 +23,14 @@ use typst_library::foundations::{Bytes, Datetime, Duration};
 use typst_library::text::Font;
 use typst_syntax::{FileId, Source as TypstSource, VirtualRoot};
 use typst_utils::LazyHash;
+
+use crate::renderer::typst::lru::LruCache;
+
+/// Capacity of the parsed-source cache (`source_cache`). Bounded so an animated
+/// render cannot accumulate one parsed `TypstSource` per frame (OOM). Static /
+/// paused object bodies keep a stable key and stay resident; per-frame churn is
+/// evicted.
+const SOURCE_CACHE_CAP: usize = 1024;
 
 #[cfg(feature = "system-downloader")]
 use ureq::Agent;
@@ -114,7 +121,12 @@ pub(crate) struct WorldState {
     /// already-built AST — this is the "render cache" the per-frame recompiler
     /// relies on. `TypstSource` is `Arc`-backed, so cloning out of the cache is
     /// cheap and shares the parsed tree.
-    source_cache: Mutex<HashMap<String, TypstSource>>,
+    ///
+    /// Bounded LRU: for animated content every frame's source is unique, so an
+    /// unbounded `HashMap` would accumulate one parsed source per frame and OOM.
+    /// The LRU evicts that churn while keeping static bodies resident — see
+    /// [`LruCache`].
+    source_cache: Mutex<LruCache<String, TypstSource>>,
 }
 
 impl WorldState {
@@ -159,7 +171,7 @@ impl WorldState {
             files,
             now: Time::system(),
             time_warned: AtomicBool::new(false),
-            source_cache: Mutex::new(HashMap::new()),
+            source_cache: Mutex::new(LruCache::with_capacity(SOURCE_CACHE_CAP)),
         }
     }
 
@@ -183,6 +195,7 @@ impl WorldState {
             .insert(src.to_string(), parsed.clone());
         parsed
     }
+
 }
 
 /// A per-compile `World` view that borrows the shared [`WorldState`] and

@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use crate::core::ast::Scene;
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
+use crate::core::ast::Scene;
 use crate::core::diag::CandyError;
 
 /// Extract a `Scene` AST from an SVG rendered by `@preview/candy`.
@@ -87,14 +87,13 @@ mod tests {
             private_metadata: PrivateMeta::default(),
         };
         let json = serde_json::to_string(&scene).unwrap();
-        let svg = format!(
-            "<svg><text lang=\"candy-json\">{json}</text></svg>"
-        );
+        let svg = format!("<svg><text lang=\"candy-json\">{json}</text></svg>");
         let tmp = std::env::temp_dir().join("candy_test_svg.svg");
         std::fs::write(&tmp, svg).unwrap();
         let back = extract_scene_from_svg(&tmp).unwrap();
         assert_eq!(back.slides[0].duration_ms, 12);
-        assert_eq!(back.private_metadata.version_codename, "Ribose");
+        assert_eq!(back.private_metadata.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(back.private_metadata.codename, env!("CANDY_CODENAME"));
         // Easing survives the JSON round-trip.
         if let Action::MoveTo { easing, .. } = &back.slides[0].actions[0] {
             assert_eq!(*easing, Easing::Smooth);
@@ -112,16 +111,19 @@ mod tests {
     fn old_json_without_easing_falls_back_to_linear() {
         // Construct JSON by hand to simulate a v0.1 Scene. We strip the
         // `easing` field from the action and from FrameData.
-        let json = r#"{
-            "slides": [{"duration_ms": 5, "actions": [
-                {"MoveTo": {"target": "x", "to": [1.0, 2.0], "easing": "linear"}}
-            ]}],
-            "items": {"x": "circle()"},
-            "initial": {},
+        let json = format!(
+            r#"{{
+            "slides": [{{"duration_ms": 5, "actions": [
+                {{"MoveTo": {{"target": "x", "to": [1.0, 2.0], "easing": "linear"}}}}
+            ]}}],
+            "items": {{"x": "circle()"}},
+            "initial": {{}},
             "audio": [],
-            "private_metadata": {"tyx": "", "candy": "", "version_codename": "Ribose", "in_memory_of": ""}
-        }"#;
-        let scene: Scene = serde_json::from_str(json).expect("old-format JSON must parse");
+            "private_metadata": {{"tyx": "", "candy": "", "version": "", "codename": "{}", "secret": ""}}
+        }}"#,
+            env!("CANDY_CODENAME")
+        );
+        let scene: Scene = serde_json::from_str(&json).expect("old-format JSON must parse");
         scene.validate().unwrap();
     }
 }

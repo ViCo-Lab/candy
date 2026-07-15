@@ -21,6 +21,12 @@ videos (MP4 / MKV / WebM) or SVG drafts.
 #pause(duration: 500)
 ```
 
+> **Full documentation.** This README is the quick reference shown on Typst Universe. The
+> complete, restructured docs — a learn-by-doing [Tutorial](https://github.com/ViCo-Lab/candy/blob/main/docs/tutorial/README.md)
+> and a lookup [Reference](https://github.com/ViCo-Lab/candy/blob/main/docs/reference/README.md)
+> (directives, easing, counters, CLI, codecs, errors) — live in the repository's
+> [`docs/`](https://github.com/ViCo-Lab/candy/blob/main/docs/README.md).
+
 ---
 
 ## Table of contents
@@ -595,3 +601,18 @@ See each file in `examples/` for the full, runnable source. Build any of them wi
 ```sh
 candy build examples/<name>.tyx
 ```
+
+---
+
+## Full documentation
+
+This README is the quick reference. For the complete guide, see the repository docs:
+
+- [Tutorial](https://github.com/ViCo-Lab/candy/blob/main/docs/tutorial/README.md) — install,
+  first clip, animation basics, transforms, scenes/camera/groups, subtitles & counters,
+  output & codecs.
+- [Reference](https://github.com/ViCo-Lab/candy/blob/main/docs/reference/README.md) —
+  directives, easing, counters, CLI flags, codec matrix, and the error model.
+
+The Rust backend developer reference is in
+[`rust/README.md`](https://github.com/ViCo-Lab/candy/blob/main/rust/README.md).

@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 pub struct PrivateMeta {
     pub tyx: String,
     pub candy: String,
-    pub version_codename: String,
-    pub in_memory_of: String,
+    pub version: String,
+    pub codename: String,
+    pub secret: String,
 }
 
 impl PrivateMeta {
@@ -28,8 +29,9 @@ impl Default for PrivateMeta {
         Self {
             tyx: "Candy".into(),
             candy: "TYX".into(),
-            version_codename: env!("CANDY_CODENAME").into(),
-            in_memory_of: "CChO2025".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            codename: env!("CANDY_CODENAME").into(),
+            secret: "Built for Candy(TYX). In memory of CChO2025.".into(),
         }
     }
 }

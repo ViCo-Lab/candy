@@ -7,11 +7,11 @@
 //!
 //! All byte layout is written by hand so `candy` is fully self-contained.
 
-use crate::core::diag::{CandyWarn, CandyError};
+use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
-use crate::warn;
-use crate::renderer::audio::AudioData;
 use crate::renderer::EncodedVideo;
+use crate::renderer::audio::AudioData;
+use crate::warn;
 
 /// Mux an encoded video (and optional audio) into an MP4 file.
 ///
@@ -25,7 +25,9 @@ pub fn mux_mp4(
 ) -> Result<Vec<u8>, CandyError> {
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
-        return Err(CandyError::Encode("cannot mux an empty video (E007)".into()));
+        return Err(CandyError::Encode(
+            "cannot mux an empty video (E007)".into(),
+        ));
     }
     let total_ms = (nframes as u64) * 1000 / v.fps as u64;
     let v_sizes: Vec<u32> = v.frames.iter().map(|f| f.len() as u32).collect();
@@ -50,21 +52,28 @@ pub fn mux_mp4(
     };
     let a_bytes: usize = a_sizes.iter().map(|s| *s as usize).sum();
 
-    let ftyp = b(
-        b"ftyp",
-        {
-            let mut p = vec![];
-            p.extend_from_slice(b"isom"); // major_brand
-            p.extend_from_slice(&[0, 0, 0, 0]); // minor_version
-            p.extend_from_slice(b"isom"); // compatible_brand
-            p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" }); // compatible_brand
-            p.extend_from_slice(b"mp42"); // compatible_brand (MP4 v2)
-            p.extend_from_slice(b"mmp4"); // compatible_brand (mobile MP4)
-            p
-        },
-    );
+    let ftyp = b(b"ftyp", {
+        let mut p = vec![];
+        p.extend_from_slice(b"isom"); // major_brand
+        p.extend_from_slice(&[0, 0, 0, 0]); // minor_version
+        p.extend_from_slice(b"isom"); // compatible_brand
+        p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" }); // compatible_brand
+        p.extend_from_slice(b"mp42"); // compatible_brand (MP4 v2)
+        p.extend_from_slice(b"mmp4"); // compatible_brand (mobile MP4)
+        p
+    });
 
-    let moov0 = build_moov(v, audio, &v_sizes, &a_sizes, &a_dur_samples, total_ms, 0, 0, private_metadata);
+    let moov0 = build_moov(
+        v,
+        audio,
+        &v_sizes,
+        &a_sizes,
+        &a_dur_samples,
+        total_ms,
+        0,
+        0,
+        private_metadata,
+    );
     let moov_len = moov0.len();
     let mdat_offset = ftyp.len() + moov_len + 8;
     let video_offset = mdat_offset;
@@ -115,25 +124,20 @@ fn build_moov(
     let has_audio = !a_sizes.is_empty();
     let next_track_id: u32 = if has_audio { 3 } else { 2 };
 
-    let mvhd = full_box(
-        b"mvhd",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&1000u32.to_be_bytes()); // timescale 1000 (ms)
-            p.extend_from_slice(&(total_ms as u32).to_be_bytes()); // duration in ms
-            p.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate
-            p.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
-            p.extend_from_slice(&[0u8; 10]);
-            p.extend_from_slice(&MATRIX);
-            p.extend_from_slice(&[0u8; 24]);
-            p.extend_from_slice(&next_track_id.to_be_bytes());
-            p
-        },
-    );
+    let mvhd = full_box(b"mvhd", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&1000u32.to_be_bytes()); // timescale 1000 (ms)
+        p.extend_from_slice(&(total_ms as u32).to_be_bytes()); // duration in ms
+        p.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate
+        p.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
+        p.extend_from_slice(&[0u8; 10]);
+        p.extend_from_slice(&MATRIX);
+        p.extend_from_slice(&[0u8; 24]);
+        p.extend_from_slice(&next_track_id.to_be_bytes());
+        p
+    });
 
     let video_trak = build_video_trak(v, nframes, v_sizes, total_ms, v_off);
     let mut traks = vec![video_trak];
@@ -167,45 +171,30 @@ fn build_moov(
 ///         data (full box, type=UTF-8, locale=0) -> JSON bytes
 /// ```
 fn build_meta_udta(json: &str) -> Vec<u8> {
-    let data = full_box(
-        b"data",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&1u32.to_be_bytes()); // data_type = UTF-8
-            p.extend_from_slice(&0u32.to_be_bytes()); // locale = 0
-            p.extend_from_slice(json.as_bytes());
-            p
-        },
-    );
+    let data = full_box(b"data", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&1u32.to_be_bytes()); // data_type = UTF-8
+        p.extend_from_slice(&0u32.to_be_bytes()); // locale = 0
+        p.extend_from_slice(json.as_bytes());
+        p
+    });
     // ©cmt = 0xA9 'c' 'm' 't'
     let cmt = b(&[0xA9, 0x63, 0x6D, 0x74], data);
     let ilst = b(b"ilst", cmt);
-    let hdlr = full_box(
-        b"hdlr",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
-            p.extend_from_slice(b"mdir"); // handler_type
-            p.extend_from_slice(&[0u8; 12]); // reserved
-            p.extend_from_slice(b"candy\0"); // name (null-terminated)
-            p
-        },
-    );
-    let meta = full_box(
-        b"meta",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&hdlr);
-            p.extend_from_slice(&ilst);
-            p
-        },
-    );
+    let hdlr = full_box(b"hdlr", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+        p.extend_from_slice(b"mdir"); // handler_type
+        p.extend_from_slice(&[0u8; 12]); // reserved
+        p.extend_from_slice(b"candy\0"); // name (null-terminated)
+        p
+    });
+    let meta = full_box(b"meta", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&hdlr);
+        p.extend_from_slice(&ilst);
+        p
+    });
     b(b"udta", meta)
 }
 
@@ -216,58 +205,43 @@ fn build_video_trak(
     total_ms: u64,
     v_off: u32,
 ) -> Vec<u8> {
-    let tkhd = full_box(
-        b"tkhd",
-        0,
-        0x0000_0007,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&1u32.to_be_bytes()); // track_id
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&(total_ms as u32).to_be_bytes());
-            p.extend_from_slice(&[0u8; 8]);
-            p.extend_from_slice(&0u16.to_be_bytes()); // layer
-            p.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
-            p.extend_from_slice(&0u16.to_be_bytes()); // volume (0 for video)
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p.extend_from_slice(&MATRIX);
-            p.extend_from_slice(&((v.width as u32) << 16).to_be_bytes());
-            p.extend_from_slice(&((v.height as u32) << 16).to_be_bytes());
-            p
-        },
-    );
+    let tkhd = full_box(b"tkhd", 0, 0x0000_0007, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&1u32.to_be_bytes()); // track_id
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&(total_ms as u32).to_be_bytes());
+        p.extend_from_slice(&[0u8; 8]);
+        p.extend_from_slice(&0u16.to_be_bytes()); // layer
+        p.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
+        p.extend_from_slice(&0u16.to_be_bytes()); // volume (0 for video)
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&MATRIX);
+        p.extend_from_slice(&((v.width as u32) << 16).to_be_bytes());
+        p.extend_from_slice(&((v.height as u32) << 16).to_be_bytes());
+        p
+    });
 
-    let mdhd = full_box(
-        b"mdhd",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&(v.fps as u32).to_be_bytes()); // timescale
-            p.extend_from_slice(&nframes.to_be_bytes()); // duration
-            p.extend_from_slice(&0x55C4u16.to_be_bytes()); // language "und"
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p
-        },
-    );
+    let mdhd = full_box(b"mdhd", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&(v.fps as u32).to_be_bytes()); // timescale
+        p.extend_from_slice(&nframes.to_be_bytes()); // duration
+        p.extend_from_slice(&0x55C4u16.to_be_bytes()); // language "und"
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p
+    });
 
-    let hdlr = full_box(
-        b"hdlr",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(b"vide");
-            p.extend_from_slice(&[0u8; 12]);
-            p.extend_from_slice(b"candy video\0");
-            p
-        },
-    );
+    let hdlr = full_box(b"hdlr", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(b"vide");
+        p.extend_from_slice(&[0u8; 12]);
+        p.extend_from_slice(b"candy video\0");
+        p
+    });
 
     let vmhd = full_box(b"vmhd", 1, 0, {
         let mut p = vec![];
@@ -402,56 +376,41 @@ fn video_sample_entry(v: &EncodedVideo) -> Vec<u8> {
 }
 
 fn build_audio_trak_mp4(a: &AudioData, sizes: &[u32], durs: &[u32], a_off: u32) -> Vec<u8> {
-    let tkhd = full_box(
-        b"tkhd",
-        0,
-        0x0000_0007,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&2u32.to_be_bytes()); // track_id
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes()); // duration (unknown exact)
-            p.extend_from_slice(&[0u8; 8]);
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p.extend_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p.extend_from_slice(&MATRIX);
-            p.extend_from_slice(&0u32.to_be_bytes()); // width
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p
-        },
-    );
-    let mdhd = full_box(
-        b"mdhd",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(&a.sample_rate.to_be_bytes());
-            p.extend_from_slice(&durs.iter().map(|d| *d as u64).sum::<u64>().to_be_bytes());
-            p.extend_from_slice(&0x55C4u16.to_be_bytes());
-            p.extend_from_slice(&0u16.to_be_bytes());
-            p
-        },
-    );
-    let hdlr = full_box(
-        b"hdlr",
-        0,
-        0,
-        {
-            let mut p = vec![];
-            p.extend_from_slice(&0u32.to_be_bytes());
-            p.extend_from_slice(b"soun");
-            p.extend_from_slice(&[0u8; 12]);
-            p.extend_from_slice(b"candy audio\0");
-            p
-        },
-    );
+    let tkhd = full_box(b"tkhd", 0, 0x0000_0007, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&2u32.to_be_bytes()); // track_id
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes()); // duration (unknown exact)
+        p.extend_from_slice(&[0u8; 8]);
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&MATRIX);
+        p.extend_from_slice(&0u32.to_be_bytes()); // width
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p
+    });
+    let mdhd = full_box(b"mdhd", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&a.sample_rate.to_be_bytes());
+        p.extend_from_slice(&durs.iter().map(|d| *d as u64).sum::<u64>().to_be_bytes());
+        p.extend_from_slice(&0x55C4u16.to_be_bytes());
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p
+    });
+    let hdlr = full_box(b"hdlr", 0, 0, {
+        let mut p = vec![];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(b"soun");
+        p.extend_from_slice(&[0u8; 12]);
+        p.extend_from_slice(b"candy audio\0");
+        p
+    });
     let smhd = full_box(b"smhd", 0, 0, {
         let mut p = vec![];
         p.extend_from_slice(&0u16.to_be_bytes());
@@ -580,13 +539,13 @@ fn desc(tag: u8, payload: Vec<u8>) -> Vec<u8> {
 /// (except the last element which is 0x40000000 in 2.30 fixed-point).
 const MATRIX: [u8; 36] = [
     0x00, 0x01, 0x00, 0x00, // a = 1.0
-    0, 0, 0, 0,             // b = 0
-    0, 0, 0, 0,             // u = 0
-    0, 0, 0, 0,             // c = 0
+    0, 0, 0, 0, // b = 0
+    0, 0, 0, 0, // u = 0
+    0, 0, 0, 0, // c = 0
     0x00, 0x01, 0x00, 0x00, // d = 1.0
-    0, 0, 0, 0,             // v = 0
-    0, 0, 0, 0,             // x = 0
-    0, 0, 0, 0,             // y = 0
+    0, 0, 0, 0, // v = 0
+    0, 0, 0, 0, // x = 0
+    0, 0, 0, 0, // y = 0
     0x40, 0x00, 0x00, 0x00, // w = 1.0 (2.30 fixed-point)
 ];
 
@@ -621,7 +580,9 @@ pub fn mux_matroska(
 ) -> Result<Vec<u8>, CandyError> {
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
-        return Err(CandyError::Encode("cannot mux an empty video (E007)".into()));
+        return Err(CandyError::Encode(
+            "cannot mux an empty video (E007)".into(),
+        ));
     }
 
     // Cluster plan (split to keep SimpleBlock timecodes < 2^15 ms).
@@ -874,12 +835,7 @@ mod tests {
     use crate::core::meta::PrivateMeta;
 
     fn sample_meta() -> PrivateMeta {
-        PrivateMeta {
-            tyx: "tyx-test".into(),
-            candy: "candy-test".into(),
-            version_codename: "TestMeta".into(),
-            in_memory_of: "memory-test".into(),
-        }
+        PrivateMeta::default()
     }
 
     fn sample_video() -> EncodedVideo {
@@ -901,15 +857,23 @@ mod tests {
         let bytes = mux_mp4(&v, None, &meta).unwrap();
 
         // udta / meta / ilst / ©cmt markers should all be present.
-        assert!(bytes.windows(4).any(|w| w == b"udta"), "MP4 should contain a udta box");
-        assert!(bytes.windows(4).any(|w| w == b"meta"), "MP4 should contain a meta box");
+        assert!(
+            bytes.windows(4).any(|w| w == b"udta"),
+            "MP4 should contain a udta box"
+        );
+        assert!(
+            bytes.windows(4).any(|w| w == b"meta"),
+            "MP4 should contain a meta box"
+        );
         assert!(
             bytes.windows(4).any(|w| w == [0xA9, 0x63, 0x6D, 0x74]),
             "MP4 should contain a ©cmt entry"
         );
-        let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+        let expected = format!("\"codename\":\"{}\"", meta.codename);
         assert!(
-            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            bytes
+                .windows(expected.len())
+                .any(|w| w == expected.as_bytes()),
             "MP4 metadata should contain private metadata JSON"
         );
     }
@@ -931,12 +895,16 @@ mod tests {
                 "Matroska should contain a SimpleTag element"
             );
             assert!(
-                bytes.windows("candy-meta".len()).any(|w| w == b"candy-meta"),
+                bytes
+                    .windows("candy-meta".len())
+                    .any(|w| w == b"candy-meta"),
                 "Matroska tag should be named candy-meta"
             );
-            let expected = format!("\"version_codename\":\"{}\"", meta.version_codename);
+            let expected = format!("\"codename\":\"{}\"", meta.codename);
             assert!(
-                bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+                bytes
+                    .windows(expected.len())
+                    .any(|w| w == expected.as_bytes()),
                 "Matroska metadata should contain private metadata JSON"
             );
         }

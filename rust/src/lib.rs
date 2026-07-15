@@ -317,7 +317,7 @@ pub fn build_input_with_gpu(
     #[cfg(feature = "gpu")]
     if let Some(g) = gpu_renderer.as_mut() {
         stream_encode_gpu(
-            &renderer, &frames, sample_times, pixel_per_pt, fps, codec,
+            &mut renderer, &frames, &sample_times, pixel_per_pt, fps, codec,
             container_for(format), is_gif(format), &meta, tw, th,
             audio, keep_intermediates, intermediate_dir, output, g,
         )?;
@@ -545,7 +545,7 @@ fn stream_encode_cpu(
 /// to a single frame's RGBA since there is no parallelism to buffer.
 #[cfg(feature = "gpu")]
 fn stream_encode_gpu(
-    renderer: &Renderer,
+    renderer: &mut Renderer,
     frames: &[FrameData],
     sample_times: &[u32],
     pixel_per_pt: f32,

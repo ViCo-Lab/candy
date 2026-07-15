@@ -40,6 +40,7 @@
 pub(crate) mod camera;
 pub(crate) mod composite;
 pub(crate) mod content;
+pub(crate) mod lru;
 pub(crate) mod matrix;
 pub(crate) mod morph;
 pub(crate) mod pages;
@@ -51,23 +52,24 @@ pub(crate) mod world;
 pub(crate) use self::camera::*;
 pub(crate) use self::composite::*;
 pub(crate) use self::content::*;
+pub(crate) use self::lru::LruCache;
 pub(crate) use self::morph::*;
 pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
+use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
-use crate::warn;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
+use crate::warn;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use typst_layout::PagedDocument;
 use typst_library::foundations::Smart;
@@ -97,6 +99,15 @@ struct SpriteKey {
     y_q: u32,
     ppi_q: u32,
 }
+
+/// Capacity of the per-frame compiled-document cache (`body_cache`). Bounded so
+/// an animated render cannot accumulate one `PagedDocument` per frame (that was
+/// the OOM). Static / paused objects keep a stable key and stay resident; the
+/// per-frame churn of moving objects is evicted.
+const BODY_CACHE_CAP: usize = 512;
+/// Capacity of the per-object rasterized-sprite cache (`sprite_cache`).
+const SPRITE_CACHE_CAP: usize = 512;
+
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
     scene: Scene,
@@ -147,7 +158,7 @@ pub struct Renderer {
     ///
     /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
     /// parallel frame-render loop.
-    body_cache: Mutex<HashMap<String, Arc<PagedDocument>>>,
+    body_cache: Mutex<LruCache<String, Arc<PagedDocument>>>,
     /// Per-object rasterized-sprite cache. Keyed by the effective render state
     /// (label + body source + quantized scale/rotation/position + ppi). This is
     /// the *second* performance layer on top of `body_cache`: even after the
@@ -155,7 +166,12 @@ pub struct Renderer {
     /// so identical states reuse the previously rasterized frame. The page
     /// size / canvas is constant, so the cached `RenderedFrame` composites
     /// directly. `Mutex` for the same `&self`-shared reason as `body_cache`.
-    sprite_cache: Mutex<HashMap<SpriteKey, Arc<crate::renderer::RenderedFrame>>>,
+    ///
+    /// Bounded LRU: animated objects produce a distinct key every frame, so an
+    /// unbounded `HashMap` would accumulate one sprite per frame and OOM. The
+    /// LRU evicts that per-frame churn while keeping stable (paused) keys
+    /// resident — see [`LruCache`].
+    sprite_cache: Mutex<LruCache<SpriteKey, Arc<crate::renderer::RenderedFrame>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
 }
@@ -183,8 +199,8 @@ impl Renderer {
             pages: PageScheduler::empty(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
-            body_cache: Mutex::new(HashMap::new()),
-            sprite_cache: Mutex::new(HashMap::new()),
+            body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
+            sprite_cache: Mutex::new(LruCache::with_capacity(SPRITE_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
         })
     }
@@ -197,29 +213,26 @@ impl Renderer {
         // would otherwise abort the process with no diagnostic. Catch it and
         // surface it as `E006` so a syntax error is always reported, never
         // swallowed or crashed on.
-        let warned = match catch_unwind(AssertUnwindSafe(|| {
-            typst::compile::<PagedDocument>(&world)
-        })) {
-            Ok(w) => w,
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                    s.clone()
-                } else if let Some(s) = payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else {
-                    "typst panicked during compilation".to_string()
-                };
-                return Err(CandyError::Typst(format!("typst panicked: {msg}")));
-            }
-        };
+        let warned =
+            match catch_unwind(AssertUnwindSafe(|| typst::compile::<PagedDocument>(&world))) {
+                Ok(w) => w,
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "typst panicked during compilation".to_string()
+                    };
+                    return Err(CandyError::Typst(format!("typst panicked: {msg}")));
+                }
+            };
         // If the body consulted the wall clock (`datetime.today()`), the render
         // is time-dependent and not reproducible — warn once per renderer.
         if world.used_time() && self.state.note_time_used() {
             warn!(CandyWarn::TimeDependent);
         }
-        warned
-            .output
-            .map_err(Into::into)
+        warned.output.map_err(Into::into)
     }
     /// Compile a Typst source, memoized by the exact source string.
     ///
@@ -288,8 +301,7 @@ impl Renderer {
         if let Some(c) = self.bg_cache.lock().unwrap().get(bg) {
             return Ok(c.clone());
         }
-        let src =
-            format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
+        let src = format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
         // A compile failure (e.g. a syntax error inside `bg`) is a real error and
         // must propagate as `E006`. Only a *successful* compile whose fill is not
         // a solid colour legitimately falls back to opaque white.
@@ -1316,7 +1328,14 @@ impl Renderer {
     }
     /// Render a subtitle to an SVG string using the scene's page size.
     fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
-        render_subtitle_svg_impl(&self.state, &self.scene, sub, self.page_w, self.page_h, time_ms)
+        render_subtitle_svg_impl(
+            &self.state,
+            &self.scene,
+            sub,
+            self.page_w,
+            self.page_h,
+            time_ms,
+        )
     }
     /// Render a subtitle to an RGBA frame (page-sized) for the pixel path.
     fn render_subtitle_pixels(
@@ -1325,7 +1344,14 @@ impl Renderer {
         time_ms: u32,
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        let doc = subtitle_doc(&self.state, &self.scene, sub, self.page_w, self.page_h, time_ms)?;
+        let doc = subtitle_doc(
+            &self.state,
+            &self.scene,
+            sub,
+            self.page_w,
+            self.page_h,
+            time_ms,
+        )?;
         let page = doc
             .pages()
             .first()
@@ -2302,4 +2328,3 @@ fn overflowing_scene_plays_pages_in_sequence() {
     );
     std::fs::remove_file(&tmp).ok();
 }
-

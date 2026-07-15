@@ -194,11 +194,11 @@ fn run() -> Result<(), CandyError> {
             // Hidden easter egg: `candy candy` / `candy tyx`. The text is shown
             // bold (the terminal analogue of Typst's `#strong` / 强调), but only
             // on a TTY with `NO_COLOR` unset so piped / CI output stays plain.
-            let candy = "Built for Candy(TYX). In memory of CChO2025.";
+            let secret = "Built for Candy(TYX). In memory of CChO2025.";
             if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
-                eprintln!("{}", candy.bold());
+                eprintln!("{}", secret.bold());
             } else {
-                eprintln!("{candy}");
+                eprintln!("{secret}");
             }
         }
         Commands::Build {
