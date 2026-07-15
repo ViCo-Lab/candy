@@ -5,6 +5,10 @@ use crate::renderer::RenderedFrame;
 
 /// Composite a (possibly transparent) source frame over an opaque destination
 /// canvas using the "over" operator, scaled by `opacity`.
+///
+/// Kept as the canonical top-left paste; the cropped-sprite path now uses
+/// [`composite_over_at`], but this remains the simplest reference compositor.
+#[allow(dead_code)]
 pub(crate) fn composite_over(
     dst: &mut [u8],
     src: &RenderedFrame,
@@ -33,7 +37,6 @@ pub(crate) fn composite_over(
 
 /// Like `composite_over` but pastes `src` at an explicit pixel offset `(ox, oy)`
 /// (may be negative / partially off-canvas) instead of the top-left.
-#[allow(dead_code)]
 pub(crate) fn composite_over_at(
     dst: &mut [u8],
     src: &RenderedFrame,

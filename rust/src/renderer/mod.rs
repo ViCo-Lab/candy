@@ -21,7 +21,8 @@ pub struct RenderedFrame {
     pub rgba: Vec<u8>,
 }
 
+pub(crate) use encode::EncodedVideoFile;
+pub use encode::{Codec, Container, EncodedVideo, collect_audio, encode_frames, mux};
 pub use typst::Renderer;
 #[cfg(test)]
 pub(crate) use typst::compile_file_for_test;
-pub use encode::{encode_frames, mux, collect_audio, Codec, Container, EncodedVideo};

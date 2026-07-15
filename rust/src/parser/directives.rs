@@ -351,7 +351,7 @@ fn process_play(
 
 /// `save_state(target, slot: "name")` — snapshot the target's current state.
 /// Inert under standard Typst. Produces no slide (0-duration); the action is
-/// attached to a 1-frame slide at the current cursor so the scheduler sees it.
+/// attached to a 1 ms slide at the current cursor so the scheduler sees it.
 fn process_save_state(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -367,7 +367,7 @@ fn process_save_state(
             _ => None,
         })
         .unwrap_or_else(|| "default".to_string());
-    // SaveState is instantaneous — emit a 1-frame slide so the scheduler
+    // SaveState is instantaneous — emit a 1 ms slide so the scheduler
     // processes the action at the current cursor position.
     ctx.slides.push(Slide {
         duration_ms: 1,
@@ -502,7 +502,7 @@ fn process_wiggle(
 }
 
 /// `appear(target)` / `disappear(target)` — instantaneous visibility toggle.
-/// Emits a 1-frame slide. (`show`/`hide` would conflict with Typst keywords.)
+/// Emits a 1 ms slide. (`show`/`hide` would conflict with Typst keywords.)
 fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
     let Some(label) = target_arg(pos, &std::collections::HashMap::new()) else {
         return;
@@ -553,7 +553,7 @@ fn process_set_color(
     ctx.cursor += duration;
 }
 
-/// `blink(target, blinks: 3, duration: 30, easing: "linear")` — alternate
+/// `blink(target, blinks: 3, duration: 500, easing: "linear")` — alternate
 /// opacity 1↔0 N times. Mirrors Manim's `Blink`.
 fn process_blink(
     pos: &[Expr],
@@ -597,7 +597,7 @@ fn process_blink(
     ctx.cursor += per_blink * blinks * 2;
 }
 
-/// `spiral_in(target, scale: 3.0, rotate: 360, duration: 24, easing: "smooth")`
+/// `spiral_in(target, scale: 3.0, rotate: 360, duration: 300, easing: "smooth")`
 /// — fly in from a scaled-up, rotated state to the natural position, fading in.
 /// Mirrors Manim's `SpiralIn`.
 fn process_spiral_in(
@@ -655,7 +655,7 @@ fn process_spiral_in(
             },
         ],
     });
-    ctx.cursor += 1 + duration;
+    ctx.cursor += duration;
 }
 
 /// `focus_on(target, factor: 0.5, duration: 300, easing: "smooth")` —
@@ -1112,7 +1112,7 @@ fn process_morph(
         end_ms,
         easing,
     });
-    ctx.cursor += 1 + duration;
+    ctx.cursor += duration;
 }
 
 /// Whether a mobject body is *inline content* (a formula or plain text) that

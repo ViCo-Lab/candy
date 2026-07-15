@@ -191,7 +191,9 @@ pub(crate) fn spawn_ffmpeg(
 
 /// Finish an ffmpeg encode started by [`spawn_ffmpeg`]: the child's stdin must
 /// already be dropped/closed so ffmpeg flushes, then we wait and read back the
-/// muxed container bytes.
+/// muxed container bytes. Used by the batch [`encode_via_ffmpeg`] path (which
+/// already holds every frame in RAM); the streaming pipeline uses
+/// [`finish_ffmpeg_to_file`] instead to avoid buffering the container.
 pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, CandyError> {
     let output = child
         .wait_with_output()
@@ -215,6 +217,33 @@ pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, Ca
         return Err(CandyError::Encode("ffmpeg produced no output (E007)".into()));
     }
     Ok(bytes)
+}
+
+/// Finish an ffmpeg encode started by [`spawn_ffmpeg`]: the child's stdin must
+/// already be dropped/closed so ffmpeg flushes, then we wait and copy the muxed
+/// container (already a seekable temp file) directly to `output`. Copying the
+/// file avoids buffering the entire container in RAM, so a long HD/high-FPS
+/// render cannot OOM on the coded stream.
+pub(crate) fn finish_ffmpeg_to_file(
+    mut child: Child,
+    tmp_path: &Path,
+    output: &Path,
+) -> Result<(), CandyError> {
+    let status = child
+        .wait()
+        .map_err(|e| CandyError::Encode(format!("ffmpeg wait: {e}")))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(CandyError::Encode(format!(
+            "ffmpeg exited with {status} (E007); run with verbose logging for details"
+        )));
+    }
+
+    std::fs::copy(tmp_path, output)
+        .map_err(|e| CandyError::Encode(format!("ffmpeg output copy: {e}")))?;
+    let _ = std::fs::remove_file(tmp_path);
+    Ok(())
 }
 
 /// Encode `frames` to a muxed container byte buffer via system ffmpeg.

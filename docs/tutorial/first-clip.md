@@ -6,8 +6,8 @@ Let's render a moving dot. Save this as `dot_move.tyx`:
 #import "@preview/candy:0.1.0": *
 
 #mobject("dot", circle(radius: 1cm, fill: blue))
-#animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
-#pause(duration: 15)
+#animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+#pause(duration: 500)
 ```
 
 Then build it:
@@ -17,8 +17,8 @@ candy build dot_move.tyx
 ```
 
 Candy writes `dist/dot_move.mp4` (H.264 in an MP4 container by default). Open it and
-you'll see the blue dot glide 4 cm to the right over 30 frames, then hold for 15
-frames.
+you'll see the blue dot glide 4 cm to the right over 1000 ms (1 second), then hold
+for 500 ms.
 
 ## What each line does
 
@@ -28,8 +28,8 @@ frames.
   named `dot`. Its *placement is automatic*: it lands wherever `body` naturally falls in
   the document flow. You never pass an `at:` coordinate.
 - `#animate("dot", to: (4cm, 0pt), …)` — animates `dot` to the absolute point
-  `(4cm, 0pt)` over `duration: 30` frames, using the `"linear"` easing curve.
-- `#pause(duration: 15)` — holds the current frame for 15 frames.
+  `(4cm, 0pt)` over `duration: 1000` milliseconds, using the `"linear"` easing curve.
+- `#pause(duration: 500)` — holds the current frame for 500 milliseconds.
 
 ## A few things to try
 
@@ -58,7 +58,7 @@ A **mobject** is an animatable object: a bare Typst block or element (`circle(..
 
 An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `label`
 string and changes a transform (position / scale / rotation / opacity) over `duration`
-frames. Multiple actions on different targets run in **parallel**.
+milliseconds. Multiple actions on different targets run in **parallel**.
 
 **Layout & hidden mobjects.** A mobject's *natural* placement is where `body` lands in
 the flow; Candy measures that box once (`ensure_natural`). Mobjects that are *temporarily

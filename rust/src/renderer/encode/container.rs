@@ -10,8 +10,12 @@
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
 use crate::renderer::EncodedVideo;
+use crate::renderer::EncodedVideoFile;
 use crate::renderer::audio::AudioData;
 use crate::warn;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
 
 /// Mux an encoded video (and optional audio) into an MP4 file.
 ///
@@ -65,6 +69,7 @@ pub fn mux_mp4(
 
     let moov0 = build_moov(
         v,
+        nframes,
         audio,
         &v_sizes,
         &a_sizes,
@@ -80,6 +85,7 @@ pub fn mux_mp4(
     let audio_offset = mdat_offset + v_bytes;
     let moov = build_moov(
         v,
+        nframes,
         audio,
         &v_sizes,
         &a_sizes,
@@ -105,12 +111,158 @@ pub fn mux_mp4(
     Ok(out)
 }
 
+/// Build a minimal [`EncodedVideo`] shim that carries the metadata the muxer
+/// needs (dimensions, fps, codec config, keyframes) but no sample bytes. Used
+/// by the file-backed [`mux_mp4_to_file`]/[`mux_matroska_to_file`] paths, which
+/// stream the actual samples from disk instead of holding them in RAM.
+fn video_shim(v: &EncodedVideoFile) -> EncodedVideo {
+    EncodedVideo {
+        width: v.width,
+        height: v.height,
+        fps: v.fps,
+        is_av1: v.is_av1,
+        frames: Vec::new(),
+        codec_private: v.codec_private.clone(),
+        keyframes: v.keyframes.clone(),
+    }
+}
+
+/// Mux a file-backed encoded video (and optional audio) directly into `output`.
+///
+/// `ftyp` + `moov` are built in RAM (small — only per-sample metadata), then the
+/// coded samples are streamed from `v.samples_path` into the `mdat` box. Peak
+/// memory is bounded to the metadata regardless of video length / resolution,
+/// so a long HD/high-FPS render cannot OOM on the coded stream.
+pub(crate) fn mux_mp4_to_file(
+    v: &EncodedVideoFile,
+    audio: Option<&AudioData>,
+    output: &Path,
+    private_metadata: &PrivateMeta,
+) -> Result<(), CandyError> {
+    let nframes = v.sample_sizes.len() as u32;
+    if nframes == 0 {
+        return Err(CandyError::Encode(
+            "cannot mux an empty video (E007)".into(),
+        ));
+    }
+    let total_ms = (nframes as u64) * 1000 / v.fps as u64;
+    let v_sizes: Vec<u32> = v.sample_sizes.clone();
+    let v_bytes: usize = v_sizes.iter().map(|s| *s as usize).sum();
+
+    let (a_sizes, a_dur_samples, _a_total_samples): (Vec<u32>, Vec<u32>, u64) = match audio {
+        Some(a) if a.codec == crate::renderer::audio::AudioCodec::Aac => {
+            let sizes: Vec<u32> = a.frames.iter().map(|f| f.data.len() as u32).collect();
+            let durs: Vec<u32> = a
+                .frames
+                .iter()
+                .map(|f| ((f.duration_ms as u64 * a.sample_rate as u64) / 1000) as u32)
+                .collect();
+            let total: u64 = durs.iter().map(|d| *d as u64).sum();
+            (sizes, durs, total)
+        }
+        Some(_) => {
+            warn!(CandyWarn::AudioIgnored);
+            (vec![], vec![], 0)
+        }
+        None => (vec![], vec![], 0),
+    };
+    let a_bytes: usize = a_sizes.iter().map(|s| *s as usize).sum();
+
+    let ftyp = b(b"ftyp", {
+        let mut p = vec![];
+        p.extend_from_slice(b"isom");
+        p.extend_from_slice(&[0, 0, 0, 0]);
+        p.extend_from_slice(b"isom");
+        p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" });
+        p.extend_from_slice(b"mp42");
+        p.extend_from_slice(b"mmp4");
+        p
+    });
+
+    let moov0 = build_moov(
+        &video_shim(v),
+        nframes,
+        audio,
+        &v_sizes,
+        &a_sizes,
+        &a_dur_samples,
+        total_ms,
+        0,
+        0,
+        private_metadata,
+    );
+    let moov_len = moov0.len();
+    let mdat_offset = ftyp.len() + moov_len + 8;
+    let video_offset = mdat_offset;
+    let audio_offset = mdat_offset + v_bytes;
+    let moov = build_moov(
+        &video_shim(v),
+        nframes,
+        audio,
+        &v_sizes,
+        &a_sizes,
+        &a_dur_samples,
+        total_ms,
+        video_offset as u32,
+        audio_offset as u32,
+        private_metadata,
+    );
+
+    let mut file = std::fs::File::create(output)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    file.write_all(&ftyp)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    file.write_all(&moov)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    // mdat
+    file.write_all(&((v_bytes + a_bytes + 8) as u32).to_be_bytes())
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    file.write_all(b"mdat")
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    // Stream the coded video samples from the temp file.
+    stream_samples_into(&v.samples_path, &v.sample_sizes, &mut file)?;
+    // Audio samples (kept in RAM; audio is small relative to video).
+    for f in audio.map(|a| &a.frames).into_iter().flatten() {
+        file.write_all(&f.data)
+            .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    }
+    let _ = std::fs::remove_file(&v.samples_path);
+    Ok(())
+}
+
+/// Copy each coded sample (sized by `sizes`) from `path` into `out`, in order.
+/// Uses a fixed 1 MiB copy buffer so peak memory stays tiny regardless of how
+/// many / how large the samples are.
+fn stream_samples_into(
+    path: &Path,
+    sizes: &[u32],
+    out: &mut std::fs::File,
+) -> Result<(), CandyError> {
+    use std::io::Read;
+    let mut src = std::fs::File::open(path)
+        .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+    let mut buf = vec![0u8; 1 << 20];
+    for &sz in sizes {
+        let mut remaining = sz as usize;
+        while remaining > 0 {
+            let n = remaining.min(buf.len());
+            src.read_exact(&mut buf[..n])
+                .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+            out.write_all(&buf[..n])
+                .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+            remaining -= n;
+        }
+    }
+    Ok(())
+}
+
 /// Build the `moov` box. `v_off`/`a_off` are the absolute file offsets of the
 /// first sample of each track (0 means "measure pass"). `private_metadata` is
 /// embedded in a `udta` user-data box so the metadata survives in the
 /// container's metadata area.
 fn build_moov(
     v: &EncodedVideo,
+    nframes: u32,
     audio: Option<&AudioData>,
     v_sizes: &[u32],
     a_sizes: &[u32],
@@ -120,7 +272,6 @@ fn build_moov(
     a_off: u32,
     private_metadata: &PrivateMeta,
 ) -> Vec<u8> {
-    let nframes = v.frames.len() as u32;
     let has_audio = !a_sizes.is_empty();
     let next_track_id: u32 = if has_audio { 3 } else { 2 };
 
@@ -827,6 +978,230 @@ fn u64_to_bytes(v: u64) -> Vec<u8> {
 
 fn f64_to_bytes(v: f64) -> Vec<u8> {
     v.to_be_bytes().to_vec()
+}
+
+/// Mux a file-backed encoded video (and optional audio) directly into `output`
+/// for Matroska (WebM/MKV).
+///
+/// The EBML header, `Segment` info/tracks/tags, and the total `Segment` size are
+/// computed in RAM (all small — only per-sample metadata), then each `Cluster`
+/// is streamed to `output` by reading the coded samples from `v.samples_path`.
+/// Peak memory is bounded to at most one sample in RAM at a time, so a long
+/// HD/high-FPS render cannot OOM on the coded stream.
+pub(crate) fn mux_matroska_to_file(
+    v: &EncodedVideoFile,
+    audio: Option<&AudioData>,
+    webm: bool,
+    output: &Path,
+    private_metadata: &PrivateMeta,
+) -> Result<(), CandyError> {
+    let nframes = v.sample_sizes.len() as u32;
+    if nframes == 0 {
+        return Err(CandyError::Encode(
+            "cannot mux an empty video (E007)".into(),
+        ));
+    }
+
+    // Cluster plan (split to keep SimpleBlock timecodes < 2^15 ms) — identical
+    // to `mux_matroska`.
+    let mut clusters: Vec<(u64, usize, usize)> = Vec::new();
+    let mut c_start = 0usize;
+    let mut c_start_ms = 0u64;
+    let mut prev_ms = 0u64;
+    for i in 0..nframes as usize {
+        let ms = (i as u64) * 1000 / v.fps as u64;
+        if i == 0 || ms - c_start_ms > 30_000 {
+            if i > c_start {
+                clusters.push((c_start_ms, c_start, i));
+            }
+            c_start = i;
+            c_start_ms = ms;
+        }
+        prev_ms = ms;
+    }
+    if c_start < nframes as usize {
+        clusters.push((c_start_ms, c_start, nframes as usize));
+    }
+    let last_ms = prev_ms;
+
+    // Tracks / Info / Tags (small, built in RAM).
+    let mut tracks = Vec::new();
+    tracks.extend_from_slice(&video_track_entry_shim(v));
+    if let Some(a) = audio {
+        tracks.extend_from_slice(&audio_track_entry(a));
+    }
+    let tracks_el = ebml_elem(&[0x16, 0x54, 0xAE, 0x6B], &tracks);
+
+    let duration = last_ms as f64;
+    let mut info = Vec::new();
+    info.extend_from_slice(&ebml_elem(&[0x2A, 0xD7, 0xB1], &u64_to_bytes(1_000_000)));
+    info.extend_from_slice(&ebml_elem(&[0x4D, 0x80], b"candy"));
+    info.extend_from_slice(&ebml_elem(&[0x57, 0x41], b"candy"));
+    info.extend_from_slice(&ebml_elem(&[0x44, 0x89], &f64_to_bytes(duration)));
+    let info_el = ebml_elem(&[0x15, 0x49, 0xA9, 0x66], &info);
+
+    let tags_el = build_tags(&private_metadata.to_json());
+
+    // Total Cluster size (computed from sample sizes; no sample data buffered).
+    let mut cluster_total = 0u64;
+    for (c_ms, f0, f1) in &clusters {
+        cluster_total += cluster_size(
+            *c_ms, *f0, *f1, &v.sample_sizes, &v.keyframes, audio, last_ms, nframes, v.fps,
+        );
+    }
+    let seg_size = info_el.len() as u64 + tracks_el.len() as u64 + tags_el.len() as u64 + cluster_total;
+
+    // EBML header.
+    let mut ebml = Vec::new();
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0x86], &u64_to_bytes(1)));
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0xF7], &u64_to_bytes(1)));
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0xF2], &u64_to_bytes(4)));
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0xF3], &u64_to_bytes(8)));
+    let doctype: &[u8] = if webm { b"webm" } else { b"matroska" };
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0x82], doctype));
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0x87], &u64_to_bytes(2)));
+    ebml.extend_from_slice(&ebml_elem(&[0x42, 0x85], &u64_to_bytes(2)));
+    let ebml_el = ebml_elem(&[0x1A, 0x45, 0xDF, 0xA3], &ebml);
+
+    let mut out = File::create(output)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&ebml_el)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&[0x18, 0x53, 0x80, 0x67])
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&ebml_vint(seg_size))
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&info_el)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&tracks_el)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    out.write_all(&tags_el)
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+
+    // Stream clusters, reading coded samples sequentially from the temp file.
+    let mut sf = File::open(&v.samples_path)
+        .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+    for (c_ms, f0, f1) in &clusters {
+        write_cluster_to_file(&mut out, *c_ms, *f0, *f1, v, &mut sf, audio, last_ms, nframes, v.fps)?;
+    }
+    let _ = std::fs::remove_file(&v.samples_path);
+    Ok(())
+}
+
+/// Build a Matroska `VideoTrackEntry` from a file-backed video (metadata only).
+fn video_track_entry_shim(v: &EncodedVideoFile) -> Vec<u8> {
+    let codec_id: &[u8] = if v.is_av1 {
+        b"V_AV1"
+    } else {
+        b"V_MPEG4/ISO/AVC"
+    };
+    let mut e = Vec::new();
+    e.extend_from_slice(&ebml_elem(&[0xD7], &u64_to_bytes(1)));
+    e.extend_from_slice(&ebml_elem(&[0x73, 0xC5], &u64_to_bytes(1)));
+    e.extend_from_slice(&ebml_elem(&[0x83], &u64_to_bytes(1)));
+    e.extend_from_slice(&ebml_elem(&[0x9C], &u64_to_bytes(0)));
+    e.extend_from_slice(&ebml_elem(&[0x86], codec_id));
+    e.extend_from_slice(&ebml_elem(&[0x63, 0xA2], &v.codec_private));
+    e.extend_from_slice(&ebml_elem(&[0x53, 0x6E], b"candy video"));
+    let mut vid = Vec::new();
+    vid.extend_from_slice(&ebml_elem(&[0xB0], &u64_to_bytes(v.width as u64)));
+    vid.extend_from_slice(&ebml_elem(&[0xBA], &u64_to_bytes(v.height as u64)));
+    e.extend_from_slice(&ebml_elem(&[0xE0], &vid));
+    ebml_elem(&[0xAE], &e)
+}
+
+/// Size in bytes of an EBML element with the given `id` and `data_len`.
+fn ebml_elem_size(id: &[u8], data_len: u64) -> u64 {
+    id.len() as u64 + ebml_vint(data_len).len() as u64 + data_len
+}
+
+/// Size in bytes of a Matroska `SimpleBlock` for `track` carrying `data_len`
+/// bytes of coded data.
+fn simple_block_size(track: u64, data_len: u64) -> u64 {
+    let block = ebml_vint(track).len() as u64 + 2 + 1 + data_len;
+    ebml_elem_size(&[0xA3], block)
+}
+
+/// Total byte size of a single `Cluster` (without buffering its data), computed
+/// from the per-sample sizes and the audio frames that fall inside it.
+fn cluster_size(
+    c_ms: u64,
+    f0: usize,
+    f1: usize,
+    v_sizes: &[u32],
+    _keyframes: &[bool],
+    audio: Option<&AudioData>,
+    last_ms: u64,
+    nframes: u32,
+    fps: u32,
+) -> u64 {
+    let mut size = ebml_elem_size(&[0xE7], u64_to_bytes(c_ms).len() as u64);
+    for f in f0..f1 {
+        size += simple_block_size(1, v_sizes[f] as u64);
+    }
+    if let Some(a) = audio {
+        for af in &a.frames {
+            let ms = af.timestamp_ms;
+            if ms >= c_ms && ms <= last_ms && ms >= c_ms && f0 < nframes as usize {
+                let in_range =
+                    ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
+                if in_range {
+                    size += simple_block_size(2, af.data.len() as u64);
+                }
+            }
+        }
+    }
+    ebml_elem_size(&[0x1F, 0x43, 0xB6, 0x75], size)
+}
+
+/// Read the next `size` bytes from `sf` (sequential sample read).
+fn read_next_sample(sf: &mut File, size: u32) -> Result<Vec<u8>, CandyError> {
+    let mut buf = vec![0u8; size as usize];
+    sf.read_exact(&mut buf)
+        .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+    Ok(buf)
+}
+
+/// Build and write one `Cluster` to `out`, streaming its coded video samples
+/// from `sf` (read sequentially) and interleaving any audio blocks in range.
+fn write_cluster_to_file(
+    out: &mut File,
+    c_ms: u64,
+    f0: usize,
+    f1: usize,
+    v: &EncodedVideoFile,
+    sf: &mut File,
+    audio: Option<&AudioData>,
+    last_ms: u64,
+    nframes: u32,
+    fps: u32,
+) -> Result<(), CandyError> {
+    let mut c: Vec<u8> = Vec::new();
+    c.extend_from_slice(&ebml_elem(&[0xE7], &u64_to_bytes(c_ms)));
+    for f in f0..f1 {
+        let ms = (f as u64) * 1000 / fps as u64;
+        let rel = (ms - c_ms) as i16;
+        let data = read_next_sample(sf, v.sample_sizes[f])?;
+        let block = simple_block(1, rel, v.keyframes[f], &data);
+        c.extend_from_slice(&ebml_elem(&[0xA3], &block));
+    }
+    if let Some(a) = audio {
+        for af in &a.frames {
+            let ms = af.timestamp_ms;
+            if ms >= c_ms && ms <= last_ms && ms >= c_ms && f0 < nframes as usize {
+                let in_range =
+                    ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
+                if in_range {
+                    let rel = (ms as i64 - c_ms as i64) as i16;
+                    let block = simple_block(2, rel, false, &af.data);
+                    c.extend_from_slice(&ebml_elem(&[0xA3], &block));
+                }
+            }
+        }
+    }
+    out.write_all(&ebml_elem(&[0x1F, 0x43, 0xB6, 0x75], &c))
+        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

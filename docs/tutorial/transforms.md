@@ -66,16 +66,16 @@ These mirror Manim Community Edition primitives. Each is inert under standard Ty
 | Directive | Effect |
 |---|---|
 | `#save_state(target, slot: "default")` | snapshot a mobject's transform into a named slot (mirrors `save_state()`). |
-| `#restore(target, slot: "default", duration: 30, easing: "linear")` | interpolate back to a saved state. |
-| `#indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 24, easing: "smooth")` | brief scale + shift "look here". |
-| `#flash(target, factor: 2.0, duration: 18, easing: "smooth")` | scale up + fade toward transparent, then restore. |
-| `#wiggle(target, degrees: 15.0, duration: 20, easing: "wiggle")` | oscillate rotation by ±`degrees`, then return. |
+| `#restore(target, slot: "default", duration: 500, easing: "linear")` | interpolate back to a saved state. |
+| `#indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 300, easing: "smooth")` | brief scale + shift "look here". |
+| `#flash(target, factor: 2.0, duration: 200, easing: "smooth")` | scale up + fade toward transparent, then restore. |
+| `#wiggle(target, degrees: 15.0, duration: 500, easing: "wiggle")` | oscillate rotation by ±`degrees`, then return. |
 | `#appear(target)` / `#disappear(target)` | instant `opacity: 1.0` / `opacity: 0.0`, no interpolation. |
 | `#set_color(target, color: "black", duration: 1, easing: "linear")` | record a color change (no-op in the current renderer; tracked for future structured mobjects). |
-| `#blink(target, blinks: 3, duration: 30, easing: "linear")` | alternate opacity 1↔0 `blinks` times. |
-| `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 24, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
-| `#focus-on(target, factor: 0.5, duration: 20, easing: "smooth")` | shrink a "spotlight" onto the target. |
-| `#move-along-path(target, path, duration: 30, easing: "linear")` | move along a polyline of `(x, y)` points (cm, absolute). |
+| `#blink(target, blinks: 3, duration: 500, easing: "linear")` | alternate opacity 1↔0 `blinks` times. |
+| `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
+| `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")` | shrink a "spotlight" onto the target. |
+| `#move-along-path(target, path, duration: 500, easing: "linear")` | move along a polyline of `(x, y)` points (cm, absolute). |
 
 ```typst
 #save_state("dot", slot: "home")

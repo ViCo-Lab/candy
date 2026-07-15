@@ -395,9 +395,9 @@ impl StreamEncoder {
         match self {
             StreamEncoder::Gif(g) => g.finish(),
             StreamEncoder::Video(v) => {
-                let bytes = v.finish()?;
-                std::fs::write(output, bytes)?;
-                Ok(())
+                // Streams the coded samples straight from their temp file into
+                // `output`, so the whole container is never buffered in RAM.
+                v.finish(output)
             }
         }
     }

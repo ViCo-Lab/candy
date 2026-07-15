@@ -81,9 +81,10 @@ so you can iterate on layout with `typst compile` and render the animation with
 - Candy uses a **millisecond** timeline internally. The `--fps` CLI flag only sets
   the output frame rate; a 1000 ms slide at 30 fps yields ~30 frames, at 60 fps ~60
   frames — the wall-clock duration is unchanged.
-- `#animate` / `#pause` / `#play` durations are expressed in **frames** in the DSL,
-  but the scheduler converts the timeline to milliseconds. In practice, think of
-  `duration:` as "how long the action lasts" — at 30 fps, `duration: 30` ≈ 1 second.
+- `#animate` / `#pause` / `#play` / `#transform` / … `duration:` arguments are expressed
+  directly in **milliseconds** (default `500`). There is no frame-based timing — the
+  scheduler works entirely in ms, and only the final rasterization samples that timeline
+  at `--fps`.
 - `#subtitle` and `#ecounter` lifetimes are expressed in **milliseconds** directly.
 
 ### Scene / canvas
@@ -140,7 +141,7 @@ automatic* — taken from where the body lands in the document flow. You never p
 
 An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `label`
 string and changes a transform (position / scale / rotation / opacity) over `duration`
-frames. Multiple actions on different targets run in parallel.
+milliseconds. Multiple actions on different targets run in parallel.
 
 **Layout & hidden mobjects.** A mobject's *natural* placement is where `body` lands in
 the document flow; `ensure_natural` measures that box by rendering every object once.
@@ -171,7 +172,7 @@ natural position.
 
 #### `#animate(target, ..)` {#animate}
 
-Animate `target` over `duration` frames (default `30`). Supports absolute and
+Animate `target` over `duration` milliseconds (default `500`). Supports absolute and
 relative transforms in any combination; each produces a parallel action.
 
 | Argument | Meaning |
@@ -183,7 +184,7 @@ relative transforms in any combination; each produces a parallel action.
 | `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
 | `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
 | `opacity:` | target opacity in `[0, 1]` |
-| `duration:` | frames spanned (default `30`) |
+| `duration:` | length of the animation in **milliseconds** (default `500`) |
 | `easing:` | rate curve (default `"linear"`; see [Easing](#easing-reference)) |
 
 ```typst
@@ -192,13 +193,13 @@ relative transforms in any combination; each produces a parallel action.
 #animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600)
 ```
 
-#### `#pause(duration: 15)` {#pause}
+#### `#pause(duration: 500)` {#pause}
 
-Hold the current frame for `duration` frames. Inert under standard Typst.
+Hold the current frame for `duration` milliseconds. Inert under standard Typst.
 
-#### `#play(body, duration: 30)` {#play}
+#### `#play(body, duration: 500)` {#play}
 
-Show `body` for `duration` frames as its own animation unit (block-level, controllable
+Show `body` for `duration` milliseconds as its own animation unit (block-level, controllable
 like a mobject). Under standard Typst the body is shown in the first frame.
 
 ```typst
@@ -247,7 +248,7 @@ These port concepts from Manim Community Edition. Each is inert under standard T
 Snapshot a mobject's current transform (x / y / scale / rotation / opacity) into a
 named slot. Mirrors `mobject.save_state()`.
 
-#### `#restore(target, slot: "default", duration: 30, easing: "linear")` {#restore}
+#### `#restore(target, slot: "default", duration: 500, easing: "linear")` {#restore}
 
 Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 
@@ -257,17 +258,17 @@ Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 ```
 
-#### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 24, easing: "smooth")` {#indicate}
+#### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth")` {#indicate}
 
 Briefly scale + shift a mobject, then return — a transient "look here" effect.
 Mirrors `Indicate`.
 
-#### `#flash(target, factor: 2.0, duration: 18, easing: "smooth")` {#flash}
+#### `#flash(target, factor: 2.0, duration: 200, easing: "smooth")` {#flash}
 
 Briefly scale up and fade toward transparent, then restore — a "flash" attention
 effect. Mirrors `Flash`.
 
-#### `#wiggle(target, degrees: 15.0, duration: 20, easing: "wiggle")` {#wiggle}
+#### `#wiggle(target, degrees: 15.0, duration: 500, easing: "wiggle")` {#wiggle}
 
 Oscillate rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
 
@@ -287,16 +288,16 @@ versions with structured mobjects will apply it. Mirrors `set_color`.
 #set_color("dot", color: "red", duration: 30, easing: "smooth")
 ```
 
-#### `#transition(kind: "cut", duration: 6)` {#transition}
+#### `#transition(kind: "cut", duration: 100)` {#transition}
 
 Mark a slide transition ("cut" between scenes). `kind`: `"cut"` (instant, default),
 `"fade"` (crossfade), `"slide"` (push). Only `"cut"` is fully implemented; the others
 are recorded for future versions. Inert under standard Typst.
 
-#### `#zoom-to(rect, duration: 30, easing: "smooth")` {#zoom-to}
+#### `#zoom-to(rect, duration: 500, easing: "smooth")` {#zoom-to}
 
 Zoom-to-region: enlarge a rectangle of the canvas to fill the frame over `duration`
-frames, producing a "camera zoom". `rect` is `(x, y, w, h)` in cm, relative to the
+milliseconds, producing a "camera zoom". `rect` is `(x, y, w, h)` in cm, relative to the
 page origin. Implemented as a scale + translate on all mobjects.
 
 ```typst
@@ -307,25 +308,25 @@ page origin. Implemented as a scale + translate on all mobjects.
 
 ### Composite animations
 
-#### `#blink(target, blinks: 3, duration: 30, easing: "linear")` {#blink}
+#### `#blink(target, blinks: 3, duration: 500, easing: "linear")` {#blink}
 
 Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
 
-#### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 24, easing: "smooth")` {#spiral-in}
+#### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth")` {#spiral-in}
 
 Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
 `SpiralIn`.
 
-#### `#focus-on(target, factor: 0.5, duration: 20, easing: "smooth")` {#focus-on}
+#### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")` {#focus-on}
 
 Shrink a "spotlight" onto the target (scale down + dim). Mirrors `FocusOn`.
 
-#### `#fade-transform(from, to, duration: 20, easing: "smooth")` {#fade-transform}
+#### `#fade-transform(from, to, duration: 300, easing: "smooth")` {#fade-transform}
 
 Crossfade two pre-registered mobjects: fade out `from` while fading in `to`. Mirrors
 `FadeTransform` (simple crossfade variant).
 
-#### `#move-along-path(target, path, duration: 30, easing: "linear")` {#move-along-path}
+#### `#move-along-path(target, path, duration: 500, easing: "linear")` {#move-along-path}
 
 Move `target` along a polyline through `path` (array of `(x, y)` points in cm,
 absolute). The scheduler generates a keyframe at each point, distributed across

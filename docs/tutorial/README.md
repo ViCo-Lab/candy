@@ -71,8 +71,8 @@ and Candy's pipeline expands them into per-frame Typst documents that are render
 #import "@preview/candy:0.1.0": *
 
 #mobject("dot", circle(radius: 1cm, fill: blue))
-#animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
-#pause(duration: 15)
+#animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+#pause(duration: 500)
 ```
 
 > **One file, two jobs.** Compiling a `.tyx` with `typst compile` renders the *first

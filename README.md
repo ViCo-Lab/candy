@@ -40,8 +40,8 @@ rendered and (optionally) encoded.
 #import "@preview/candy:0.1.0": *
 
 #mobject("dot", circle(radius: 1cm, fill: blue))
-#animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
-#pause(duration: 15)
+#animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
+#pause(duration: 500)
 #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
 ```
 

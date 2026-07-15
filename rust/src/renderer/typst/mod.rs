@@ -100,12 +100,100 @@ struct SpriteKey {
     ppi_q: u32,
 }
 
+/// A rasterized object sprite plus the pixel offset of its top-left within the
+/// full canvas page.
+///
+/// Each mobject is rasterized on a *full-page* document (so its position is
+/// correct), but the rendered frame is cropped to the object's tight bounding
+/// box before caching. Storing the crop instead of the full page is what keeps
+/// the `sprite_cache` bounded in memory: a small mobject becomes a KB-sized
+/// sprite rather than an MB-sized full-canvas RGBA. `ox`/`oy` (page pixels)
+/// let `render_frame_pixels_par` paste the crop back at the right place so the
+/// composited result is bit-identical to compositing the full page.
+struct CachedSprite {
+    frame: crate::renderer::RenderedFrame,
+    ox: i64,
+    oy: i64,
+}
+
+/// Crop `rgba` (a `w`×`h` RGBA buffer) to the tight bounding box of its
+/// non-transparent pixels. Returns the cropped buffer and the top-left offset
+/// (in pixels) of that box within the original buffer. A fully transparent
+/// buffer yields a 1×1 transparent sprite at offset (0,0).
+fn crop_to_content(rgba: &[u8], w: usize, h: usize) -> CachedSprite {
+    let mut min_x = w as i64;
+    let mut min_y = h as i64;
+    let mut max_x = -1i64;
+    let mut max_y = -1i64;
+    for y in 0..h as i64 {
+        let row = (y * w as i64) * 4;
+        for x in 0..w as i64 {
+            if rgba[(row + x * 4 + 3) as usize] > 0 {
+                if x < min_x {
+                    min_x = x;
+                }
+                if x > max_x {
+                    max_x = x;
+                }
+                if y < min_y {
+                    min_y = y;
+                }
+                if y > max_y {
+                    max_y = y;
+                }
+            }
+        }
+    }
+    if max_x < min_x {
+        return CachedSprite {
+            frame: crate::renderer::RenderedFrame {
+                width: 1,
+                height: 1,
+                rgba: vec![0u8; 4],
+            },
+            ox: 0,
+            oy: 0,
+        };
+    }
+    let cw = (max_x - min_x + 1) as usize;
+    let ch = (max_y - min_y + 1) as usize;
+    let mut out = vec![0u8; cw * ch * 4];
+    for y in 0..ch as i64 {
+        for x in 0..cw as i64 {
+            let si = (((min_y + y) * w as i64 + (min_x + x)) * 4) as usize;
+            let di = ((y * cw as i64 + x) * 4) as usize;
+            out[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+        }
+    }
+    CachedSprite {
+        frame: crate::renderer::RenderedFrame {
+            width: cw,
+            height: ch,
+            rgba: out,
+        },
+        ox: min_x,
+        oy: min_y,
+    }
+}
+
 /// Capacity of the per-frame compiled-document cache (`body_cache`). Bounded so
 /// an animated render cannot accumulate one `PagedDocument` per frame (that was
 /// the OOM). Static / paused objects keep a stable key and stay resident; the
 /// per-frame churn of moving objects is evicted.
-const BODY_CACHE_CAP: usize = 512;
+///
+/// NOTE: each cached `PagedDocument` is a *full-page* layout (the object is
+/// placed on a full-canvas page), so it can be several MB at HD/4K. The cap is
+/// kept deliberately modest — far below what a long HD render would churn
+/// through — so the body cache alone can never approach gigabytes even when
+/// every frame produces a distinct document.
+const BODY_CACHE_CAP: usize = 256;
 /// Capacity of the per-object rasterized-sprite cache (`sprite_cache`).
+///
+/// After cropping (see [`render_object_pixels`] / [`crop_to_content`]) each
+/// cached entry is only the object's tight bounding box (KB for a small
+/// mobject), so this cap can stay high: it bounds the *count* of cached
+/// sprites, not their pixel area. 512 cropped sprites is a few MB at most,
+/// versus 512 full-canvas frames which would be gigabytes at HD and OOM.
 const SPRITE_CACHE_CAP: usize = 512;
 
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
@@ -171,7 +259,7 @@ pub struct Renderer {
     /// unbounded `HashMap` would accumulate one sprite per frame and OOM. The
     /// LRU evicts that per-frame churn while keeping stable (paused) keys
     /// resident — see [`LruCache`].
-    sprite_cache: Mutex<LruCache<SpriteKey, Arc<crate::renderer::RenderedFrame>>>,
+    sprite_cache: Mutex<LruCache<SpriteKey, Arc<CachedSprite>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
 }
@@ -825,7 +913,7 @@ impl Renderer {
         page_w: f64,
         page_h: f64,
         pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+    ) -> Result<Arc<CachedSprite>, CandyError> {
         let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
@@ -852,7 +940,7 @@ impl Renderer {
             ppi_q: (pixel_per_pt * 100.0).round() as u32,
         };
         if let Some(cached) = self.sprite_cache.lock().unwrap().get(&key) {
-            return Ok((**cached).clone());
+            return Ok(cached.clone());
         }
         let placed = place_source(
             page_w,
@@ -874,16 +962,20 @@ impl Renderer {
             render_bleed: false,
         };
         let pix = render(page, &opts);
-        let frame = crate::renderer::RenderedFrame {
+        let full = crate::renderer::RenderedFrame {
             width: pix.width() as usize,
             height: pix.height() as usize,
             rgba: pix.data().to_vec(),
         };
-        self.sprite_cache
-            .lock()
-            .unwrap()
-            .insert(key, Arc::new(frame.clone()));
-        Ok(frame)
+        // Crop to the object's tight bounding box. This is the core HD/high-FPS
+        // OOM fix: without it the cache would hold full-canvas RGBA frames
+        // (~8MB at 1080p), and 512 of them alone would blow memory. The crop is
+        // only the object's ink (KB), and `ox`/`oy` let the compositor paste it
+        // back at the exact page position so output is bit-identical to
+        // compositing the full page.
+        let sprite = Arc::new(crop_to_content(&full.rgba, full.width, full.height));
+        self.sprite_cache.lock().unwrap().insert(key, sprite.clone());
+        Ok(sprite)
     }
     /// Stable paint index for each label, following source *declaration* order:
     /// scenes in order, each scene's `owns_labels` in declaration order. Used so
@@ -953,7 +1045,7 @@ impl Renderer {
         let mut labels: Vec<&Label> = states.keys().collect();
         let order = self.draw_order_index();
         labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
-        let mut objs: Vec<(f64, crate::renderer::RenderedFrame)> = Vec::new();
+        let mut objs: Vec<(f64, Arc<CachedSprite>)> = Vec::new();
         for label in &labels {
             // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
             // the active scene (`label_scene[label] == active`). This is what
@@ -982,13 +1074,13 @@ impl Renderer {
                 continue;
             }
             let st = states.get(*label).unwrap();
-            let frame = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
-            objs.push((st.opacity, frame));
+            let sprite = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
+            objs.push((st.opacity, sprite));
         }
         // Subtitle overlays are collected separately: they must be composited
         // AFTER the global camera warp so they stay pinned at a fixed page
         // position/size regardless of the current view (pan/zoom/rotate).
-        let mut subs: Vec<crate::renderer::RenderedFrame> = Vec::new();
+        let mut subs: Vec<CachedSprite> = Vec::new();
         for sub in &self.scene.subtitles {
             if self
                 .scene
@@ -1014,8 +1106,19 @@ impl Renderer {
         for chunk in canvas.chunks_mut(4) {
             chunk.copy_from_slice(&bg_rgba);
         }
-        for (opacity, f) in &objs {
-            composite_over(&mut canvas, f, *opacity, w, h);
+        for (opacity, sprite) in &objs {
+            // Paste the cropped sprite at its page-pixel offset so the result is
+            // identical to compositing the full page (but at a fraction of the
+            // memory: the sprite is only the object's ink, not the whole canvas).
+            composite_over_at(
+                &mut canvas,
+                &sprite.frame,
+                *opacity,
+                sprite.ox as f64,
+                sprite.oy as f64,
+                w,
+                h,
+            );
         }
         // Per-glyph transform overlays (Manim-style), composited directly into
         // the canvas so they are warped by the camera together with the other
@@ -1032,9 +1135,10 @@ impl Renderer {
             warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg_rgba);
         }
         // Overlay subtitles on top of the warped canvas, at their fixed
-        // page-anchored positions.
-        for f in &subs {
-            composite_over(&mut canvas, f, 1.0, w, h);
+        // page-anchored positions. They are cropped (offset stored), so paste
+        // at the offset to reproduce the full-page position.
+        for s in &subs {
+            composite_over_at(&mut canvas, &s.frame, 1.0, s.ox as f64, s.oy as f64, w, h);
         }
         Ok(crate::renderer::RenderedFrame {
             width: w,
@@ -1343,7 +1447,7 @@ impl Renderer {
         sub: &Subtitle,
         time_ms: u32,
         pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+    ) -> Result<CachedSprite, CandyError> {
         let doc = subtitle_doc(
             &self.state,
             &self.scene,
@@ -1361,11 +1465,17 @@ impl Renderer {
             render_bleed: false,
         };
         let pix = render(page, &opts);
-        Ok(crate::renderer::RenderedFrame {
+        let full = crate::renderer::RenderedFrame {
             width: pix.width() as usize,
             height: pix.height() as usize,
             rgba: pix.data().to_vec(),
-        })
+        };
+        // Crop to the subtitle's tight bounding box (the text is positioned
+        // inside a full page by `subtitle_place_expr`); the stored offset pastes
+        // it back at the exact page position. This keeps per-frame allocation to
+        // the text's ink instead of a full HD canvas, and the composite result
+        // is identical to pasting the full page at (0,0).
+        Ok(crop_to_content(&full.rgba, full.width, full.height))
     }
     /// Render a mobject body in isolation and return its largest outline shape
     /// (by absolute area) as a ring of points plus its paint. Returns `None` if
@@ -1495,6 +1605,34 @@ fn path_parser_includes_bezier_control_points() {
         (min_y - (-10.0)).abs() < 1e-6,
         "control point y=-10 must bound bbox, got {min_y}"
     );
+}
+/// Regression test for the HD/high-FPS OOM fix: `crop_to_content` must shrink a
+/// full-canvas RGBA frame that contains only a tiny opaque region down to a
+/// small bounding-box sprite. This is what keeps `sprite_cache` (cap 512) at KB
+/// instead of gigabytes — previously every cached sprite was the whole canvas.
+#[test]
+fn crop_to_content_shrinks_sparse_frame() {
+    let w = 1920;
+    let h = 1080;
+    let mut rgba = vec![0u8; w * h * 4]; // fully transparent
+    // Paint a 10×10 opaque red box near the top-left.
+    for y in 5..15 {
+        for x in 5..15 {
+            let o = (y * w + x) * 4;
+            rgba[o] = 255;
+            rgba[o + 3] = 255;
+        }
+    }
+    let sprite = crop_to_content(&rgba, w, h);
+    // Cropped sprite is ~10×10, orders of magnitude smaller than the canvas.
+    assert!(sprite.frame.width <= 12 && sprite.frame.height <= 12, "crop too large: {}x{}", sprite.frame.width, sprite.frame.height);
+    assert_eq!((sprite.ox, sprite.oy), (5, 5), "crop offset must be the bbox top-left");
+    // The opaque pixel is preserved at the right place in the crop.
+    let o = (0 * sprite.frame.width + 0) * 4;
+    assert_eq!((sprite.frame.rgba[o], sprite.frame.rgba[o + 3]), (255, 255));
+    // A fully transparent frame yields a 1×1 transparent sprite at (0,0).
+    let empty = crop_to_content(&vec![0u8; w * h * 4], w, h);
+    assert_eq!((empty.frame.width, empty.frame.height, empty.ox, empty.oy), (1, 1, 0, 0));
 }
 /// Verify the content timeline actually swaps an mobject's rendered body
 /// between frames (this is what makes `transform` show the OLD content before

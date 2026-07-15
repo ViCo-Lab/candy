@@ -96,6 +96,53 @@ pub struct EncodedVideo {
     pub keyframes: Vec<bool>,
 }
 
+/// A file-backed encoded video.
+///
+/// During a streaming encode every coded sample is written to `samples_path`
+/// (a temp file) as it is produced, and only the *small* per-sample metadata
+/// (size + keyframe flag) is kept in RAM. This keeps peak memory bounded to
+/// that metadata regardless of video length / resolution — a long HD/high-FPS
+/// render can no longer OOM on the coded stream (the old design accumulated
+/// every sample in `EncodedVideo::frames: Vec<Vec<u8>>` and then built the
+/// whole container in RAM).
+pub(crate) struct EncodedVideoFile {
+    /// Encoded width in pixels.
+    pub width: u32,
+    /// Encoded height in pixels.
+    pub height: u32,
+    /// Frames per second (time base).
+    pub fps: u32,
+    /// `true` for AV1, `false` for H.264.
+    pub is_av1: bool,
+    /// Codec-private config: `av1C` payload (AV1) or `avcC` (H.264).
+    pub codec_private: Vec<u8>,
+    /// Coded-sample byte sizes, parallel to `keyframes`.
+    pub sample_sizes: Vec<u32>,
+    /// Per-sample keyframe flags, parallel to `sample_sizes`.
+    pub keyframes: Vec<bool>,
+    /// Temp file holding every coded sample concatenated (no container headers).
+    pub samples_path: PathBuf,
+}
+
+/// Monotonic counter for unique temp-file names (avoids collisions when
+/// multiple candy processes run concurrently).
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Create a unique temp file for streaming coded samples, returning the open
+/// handle and its path. The caller appends samples and later either reads them
+/// back (`EncodedVideoFile`) or streams them into a container.
+pub(crate) fn new_samples_tempfile() -> Result<(std::fs::File, PathBuf), CandyError> {
+    let name = format!(
+        "candy_samples_{}_{}.bin",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    );
+    let path = std::env::temp_dir().join(name);
+    let f = std::fs::File::create(&path)
+        .map_err(|e| CandyError::Encode(format!("temp sample file: {e}")))?;
+    Ok((f, path))
+}
+
 /// Output container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Container {
@@ -266,20 +313,34 @@ impl StreamingVideo {
         Err(CandyError::Encode("streaming encoder not initialized".into()))
     }
 
-    /// Finish encoding and return the muxed container bytes (audio included).
-    pub(crate) fn finish(self) -> Result<Vec<u8>, CandyError> {
+    /// Finish encoding and write the muxed container directly to `output`
+    /// (audio included). The coded samples are streamed from their temp file
+    /// into the container, so peak memory stays bounded to the small per-sample
+    /// metadata — the whole container is never buffered in RAM (which would OOM
+    /// on a long HD/high-FPS render).
+    pub(crate) fn finish(self, output: &Path) -> Result<(), CandyError> {
         if let Some((child, stdin, tmp)) = self.ffmpeg {
             drop(stdin);
-            return crate::renderer::encode::ffmpeg::finish_ffmpeg(child, &tmp);
+            return crate::renderer::encode::ffmpeg::finish_ffmpeg_to_file(child, &tmp, output);
         }
         let video = if let Some(r) = self.rav1e {
-            r.finish()?
+            r.finish_file()?
         } else if let Some(h) = self.h264 {
-            h.finish()?
+            h.finish_file()?
         } else {
             return Err(CandyError::Encode("streaming encoder not initialized".into()));
         };
-        mux(&video, self.audio.as_ref(), self.container, &self.meta)
+        match self.container {
+            Container::Mp4 => {
+                container::mux_mp4_to_file(&video, self.audio.as_ref(), output, &self.meta)
+            }
+            Container::Mkv => {
+                container::mux_matroska_to_file(&video, self.audio.as_ref(), false, output, &self.meta)
+            }
+            Container::Webm => {
+                container::mux_matroska_to_file(&video, self.audio.as_ref(), true, output, &self.meta)
+            }
+        }
     }
 
     /// Finish encoding and return the raw [`EncodedVideo`] (no mux, no audio).

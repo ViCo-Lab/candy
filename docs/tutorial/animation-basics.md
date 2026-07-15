@@ -8,14 +8,15 @@ works, and the `#pause` / `#play` helpers.
 - Candy keeps an internal **millisecond** timeline. The `--fps` CLI flag only sets the
   *output* frame rate; a 1000 ms slide at 30 fps yields ~30 frames, at 60 fps ~60 frames
   — the wall-clock duration is unchanged.
-- `#animate` / `#pause` / `#play` durations are expressed in **frames** in the DSL, but
-  the scheduler converts the timeline to milliseconds. In practice, think of `duration:`
-  as "how long the action lasts" — at 30 fps, `duration: 30` ≈ 1 second.
-- `#subtitle` and `#ecounter` lifetimes are expressed in **milliseconds** directly.
+- `#animate` / `#pause` / `#play` / `#transform` / … `duration:` arguments are expressed
+  directly in **milliseconds** (default `500`). There is no frame-based timing — the
+  scheduler works entirely in ms, and only the final rasterization samples that timeline
+  at `--fps`.
+- `#subtitle` and `#ecounter` lifetimes are likewise expressed in **milliseconds** directly.
 
 ## `#animate` — transforms
 
-`#animate(target, …)` animates `target` over `duration` frames (default `30`). It
+`#animate(target, …)` animates `target` over `duration` milliseconds (default `500`). It
 supports absolute and relative transforms in any combination; each produces a parallel
 action.
 
@@ -28,7 +29,7 @@ action.
 | `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
 | `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
 | `opacity:` | target opacity in `[0, 1]` |
-| `duration:` | frames spanned (default `30`) |
+| `duration:` | length of the animation in **milliseconds** (default `500`) |
 | `easing:` | rate curve (default `"linear"`; see [Reference · Easing](../reference/easing.md)) |
 
 ```typst
@@ -39,12 +40,12 @@ action.
 
 ## `#pause` — hold a frame
 
-`#pause(duration: 15)` holds the current frame for `duration` frames. Inert under
+`#pause(duration: 500)` holds the current frame for `duration` milliseconds. Inert under
 standard Typst.
 
 ## `#play` — a block-level animation unit
 
-`#play(body, duration: 30)` shows `body` for `duration` frames as its own animation
+`#play(body, duration: 500)` shows `body` for `duration` milliseconds as its own animation
 unit (block-level, controllable like a mobject). Under standard Typst the body is shown
 in the first frame.
 

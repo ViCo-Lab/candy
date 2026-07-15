@@ -9,6 +9,8 @@
 use crate::core::diag::CandyError;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
+use std::fs::File;
+use std::io::Write;
 
 /// Stateful, frame-by-frame H.264 encoder.
 ///
@@ -18,6 +20,10 @@ use crate::renderer::RenderedFrame;
 /// holding every RGBA frame in memory at once: each `push` consumes exactly one
 /// frame and produces a small length-prefixed NAL sample, so peak memory is
 /// bounded by the coded stream rather than `N × width × height × 4` RGBA.
+///
+/// The coded samples are written to a temp file as they are produced (see
+/// `finish_file`); only the small per-sample metadata stays in RAM, so a long
+/// HD/high-FPS render cannot OOM on the coded stream.
 pub(crate) struct H264Stream {
     encoder: openh264::encoder::Encoder,
     w: usize,
@@ -25,7 +31,12 @@ pub(crate) struct H264Stream {
     fps: u32,
     sps: Option<Vec<u8>>,
     pps: Option<Vec<u8>>,
-    samples: Vec<Vec<u8>>,
+    /// Temp file holding each coded sample (length-prefixed NALs) concatenated.
+    samples_file: File,
+    /// Path of `samples_file` (so the muxer can stream it back).
+    samples_path: std::path::PathBuf,
+    /// Per-sample byte size, parallel to `keyframes`.
+    sample_sizes: Vec<u32>,
     keyframes: Vec<bool>,
 }
 
@@ -61,6 +72,9 @@ impl H264Stream {
         )
         .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
 
+        let (samples_file, samples_path) =
+            crate::renderer::encode::video::new_samples_tempfile()?;
+
         Ok(Self {
             encoder,
             w,
@@ -68,7 +82,9 @@ impl H264Stream {
             fps,
             sps: None,
             pps: None,
-            samples: Vec::new(),
+            samples_file,
+            samples_path,
+            sample_sizes: Vec::new(),
             keyframes: Vec::new(),
         })
     }
@@ -110,16 +126,23 @@ impl H264Stream {
                 sample.extend_from_slice(payload);
             }
         }
-        self.samples.push(sample);
+        self.samples_file
+            .write_all(&sample)
+            .map_err(|e| CandyError::Encode(format!("sample write: {e}")))?;
+        self.sample_sizes.push(sample.len() as u32);
         self.keyframes.push(is_idr);
         Ok(())
     }
 
-    /// Finish encoding and assemble the [`EncodedVideo`].
-    pub(crate) fn finish(mut self) -> Result<EncodedVideo, CandyError> {
+    /// Finish encoding and return the file-backed [`EncodedVideoFile`] (the coded
+    /// samples stay in their temp file; only metadata is returned). The caller
+    /// (the streaming muxer) streams the file into the container, so nothing is
+    /// ever buffered in RAM.
+    pub(crate) fn finish_file(self) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
         let (sps, pps) = match (self.sps, self.pps) {
             (Some(s), Some(p)) => (s, p),
             _ => {
+                let _ = std::fs::remove_file(&self.samples_path);
                 return Err(CandyError::Encode(
                     "openh264 did not emit SPS/PPS (E007)".into(),
                 ));
@@ -128,18 +151,46 @@ impl H264Stream {
 
         // The first sample must always be seekable (IDR). If the encoder somehow
         // left it unmarked, force it so the stream has a valid decode entry point.
-        if self.keyframes.first() == Some(&false) {
-            self.keyframes[0] = true;
+        let mut keyframes = self.keyframes;
+        if keyframes.first() == Some(&false) {
+            keyframes[0] = true;
         }
 
-        Ok(EncodedVideo {
+        Ok(crate::renderer::encode::video::EncodedVideoFile {
             width: self.w as u32,
             height: self.h as u32,
             fps: self.fps,
             is_av1: false,
-            frames: self.samples,
             codec_private: build_avcc(&sps, &pps),
-            keyframes: self.keyframes,
+            sample_sizes: self.sample_sizes,
+            keyframes,
+            samples_path: self.samples_path,
+        })
+    }
+
+    /// Finish encoding and assemble the in-memory [`EncodedVideo`] (reads the
+    /// temp sample file back). Used by the batch `encode_frames` path and tests,
+    /// which already hold every frame in RAM anyway.
+    pub(crate) fn finish(self) -> Result<EncodedVideo, CandyError> {
+        let file = self.finish_file()?;
+        let bytes = std::fs::read(&file.samples_path)
+            .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+        let _ = std::fs::remove_file(&file.samples_path);
+        let mut frames = Vec::with_capacity(file.sample_sizes.len());
+        let mut off = 0usize;
+        for &sz in &file.sample_sizes {
+            let sz = sz as usize;
+            frames.push(bytes[off..off + sz].to_vec());
+            off += sz;
+        }
+        Ok(EncodedVideo {
+            width: file.width,
+            height: file.height,
+            fps: file.fps,
+            is_av1: file.is_av1,
+            frames,
+            codec_private: file.codec_private,
+            keyframes: file.keyframes,
         })
     }
 }

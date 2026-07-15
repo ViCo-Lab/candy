@@ -10,6 +10,9 @@ use crate::core::diag::{CandyWarn, CandyError};
 use crate::warn;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 
 #[cfg(feature = "video")]
 use rav1e::prelude::*;
@@ -77,7 +80,12 @@ pub(crate) struct Rav1eStream {
     h: usize,
     fps: u32,
     seq_header: Option<Vec<u8>>,
-    frames_out: Vec<Vec<u8>>,
+    /// Temp file holding each coded temporal unit concatenated.
+    samples_file: File,
+    /// Path of `samples_file` (so the muxer can stream it back).
+    samples_path: PathBuf,
+    /// Per-sample byte size, parallel to `keyframes`.
+    sample_sizes: Vec<u32>,
     keyframes: Vec<bool>,
 }
 
@@ -116,13 +124,18 @@ impl Rav1eStream {
             .new_context()
             .map_err(|e| CandyError::Encode(format!("invalid rav1e config: {:?}", e)))?;
 
+        let (samples_file, samples_path) =
+            crate::renderer::encode::video::new_samples_tempfile()?;
+
         Ok(Self {
             ctx,
             w,
             h,
             fps,
             seq_header: None,
-            frames_out: Vec::new(),
+            samples_file,
+            samples_path,
+            sample_sizes: Vec::new(),
             keyframes: Vec::new(),
         })
     }
@@ -137,29 +150,37 @@ impl Rav1eStream {
             .map_err(|e| CandyError::Encode(format!("rav1e send_frame failed: {:?}", e)))?;
 
         while let Ok(packet) = self.ctx.receive_packet() {
-            self.capture(&packet.data, packet.frame_type == FrameType::KEY);
+            self.capture(&packet.data, packet.frame_type == FrameType::KEY)?;
         }
         Ok(())
     }
 
-    fn capture(&mut self, data: &[u8], is_key: bool) {
+    fn capture(&mut self, data: &[u8], is_key: bool) -> Result<(), CandyError> {
         if self.seq_header.is_none() {
             if let Some(sh) = first_obu_of_type(data, 1) {
                 self.seq_header = Some(sh);
             }
         }
-        self.frames_out.push(data.to_vec());
+        self.samples_file
+            .write_all(data)
+            .map_err(|e| CandyError::Encode(format!("sample write: {e}")))?;
+        self.sample_sizes.push(data.len() as u32);
         self.keyframes.push(is_key);
+        Ok(())
     }
 
-    /// Finish encoding, flush the encoder, and assemble the [`EncodedVideo`].
-    pub(crate) fn finish(mut self) -> Result<EncodedVideo, CandyError> {
-        self.ctx.flush();
-        while let Ok(packet) = self.ctx.receive_packet() {
-            self.capture(&packet.data, packet.frame_type == FrameType::KEY);
+    /// Finish encoding, flush the encoder, and return the file-backed
+    /// [`EncodedVideoFile`] (the coded samples stay in their temp file; only
+    /// metadata is returned). The streaming muxer streams the file into the
+    /// container, so nothing is ever buffered in RAM.
+    pub(crate) fn finish_file(self) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
+        let mut this = self;
+        this.ctx.flush();
+        while let Ok(packet) = this.ctx.receive_packet() {
+            this.capture(&packet.data, packet.frame_type == FrameType::KEY)?;
         }
 
-        let codec_private = match self.seq_header {
+        let codec_private = match this.seq_header {
             Some(sh) => {
                 let mut p = vec![0x81u8, 0x01];
                 p.extend_from_slice(&sh);
@@ -170,18 +191,46 @@ impl Rav1eStream {
 
         // The first sample must always be seekable (a key frame). If the encoder
         // left it unmarked, force it so the stream has a valid decode entry point.
-        if self.keyframes.first() == Some(&false) {
-            self.keyframes[0] = true;
+        let mut keyframes = this.keyframes;
+        if keyframes.first() == Some(&false) {
+            keyframes[0] = true;
         }
 
-        Ok(EncodedVideo {
-            width: self.w as u32,
-            height: self.h as u32,
-            fps: self.fps,
+        Ok(crate::renderer::encode::video::EncodedVideoFile {
+            width: this.w as u32,
+            height: this.h as u32,
+            fps: this.fps,
             is_av1: true,
-            frames: self.frames_out,
             codec_private,
-            keyframes: self.keyframes,
+            sample_sizes: this.sample_sizes,
+            keyframes,
+            samples_path: this.samples_path,
+        })
+    }
+
+    /// Finish encoding and assemble the in-memory [`EncodedVideo`] (reads the
+    /// temp sample file back). Used by the batch `encode_frames` path and tests,
+    /// which already hold every frame in RAM anyway.
+    pub(crate) fn finish(self) -> Result<EncodedVideo, CandyError> {
+        let file = self.finish_file()?;
+        let bytes = std::fs::read(&file.samples_path)
+            .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+        let _ = std::fs::remove_file(&file.samples_path);
+        let mut frames = Vec::with_capacity(file.sample_sizes.len());
+        let mut off = 0usize;
+        for &sz in &file.sample_sizes {
+            let sz = sz as usize;
+            frames.push(bytes[off..off + sz].to_vec());
+            off += sz;
+        }
+        Ok(EncodedVideo {
+            width: file.width,
+            height: file.height,
+            fps: file.fps,
+            is_av1: file.is_av1,
+            frames,
+            codec_private: file.codec_private,
+            keyframes: file.keyframes,
         })
     }
 }

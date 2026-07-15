@@ -95,11 +95,11 @@ also be written flat as `(t, x, y, scale, opacity, rotation)`.
 
 ## `#zoom-to` / `#transition`
 
-`#zoom-to(rect, duration: 30, easing: "smooth")` zooms a rectangle of the canvas
+`#zoom-to(rect, duration: 500, easing: "smooth")` zooms a rectangle of the canvas
 (`(x, y, w, h)` in cm, relative to the page origin) to fill the frame over `duration`
-frames — a "camera zoom" implemented as a scale + translate on all mobjects.
+milliseconds — a "camera zoom" implemented as a scale + translate on all mobjects.
 
-`#transition(kind: "cut", duration: 6)` marks a slide transition (`"cut"` between
+`#transition(kind: "cut", duration: 100)` marks a slide transition (`"cut"` between
 scenes). `kind`: `"cut"` (instant, default), `"fade"` (crossfade), `"slide"` (push). Only
 `"cut"` is fully implemented; the others are recorded for future versions.
 

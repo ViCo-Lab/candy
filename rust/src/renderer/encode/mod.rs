@@ -17,3 +17,5 @@ pub use video::{
     Codec, Container, EncodedVideo, collect_audio, encode_frames, mux, write_gif, write_png,
     write_rgba_draft,
 };
+#[allow(unused_imports)]
+pub(crate) use video::EncodedVideoFile;
