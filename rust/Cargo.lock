@@ -352,6 +352,7 @@ dependencies = [
  "ab_glyph",
  "clap",
  "colored",
+ "comemo",
  "earcutr",
  "gif 0.13.3",
  "keyframe",

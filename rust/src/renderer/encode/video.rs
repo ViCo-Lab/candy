@@ -155,10 +155,16 @@ pub enum Container {
 /// pixels to the top-left. Returns a fresh `RenderedFrame`.
 fn compose(frame: &RenderedFrame, tw: usize, th: usize) -> RenderedFrame {
     let mut rgba = vec![255u8; tw * th * 4];
-    for y in 0..frame.height.min(th) {
+    // Clamp to the target canvas: a frame wider/taller than `tw`/`th` (e.g. an
+    // object moved past the page edge, or a mismatched page size) must not
+    // overrun `rgba`. The uniform canvas is the max page size, so clipping is
+    // safe and only trims overflow that would otherwise panic on copy.
+    let cw = frame.width.min(tw);
+    let ch = frame.height.min(th);
+    for y in 0..ch {
         let src = y * frame.width * 4;
         let dst = y * tw * 4;
-        rgba[dst..dst + frame.width * 4].copy_from_slice(&frame.rgba[src..src + frame.width * 4]);
+        rgba[dst..dst + cw * 4].copy_from_slice(&frame.rgba[src..src + cw * 4]);
     }
     RenderedFrame {
         width: tw,

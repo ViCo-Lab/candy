@@ -558,10 +558,12 @@ pub struct ParseArtifacts {
     /// `body` argument expression, keyed by label. Used to splice the
     /// per-frame wrapped body back into `source`.
     pub mobject_body: HashMap<Label, (usize, usize)>,
-    /// Source range `(start, end)` of each explicit `#scene(...)` call's body,
-    /// keyed by scene id. Used to `#hide[…]` non-active scenes so scene
-    /// auto-hide stays faithful in the whole-document recompile.
-    pub scene_body: HashMap<usize, (usize, usize)>,
+    /// Source range `(start, end)` of each explicit `#scene(...)` call — the
+    /// *entire* `FuncCall` (not just its body), keyed by scene id. Used to gate
+    /// scenes with `sys.inputs.at("candy:active_scene")` so the whole-document
+    /// recompile emits exactly one page per frame (the active scene), keeping
+    /// memory bounded and the `body_cache` hit rate high.
+    pub scene_call: HashMap<usize, (usize, usize)>,
 }
 
 impl Scene {

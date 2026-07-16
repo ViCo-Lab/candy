@@ -8,8 +8,8 @@
 //! specific `main` source over the shared state.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use typst::{Library, LibraryExt, World};
 use typst_kit::datetime::Time;
@@ -19,7 +19,7 @@ use typst_kit::files::{FileStore, FsRoot, SystemFiles};
 use typst_kit::fonts::FontStore;
 use typst_kit::packages::SystemPackages;
 use typst_library::diag::FileError;
-use typst_library::foundations::{Bytes, Datetime, Duration};
+use typst_library::foundations::{Bytes, Datetime, Dict, Duration};
 use typst_library::text::Font;
 use typst_syntax::{FileId, Source as TypstSource, VirtualRoot};
 use typst_utils::LazyHash;
@@ -31,6 +31,15 @@ use crate::renderer::typst::lru::LruCache;
 /// paused object bodies keep a stable key and stay resident; per-frame churn is
 /// evicted.
 const SOURCE_CACHE_CAP: usize = 1024;
+
+/// Capacity of the per-inputs `Library` cache. `sys.inputs` is supplied to
+/// Typst through `Library::with_inputs`, so a distinct `Library` is needed per
+/// distinct inputs set. Rebuilding the whole standard library every frame is
+/// expensive, so we memoize built libraries keyed by their inputs. The cache is
+/// small: static / paused frames share one inputs set, animated frames churn,
+/// and at steady state only a handful of libraries are resident (each is an
+/// `Arc` to the std library, so eviction just drops the reference).
+const LIB_CACHE_CAP: usize = 1;
 
 #[cfg(feature = "system-downloader")]
 use ureq::Agent;
@@ -106,9 +115,15 @@ impl Downloader for RustlsDownloader {
 /// `datetime.today()` is stable across every frame of a single render (just
 /// like the CLI fixes the time per compilation).
 pub(crate) struct WorldState {
-    library: LazyHash<Library>,
     fonts: FontStore,
     files: FileStore<SystemFiles>,
+    /// Local path to the `@preview/candy` Typst package source (`typst/`), used
+    /// to resolve the package *in-process* when building from source / running
+    /// tests (so the whole-document native-Typst path can compile real `.tyx`
+    /// inputs without a pre-cached Universe package). `None` when the repo's
+    /// `typst/` directory is not present (e.g. an installed binary), in which
+    /// case `@preview/candy` falls back to the normal package cache.
+    candy_local: Option<PathBuf>,
     now: Time,
     /// Guards the "time-dependent render is not reproducible" warning so it is
     /// printed at most once per renderer, not once per compiled frame.
@@ -127,6 +142,14 @@ pub(crate) struct WorldState {
     /// The LRU evicts that churn while keeping static bodies resident — see
     /// [`LruCache`].
     source_cache: Mutex<LruCache<String, TypstSource>>,
+    /// Per-inputs `Library` cache. `sys.inputs` is threaded into Typst via
+    /// `Library::with_inputs`, so each distinct inputs dictionary needs its own
+    /// `Library`. We memoize the built `Library` (an `Arc` to the std library)
+    /// keyed by a deterministic serialization of the inputs, so frames that
+    /// share an inputs set reuse the same `Library` (and thus comemo's memoized
+    /// compiles) instead of rebuilding the standard library every frame.
+    /// Bounded LRU — see [`LruCache`].
+    library_cache: Mutex<LruCache<String, LazyHash<Library>>>,
 }
 
 impl WorldState {
@@ -148,8 +171,6 @@ impl WorldState {
     ///   `system-downloader` feature is enabled)
     /// - the current system time, captured once for `datetime.today()`
     pub(crate) fn new(project_root: PathBuf) -> Self {
-        let library = LazyHash::new(Library::builder().build());
-
         let mut fonts = FontStore::new();
         fonts.extend(typst_kit::fonts::embedded());
         fonts.extend(typst_kit::fonts::system());
@@ -165,13 +186,22 @@ impl WorldState {
         let root = FsRoot::new(project_root);
         let files = FileStore::new(SystemFiles::new(root, packages));
 
+        // Locate the local `@preview/candy` package source (repo `typst/`).
+        // `CARGO_MANIFEST_DIR` is the crate dir (`rust/`), so `../typst` is the
+        // package root. Only used when it actually exists on disk.
+        let candy_local = {
+            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../typst");
+            p.exists().then_some(p)
+        };
+
         Self {
-            library,
             fonts,
             files,
+            candy_local,
             now: Time::system(),
             time_warned: AtomicBool::new(false),
             source_cache: Mutex::new(LruCache::with_capacity(SOURCE_CACHE_CAP)),
+            library_cache: Mutex::new(LruCache::with_capacity(LIB_CACHE_CAP)),
         }
     }
 
@@ -196,6 +226,39 @@ impl WorldState {
         parsed
     }
 
+    /// Build (or fetch from cache) the standard `Library` with the given
+    /// `sys.inputs`. Typst 0.15 exposes `sys.inputs` through the `Library`
+    /// (via `Library::builder().with_inputs(..)`), not through the `World`
+    /// trait, so the per-frame inputs must be baked into the `Library` here.
+    ///
+    /// Rebuilding the whole standard library on every frame is expensive, so we
+    /// memoize built libraries keyed by a deterministic serialization of the
+    /// inputs. Frames that share an inputs set (static / paused content, or a
+    /// repeated state) reuse the same `Arc`-backed `Library` — and because
+    /// `Library` is content-hashed, comemo then also reuses its memoized
+    /// compiles for those frames.
+    pub(crate) fn library_with_inputs(&self, inputs: &Dict) -> LazyHash<Library> {
+        let key = inputs_cache_key(inputs);
+        if let Some(lib) = self.library_cache.lock().unwrap().get(&key) {
+            return lib.clone();
+        }
+        let lib = LazyHash::new(Library::builder().with_inputs(inputs.clone()).build());
+        self.library_cache.lock().unwrap().insert(key, lib.clone());
+        lib
+    }
+}
+
+/// Deterministic serialization of a `sys.inputs` dictionary, used as the key
+/// for [`WorldState::library_cache`] and to decide whether two frames share the
+/// same `Library`. Iteration order of a `Dict` is stable, so this is a faithful
+/// key.
+fn inputs_cache_key(inputs: &Dict) -> String {
+    let mut k = String::with_capacity(inputs.len() * 16);
+    for (key, val) in inputs.iter() {
+        use std::fmt::Write;
+        let _ = write!(k, "{key}={val:?};");
+    }
+    k
 }
 
 /// A per-compile `World` view that borrows the shared [`WorldState`] and
@@ -203,6 +266,14 @@ impl WorldState {
 pub(crate) struct CandyWorld<'a> {
     pub(crate) state: &'a WorldState,
     pub(crate) main: TypstSource,
+    /// The standard `Library` with this frame's `sys.inputs` baked in. Typst
+    /// 0.15 exposes `sys.inputs` through the `Library` (not the `World` trait),
+    /// so the whole-document native-Typst path drives every animation parameter
+    /// (per-mobject `dx/dy/scale/rotation/opacity`, the active scene) through
+    /// `sys.inputs` instead of re-splicing the source each frame — the compiled
+    /// source stays byte-stable (the `source_cache` / `body_cache` hit every
+    /// frame) while the rendered document still changes per frame.
+    library: LazyHash<Library>,
     /// Set to `true` the first time [`today`](World::today) is queried during
     /// this compile. When set, the compiled body depends on the wall-clock
     /// time (`datetime.today()`), so the render is *not* reproducible — the
@@ -212,11 +283,15 @@ pub(crate) struct CandyWorld<'a> {
 
 impl<'a> CandyWorld<'a> {
     /// Construct a per-compile view over the shared state with a fixed `main`
-    /// source. The time-usage flag starts cleared.
-    pub(crate) fn new(state: &'a WorldState, main: TypstSource) -> Self {
+    /// source and the per-frame `inputs`. The `Library` is (re)built with those
+    /// inputs (memoized in [`WorldState::library_with_inputs`]). The time-usage
+    /// flag starts cleared.
+    pub(crate) fn new(state: &'a WorldState, main: TypstSource, inputs: Dict) -> Self {
+        let library = state.library_with_inputs(&inputs);
         Self {
             state,
             main,
+            library,
             time_used: AtomicBool::new(false),
         }
     }
@@ -231,7 +306,7 @@ impl<'a> CandyWorld<'a> {
 
 impl<'a> World for CandyWorld<'a> {
     fn library(&self) -> &LazyHash<Library> {
-        &self.state.library
+        &self.library
     }
 
     fn book(&self) -> &LazyHash<typst_library::text::FontBook> {
@@ -246,6 +321,21 @@ impl<'a> World for CandyWorld<'a> {
         if id == self.main.id() {
             return Ok(self.main.clone());
         }
+        // Serve the local `@preview/candy` package source (source builds /
+        // tests) so the whole-document native-Typst path can compile real
+        // `.tyx` inputs that `#import "candy": *` without a pre-cached Universe
+        // package. Package-relative imports inside the package resolve correctly
+        // because `id.vpath()` is rooted at the package directory.
+        if let VirtualRoot::Package(pkg) = id.root() {
+            if pkg.name == "candy" {
+                if let Some(root) = &self.state.candy_local {
+                    let p = root.join(id.vpath().get_without_slash());
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        return Ok(TypstSource::new(id, text));
+                    }
+                }
+            }
+        }
         // Delegate to the file store — this resolves local imports via FsRoot
         // and package imports via SystemPackages. The store caches, so
         // repeated imports of the same file are cheap.
@@ -253,6 +343,16 @@ impl<'a> World for CandyWorld<'a> {
     }
 
     fn file(&self, id: FileId) -> Result<Bytes, FileError> {
+        if let VirtualRoot::Package(pkg) = id.root() {
+            if pkg.name == "candy" {
+                if let Some(root) = &self.state.candy_local {
+                    let p = root.join(id.vpath().get_without_slash());
+                    if let Ok(bytes) = std::fs::read(&p) {
+                        return Ok(Bytes::new(bytes));
+                    }
+                }
+            }
+        }
         self.state.files.file(id)
     }
 

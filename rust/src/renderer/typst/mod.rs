@@ -58,7 +58,6 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-#[cfg(test)]
 use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
@@ -72,7 +71,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use typst_layout::PagedDocument;
-use typst_library::foundations::Smart;
+use typst_library::foundations::{Dict, Smart, Value};
 use typst_library::visualize::Paint;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
@@ -181,12 +180,15 @@ fn crop_to_content(rgba: &[u8], w: usize, h: usize) -> CachedSprite {
 /// the OOM). Static / paused objects keep a stable key and stay resident; the
 /// per-frame churn of moving objects is evicted.
 ///
-/// NOTE: each cached `PagedDocument` is a *full-page* layout (the object is
-/// placed on a full-canvas page), so it can be several MB at HD/4K. The cap is
-/// kept deliberately modest — far below what a long HD render would churn
-/// through — so the body cache alone can never approach gigabytes even when
-/// every frame produces a distinct document.
-const BODY_CACHE_CAP: usize = 256;
+/// With the whole-document native-Typst path each cached entry is one full-page
+/// `PagedDocument` (the entire scene typeset by Typst), which is a few MB at
+/// HD/4K — far smaller than the old design that parked *N* full-canvas
+/// per-object documents per frame. The cap is kept deliberately small so the
+/// body cache alone can never approach a gigabyte even when every frame
+/// produces a distinct document. Peak memory is therefore `BODY_CACHE_CAP`
+/// documents + `jobs` in-flight RGBA frames + the (small, cropped) sprite
+/// cache — independent of the total frame count `N`.
+const BODY_CACHE_CAP: usize = 16;
 /// Capacity of the per-object rasterized-sprite cache (`sprite_cache`).
 ///
 /// After cropping (see [`render_object_pixels`] / [`crop_to_content`]) each
@@ -262,6 +264,16 @@ pub struct Renderer {
     sprite_cache: Mutex<LruCache<SpriteKey, Arc<CachedSprite>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
+    /// The stable, *parameterized* whole-document source used by the native
+    /// Typst render path. Built once (in [`Renderer::with_root`]) from the
+    /// parsed artifacts: every animatable mobject body is wrapped in a
+    /// `sys.inputs.at("candy:<label>:…")` reader and every `#scene` call is
+    /// gated by `sys.inputs.at("candy:active_scene")`. Because this string
+    /// never changes across frames, the `source_cache` (parse) and
+    /// `body_cache` (compile) hit on every frame — only the per-frame `inputs`
+    /// dictionary varies, and that is supplied to the World without touching
+    /// the source. `String::is_empty()` ⇒ no artifacts ⇒ legacy path.
+    param_source: String,
 }
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
@@ -275,6 +287,14 @@ impl Renderer {
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
         scene.validate().map_err(CandyError::Parse)?;
+        // Build the stable parameterized whole-document source once (only when
+        // the parsed `.tyx` carries render artifacts; legacy hand-built scenes
+        // leave it empty and use the per-object path).
+        let param_source = if scene.artifacts.source.is_empty() {
+            String::new()
+        } else {
+            Self::build_parameterized_source(&scene.artifacts)
+        };
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -290,12 +310,13 @@ impl Renderer {
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
             sprite_cache: Mutex::new(LruCache::with_capacity(SPRITE_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
+            param_source,
         })
     }
     /// Compile a Typst source string into a single-page document.
-    fn compile(&self, src: &str) -> Result<PagedDocument, CandyError> {
+    fn compile(&self, src: &str, inputs: &Dict) -> Result<PagedDocument, CandyError> {
         let source = self.state.detached_cached(src);
-        let world = CandyWorld::new(&self.state, source);
+        let world = CandyWorld::new(&self.state, source, inputs.clone());
         // Typst can *panic* (rather than return a diagnostic) on certain
         // malformed input — especially in release builds, where such a panic
         // would otherwise abort the process with no diagnostic. Catch it and
@@ -312,6 +333,9 @@ impl Renderer {
                     } else {
                         "typst panicked during compilation".to_string()
                     };
+                    // A panic may have left partial comemo entries; clear them so
+                    // the next compile starts clean.
+                    comemo::evict(0);
                     return Err(CandyError::Typst(format!("typst panicked: {msg}")));
                 }
             };
@@ -320,28 +344,56 @@ impl Renderer {
         if world.used_time() && self.state.note_time_used() {
             warn!(CandyWarn::TimeDependent);
         }
+        // Drop comemo's memoized results for this `World`. The whole-document
+        // path varies the `World` per frame (different `sys.inputs` ⇒ a
+        // different `Library`), so without eviction comemo would accumulate one
+        // compiled document per distinct inputs set and OOM on long animations.
+        // Our own LRU `body_cache` already retains the documents we need, so
+        // clearing comemo here only frees the transient per-frame sub-computations.
+//comemo::evict(0);
         warned.output.map_err(Into::into)
     }
     /// Compile a Typst source, memoized by the exact source string.
     ///
     /// This is the unified compile entry point for every object render path
     /// (`render_object_svg`, `render_object_pixels`, `render_frame`). It is
-    /// behavior-preserving: identical source → identical document. The win is
-    /// that frames sharing a source (static / paused objects, or a counter
-    /// value that repeats) skip a redundant Typst compile. Bodies that change
-    /// per frame — morph polygons, `ecval` counter text, `transform` content
-    /// swaps — naturally produce a different source each time and recompile,
-    /// exactly as before.
-    fn compile_cached(&self, src: &str) -> Result<Arc<PagedDocument>, CandyError> {
-        if let Some(doc) = self.body_cache.lock().unwrap().get(src) {
+    /// behavior-preserving: identical `(source, inputs)` → identical document.
+    /// The win is that frames sharing a source (static / paused objects, or a
+    /// counter value that repeats) skip a redundant Typst compile. Bodies that
+    /// change per frame — morph polygons, `ecval` counter text, `transform`
+    /// content swaps — naturally produce a different source each time and
+    /// recompile, exactly as before.
+    ///
+    /// `inputs` are the per-frame `sys.inputs` values (empty for object /
+    /// background compiles that don't consult them). They are folded into the
+    /// cache key so two frames with the same source but different inputs map to
+    /// distinct compiled documents.
+    fn compile_cached(&self, src: &str, inputs: &Dict) -> Result<Arc<PagedDocument>, CandyError> {
+        let key = Self::cache_key(src, inputs);
+        if let Some(doc) = self.body_cache.lock().unwrap().get(&key) {
             return Ok(doc.clone());
         }
-        let doc = Arc::new(self.compile(src)?);
-        self.body_cache
-            .lock()
-            .unwrap()
-            .insert(src.to_string(), doc.clone());
+        let doc = Arc::new(self.compile(src, inputs)?);
+        self.body_cache.lock().unwrap().insert(key, doc.clone());
         Ok(doc)
+    }
+    /// Build a stable cache key from a source string and its `inputs` dict.
+    /// When `inputs` is empty the key is just the source (the common
+    /// object / background compile case); otherwise the inputs are appended in
+    /// a deterministic `(key=value;)*` form so equal `(source, inputs)` pairs
+    /// always collide to the same key.
+    fn cache_key(src: &str, inputs: &Dict) -> String {
+        if inputs.is_empty() {
+            return src.to_string();
+        }
+        let mut k = String::with_capacity(src.len() + 64);
+        k.push_str(src);
+        k.push('\0');
+        for (key, val) in inputs.iter() {
+            use std::fmt::Write;
+            let _ = write!(k, "{key}={val:?};");
+        }
+        k
     }
     /// The uniform output canvas size (pixels) every frame is composited onto:
     /// the largest scene page (or the document page when there are no scenes)
@@ -394,7 +446,7 @@ impl Renderer {
         // must propagate as `E006`. Only a *successful* compile whose fill is not
         // a solid colour legitimately falls back to opaque white.
         let resolved = self
-            .compile(&src)?
+            .compile(&src, &Dict::new())?
             .pages()
             .first()
             .and_then(|p| match &p.fill {
@@ -748,7 +800,7 @@ impl Renderer {
                 "{preamble}\n#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
                  {blocks}\n"
             );
-            let doc = match self.compile(&src) {
+            let doc = match self.compile(&src, &Dict::new()) {
                 Ok(d) => d,
                 // A scene whose blocks fail to compile is a real error — it must
                 // propagate as `E006`, not be silently skipped (which would leave
@@ -952,7 +1004,7 @@ impl Renderer {
             &body,
             &preamble,
         );
-        let doc = self.compile_cached(&placed)?;
+        let doc = self.compile_cached(&placed, &Dict::new())?;
         let page = doc
             .pages()
             .first()
@@ -974,9 +1026,302 @@ impl Renderer {
         // back at the exact page position so output is bit-identical to
         // compositing the full page.
         let sprite = Arc::new(crop_to_content(&full.rgba, full.width, full.height));
-        self.sprite_cache.lock().unwrap().insert(key, sprite.clone());
+        self.sprite_cache
+            .lock()
+            .unwrap()
+            .insert(key, sprite.clone());
         Ok(sprite)
     }
+    // =========================================================================
+    // Whole-document native-Typst render path (the authentic typesetting model)
+    // =========================================================================
+    //
+    // Instead of re-placing every mobject on a full canvas (the old approach,
+    // which both risked layout drift and blew memory on one full-page
+    // `PagedDocument` per object), we let Typst typeset the *entire* document
+    // natively each frame. Every mobject body is wrapped in
+    // `#move`/`#scale`/`#rotate` (all exist in typst 0.15) so the animation is
+    // just a code expansion driven by the eased per-frame counters — exactly the
+    // "easing-counter → Typst code expansion" model. Static content stays in
+    // native flow, so positions and Z-order are always correct and static +
+    // dynamic content is freely interleaved.
+    //
+    // Per-object *opacity* is the one thing typst 0.15 cannot express in-document
+    // (there is no `opacity()` function), so fading objects are omitted from the
+    // base document and drawn as a small, object-sized opacity overlay on top.
+    // Everything else is a single native compile → far fewer compiles than the
+    // old N-objects-per-frame path and a tightly bounded `body_cache`.
+
+    /// Build the per-frame whole-document Typst source by splicing each
+    /// animatable mobject's wrapped body back into the original `.tyx` source.
+    ///
+    /// `hide_fading` controls whether objects whose opacity ≠ 1 are omitted from
+    /// the base document (so they can be drawn by the opacity-overlay pass). The
+    /// SVG draft passes `false` (shows at full opacity); the pixel path passes
+    /// `true`.
+    /// Build the stable, *parameterized* whole-document source from the parsed
+    /// artifacts — done **once** (in [`Renderer::with_root`]), never per frame.
+    ///
+    /// Every animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
+    /// so its transform is read from `sys.inputs` each frame, and every
+    /// `#scene` call is gated by `sys.inputs.at("candy:active_scene")` so only
+    /// the active scene emits a page — keeping every Typst invocation to a
+    /// single page and the compiled document byte-stable (so the `source_cache`
+    /// / `body_cache` keep hitting across frames).
+    ///
+    /// Edits are applied in **character space** (not raw bytes) so a cumulative
+    /// shift can never land inside a multi-byte character — this is what made
+    /// the old per-frame `replace_range` byte-splicing panic ("end of range
+    /// should be a character boundary") impossible.
+    fn build_parameterized_source(artifacts: &ParseArtifacts) -> String {
+        let src = &artifacts.source;
+        let chars: Vec<char> = src.chars().collect();
+        // `(char_start, char_end, replacement)` — `start == end` is an insertion.
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        // 1. Wrap each mobject body with the `sys.inputs`-driven transform.
+        for (label, &(bs, be)) in &artifacts.mobject_body {
+            let body = &src[bs..be];
+            let cs = src[..bs].chars().count();
+            let ce = src[..be].chars().count();
+            edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, body)));
+        }
+        // 2. Gate each `#scene` call so only the active scene emits a page.
+        //    Insert the opening guard *before* the call and the closing brace
+        //    *after* it; insertions (`start == end`) splice into `out`. The
+        //    `scene_call` range excludes the leading `#` (markup prefix), so
+        //    prepending `open` (which starts with `{`, not `#`) yields
+        //    `#{ if <cond> { scene(…) } }`: the original `#` becomes the
+        //    code-block entry `#{`, and `scene(…)` is a *code-mode* call (Typst
+        //    calls functions without `#` inside code). The scene body `[…]` is
+        //    markup, so the `#mobject` calls inside it stay valid. A false
+        //    condition yields `none` (no page), so the compile emits exactly one
+        //    page (the active scene).
+        for (&sid, &(cs_b, ce_b)) in &artifacts.scene_call {
+            let cs = src[..cs_b].chars().count();
+            let ce = src[..ce_b].chars().count();
+            let open =
+                format!("{{ if sys.inputs.at(\"candy:active_scene\", default: 0) == {} {{ ", sid);
+            edits.push((cs, cs, open));
+            edits.push((ce, ce, " } }".to_string()));
+        }
+        // Apply right-to-left (descending start) so nested ranges stay correct.
+        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut out: Vec<char> = chars;
+        for (s, e, rep) in edits {
+            let rep_chars: Vec<char> = rep.chars().collect();
+            out.splice(s..e, rep_chars);
+        }
+        let mut out = out.iter().collect::<String>();
+        // Rewrite the bare `#import "candy"` form to the `@preview/candy` package
+        // form so the World can resolve it in-process (see `WorldState::candy_local`).
+        out = out
+            .replace("#import \"candy\":", "#import \"@preview/candy:0.1.0\":")
+            .replace("#import \"candy\"", "#import \"@preview/candy:0.1.0\"");
+        out
+    }
+
+    /// Wrap a mobject body in the eased transform (`move`/`scale`/`rotate`),
+    /// optionally hidden (for the opacity-overlay pass).
+    ///
+    /// The mobject body is a Typst *expression* sitting in **code mode** (it is
+    /// the positional argument of `#mobject(label, body)`), so the wrapper must
+    /// use code-mode call syntax — no `#` prefixes. `body` is parenthesised so a
+    /// multi-token expression stays a single argument.
+    /// Wrap a mobject body in a `sys.inputs`-driven transform.
+    ///
+    /// The wrapper reads the per-frame eased transform from `sys.inputs`
+    /// (supplied by the World each frame) instead of embedding literal numbers,
+    /// so the *source* stays byte-stable across frames and the caches keep
+    /// hitting. The body is the *positional argument* of `#mobject(label, body)`
+    /// and therefore sits in **code mode** — so the wrapper is a bare `{ … }`
+    /// code block (NOT `#{ … }`). A `#{ … }` here would be parsed as a markup
+    /// code block *inside* the `#mobject(…)` argument list and break parsing
+    /// ("`#` is not valid in code"); a bare `{ … }` is a valid code-mode block.
+    fn wrap_mobject_inputs(label: &str, body: &str) -> String {
+        format!(
+            "{{ let __b = ({body}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__b) }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
+            body = body,
+            label = label,
+        )
+    }
+
+    /// Build the per-frame `sys.inputs` dictionary for the whole-document path.
+    ///
+    /// `hide_fading` controls whether opacity < 1 objects get a `…:hide` flag
+    /// (the pixel path draws them via the opacity overlay; the SVG draft shows
+    /// them at full opacity, so it passes `false`).
+    fn build_frame_inputs(
+        &self,
+        states: &HashMap<Label, FrameData>,
+        active: usize,
+        active_page: usize,
+        hide_fading: bool,
+        time_ms: u32,
+    ) -> Dict {
+        let mut inputs = Dict::new();
+        if !self.scene.scenes.is_empty() {
+            inputs.insert("candy:active_scene".into(), Value::Int(active as i64));
+        }
+        for (label, st) in states {
+            let owner = self.label_scene.get(label).copied().unwrap_or(active);
+            if owner != active {
+                continue;
+            }
+            if let Some(p) = self.pages.page_of(label) {
+                if p != active_page {
+                    continue;
+                }
+            }
+            if self.transform_hidden(label, time_ms) {
+                continue;
+            }
+            let l = &label.0;
+            inputs.insert(format!("candy:{l}:dx").into(), Value::Float(st.x));
+            inputs.insert(format!("candy:{l}:dy").into(), Value::Float(st.y));
+            inputs.insert(
+                format!("candy:{l}:s").into(),
+                Value::Float(st.scale * 100.0),
+            );
+            inputs.insert(format!("candy:{l}:r").into(), Value::Float(st.rotation));
+            if hide_fading && st.opacity < 1.0 - 1e-4 {
+                inputs.insert(format!("candy:{l}:hide").into(), Value::Bool(true));
+            }
+        }
+        inputs
+    }
+
+    /// Whole-document native-Typst pixel frame (see the module note above).
+    fn render_frame_pixels_whole_doc_par(
+        &self,
+        time_ms: u32,
+        all_frames: &[FrameData],
+        pixel_per_pt: f32,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+        let (states, camera) = self.prepare_states(all_frames, time_ms);
+        let active = if self.scene.scenes.is_empty() {
+            0
+        } else {
+            self.scene.active_scene_at(time_ms)
+        };
+        let active_page = self.pages.active_page_of(active, time_ms);
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            self.scene_pages
+                .get(&active)
+                .copied()
+                .unwrap_or((self.page_w, self.page_h))
+        };
+        // The source is stable (`param_source`); only the per-frame `inputs`
+        // vary. Compiling yields exactly the active scene's page.
+        let inputs = self.build_frame_inputs(&states, active, active_page, true, time_ms);
+        let doc = self.compile_cached(&self.param_source, &inputs)?;
+        let page = doc
+            .pages()
+            .get(active_page)
+            .or_else(|| doc.pages().first())
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        let opts = RenderOptions {
+            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
+            render_bleed: false,
+        };
+        let pix = render(page, &opts);
+        let w = pix.width() as usize;
+        let h = pix.height() as usize;
+        let mut canvas: Vec<u8> = pix.data().to_vec();
+        // Opacity-overlay pass: draw fading objects (typst 0.15 has no
+        // `opacity()`, so they were hidden in the base document above).
+        for (label, st) in &states {
+            if st.opacity >= 1.0 - 1e-4 {
+                continue;
+            }
+            let owner = self.label_scene.get(label).copied().unwrap_or(active);
+            if owner != active {
+                continue;
+            }
+            if let Some(p) = self.pages.page_of(label) {
+                if p != active_page {
+                    continue;
+                }
+            }
+            if self.transform_hidden(label, time_ms) {
+                continue;
+            }
+            let sprite = self.render_object_pixels(label, st, time_ms, pw, ph, pixel_per_pt)?;
+            composite_over_at(
+                &mut canvas,
+                &sprite.frame,
+                st.opacity,
+                sprite.ox as f64,
+                sprite.oy as f64,
+                w,
+                h,
+            );
+        }
+        // Per-glyph `#transform` overlay (Manim-style fragment tween).
+        self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph, &mut canvas, w, h)?;
+        // Camera warp (subtitles are composited afterwards, so they stay fixed).
+        if let Some(cam) = &camera {
+            let bg = if self.scene.scenes.is_empty() {
+                [255u8, 255, 255, 255]
+            } else {
+                Self::hex_to_rgba(&self.scene_bg_hex(active)?)
+            };
+            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg);
+        }
+        // Subtitle overlay (topmost, independent Typst layer).
+        for sub in &self.scene.subtitles {
+            if self
+                .scene
+                .visible_subtitle_ids_at(time_ms)
+                .contains(&sub.id)
+            {
+                let frame = self.render_subtitle_pixels(sub, time_ms, pixel_per_pt)?;
+                composite_over_at(
+                    &mut canvas,
+                    &frame.frame,
+                    1.0,
+                    frame.ox as f64,
+                    frame.oy as f64,
+                    w,
+                    h,
+                );
+            }
+        }
+        Ok(crate::renderer::RenderedFrame {
+            width: w,
+            height: h,
+            rgba: canvas,
+        })
+    }
+
+    /// Whole-document native-Typst SVG draft (compatible standard Typst SVG,
+    /// not the hand-rolled composite the old path emitted — so it opens in any
+    /// viewer, not just Inkscape).
+    fn render_frame_at_whole_doc(
+        &self,
+        time_ms: u32,
+        all_frames: &[FrameData],
+    ) -> Result<Vec<u8>, CandyError> {
+        let (states, _cam) = self.prepare_states(all_frames, time_ms);
+        let active = if self.scene.scenes.is_empty() {
+            0
+        } else {
+            self.scene.active_scene_at(time_ms)
+        };
+        let active_page = self.pages.active_page_of(active, time_ms);
+        // `hide_fading = false`: the draft shows fading objects at full opacity
+        // (typst 0.15 cannot express per-object opacity in-document).
+        let inputs = self.build_frame_inputs(&states, active, active_page, false, time_ms);
+        let doc = self.compile_cached(&self.param_source, &inputs)?;
+        let page = doc
+            .pages()
+            .get(active_page)
+            .or_else(|| doc.pages().first())
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        Ok(typst_svg::svg(page, &SvgOptions::default()).into_bytes())
+    }
+
     /// Stable paint index for each label, following source *declaration* order:
     /// scenes in order, each scene's `owns_labels` in declaration order. Used so
     /// the composite z-order is deterministic and faithful to native Typst
@@ -1009,7 +1354,25 @@ impl Renderer {
     /// parallel iterator. **Precondition:** `ensure_natural()` must have been
     /// called once before any parallel call (it initializes `nat`/`page_w`/
     /// `page_h`). The [`Renderer::ensure_natural_public`] method exposes this.
+    /// Dispatch to the whole-document native-Typst path when the parsed source
+    /// carries render artifacts (real `.tyx` inputs), otherwise fall back to the
+    /// legacy per-object compositing path (hand-built test scenes without
+    /// artifacts). Both satisfy the same `FrameData → RGBA` contract.
     pub fn render_frame_pixels_par(
+        &self,
+        time_ms: u32,
+        all_frames: &[FrameData],
+        pixel_per_pt: f32,
+    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
+        if !self.scene.artifacts.source.is_empty() && self.scene.transform_plans.is_empty() {
+            return self.render_frame_pixels_whole_doc_par(time_ms, all_frames, pixel_per_pt);
+        }
+        self.render_frame_pixels_legacy_par(time_ms, all_frames, pixel_per_pt)
+    }
+
+    /// Legacy per-object compositing path (kept for hand-built test scenes that
+    /// carry no parsed `artifacts`). See [`render_frame_pixels_par`].
+    fn render_frame_pixels_legacy_par(
         &self,
         time_ms: u32,
         all_frames: &[FrameData],
@@ -1223,12 +1586,18 @@ impl Renderer {
     /// `<svg opacity="...">` elements. This closes the gap with the video path
     /// (which always applied opacity via `composite_over`) — the SVG draft and
     /// the encoded video now agree visually.
+    /// Dispatch to the whole-document native-Typst SVG path (compatible
+    /// standard Typst SVG) when artifacts are present, else the legacy
+    /// hand-composed SVG (test scenes).
     pub fn render_frame_at(
         &mut self,
         time_ms: u32,
         all_frames: &[FrameData],
     ) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
+        if !self.scene.artifacts.source.is_empty() && self.scene.transform_plans.is_empty() {
+            return self.render_frame_at_whole_doc(time_ms, all_frames);
+        }
         // Resolve per-object effective transforms (group composition applied)
         // and extract the optional global camera state.
         let (states, camera) = self.prepare_states(all_frames, time_ms);
@@ -1387,7 +1756,7 @@ impl Renderer {
             &body,
             &preamble,
         );
-        let doc = self.compile_cached(&src)?;
+        let doc = self.compile_cached(&src, &Dict::new())?;
         let page = doc
             .pages()
             .first()
@@ -1402,7 +1771,7 @@ impl Renderer {
             return Err(CandyError::LabelNotFound(frame.target.clone()));
         }
         self.ensure_natural()?;
-        let doc = self.compile_cached(&self.object_source(frame, frame.time_ms))?;
+        let doc = self.compile_cached(&self.object_source(frame, frame.time_ms), &Dict::new())?;
         let page = doc
             .pages()
             .first()
@@ -1500,7 +1869,7 @@ impl Renderer {
         // error and must propagate as `E006`. Only a *successful* compile that
         // yields no extractable outline legitimately returns `None` (the body
         // falls back to a plain crossfade).
-        let doc = self.compile(&src)?;
+        let doc = self.compile(&src, &Dict::new())?;
         let page = doc
             .pages()
             .first()
@@ -1553,7 +1922,7 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
     let state = WorldState::new(dir);
     let text = std::fs::read_to_string(path)?; // E001 on missing file
     let source = TypstSource::new(id, text);
-    let world = CandyWorld::new(&state, source);
+    let world = CandyWorld::new(&state, source, Dict::new());
     let warned = typst::compile::<PagedDocument>(&world);
     match warned.output {
         Ok(doc) => {
@@ -1625,14 +1994,26 @@ fn crop_to_content_shrinks_sparse_frame() {
     }
     let sprite = crop_to_content(&rgba, w, h);
     // Cropped sprite is ~10×10, orders of magnitude smaller than the canvas.
-    assert!(sprite.frame.width <= 12 && sprite.frame.height <= 12, "crop too large: {}x{}", sprite.frame.width, sprite.frame.height);
-    assert_eq!((sprite.ox, sprite.oy), (5, 5), "crop offset must be the bbox top-left");
+    assert!(
+        sprite.frame.width <= 12 && sprite.frame.height <= 12,
+        "crop too large: {}x{}",
+        sprite.frame.width,
+        sprite.frame.height
+    );
+    assert_eq!(
+        (sprite.ox, sprite.oy),
+        (5, 5),
+        "crop offset must be the bbox top-left"
+    );
     // The opaque pixel is preserved at the right place in the crop.
     let o = (0 * sprite.frame.width + 0) * 4;
     assert_eq!((sprite.frame.rgba[o], sprite.frame.rgba[o + 3]), (255, 255));
     // A fully transparent frame yields a 1×1 transparent sprite at (0,0).
     let empty = crop_to_content(&vec![0u8; w * h * 4], w, h);
-    assert_eq!((empty.frame.width, empty.frame.height, empty.ox, empty.oy), (1, 1, 0, 0));
+    assert_eq!(
+        (empty.frame.width, empty.frame.height, empty.ox, empty.oy),
+        (1, 1, 0, 0)
+    );
 }
 /// Verify the content timeline actually swaps an mobject's rendered body
 /// between frames (this is what makes `transform` show the OLD content before
@@ -1919,7 +2300,9 @@ fn native_natural_positions(
     let src = format!(
         "#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n{blocks}\n"
     );
-    let doc = r.compile(&src).expect("native layout compile");
+    let doc = r
+        .compile(&src, &Dict::new())
+        .expect("native layout compile");
     let page = doc.pages().first().expect("native layout page");
     let svg = typst_svg::svg(page, &SvgOptions::default());
     let mut out = HashMap::new();
@@ -2439,9 +2822,9 @@ fn overflowing_scene_plays_pages_in_sequence() {
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     let svg = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
-    // Single-page height in pt: 2cm * PT_PER_CM.
+    // Single-page height in pt: 2cm * PT_PER_CM. Native Typst SVG emits the
+    // `height` attribute with a `pt` unit suffix, so strip it before parsing.
     let page_h_pt = 2.0 * crate::renderer::typst::PT_PER_CM;
-    // Parse the root `<svg height="…">`.
     let h_attr = svg
         .lines()
         .find(|l| l.contains("<svg"))
@@ -2449,7 +2832,8 @@ fn overflowing_scene_plays_pages_in_sequence() {
             let s = l.find("height=\"").unwrap();
             let start = s + "height=\"".len();
             let end = l[start..].find('"').unwrap();
-            l[start..start + end].parse::<f64>().ok()
+            let raw = &l[start..start + end];
+            raw.strip_suffix("pt").unwrap_or(raw).parse::<f64>().ok()
         })
         .expect("svg height attribute");
     // The canvas must stay exactly ONE page tall — not stacked, not grown.
@@ -2459,7 +2843,9 @@ fn overflowing_scene_plays_pages_in_sequence() {
     );
     // And the first frame must draw only the current page's mobjects (fewer than
     // all six), proving sequential page playback rather than one giant canvas.
-    let drawn = svg.matches("<g opacity=").count();
+    // Native Typst wraps each mobject in a `<g>` group, so count those (the page
+    // background is a `<path>`, not a `<g>`).
+    let drawn = svg.matches("<g").count();
     assert!(
         drawn > 0 && drawn < 6,
         "first frame should show only the current page's mobjects (drew {drawn} of 6)"

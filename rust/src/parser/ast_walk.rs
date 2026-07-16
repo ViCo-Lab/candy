@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use typst_syntax::ast::{self, AstNode, Expr};
+use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
@@ -30,7 +30,7 @@ use crate::core::diag::CandyError;
 use crate::core::meta::PrivateMeta;
 
 use crate::parser::directives::process_call;
-use crate::parser::expr::{CANDY, call_symbol, range_of};
+use crate::parser::expr::{CANDY, call_symbol};
 
 /// Centimeters per Typst point. Must match renderer::typst::PT_PER_CM.
 pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
@@ -165,7 +165,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         artifacts: ParseArtifacts {
             source: raw,
             mobject_body: ctx.mobject_body_ranges.clone(),
-            scene_body: ctx.scene_body_ranges.clone(),
+            scene_call: ctx.scene_call_ranges.clone(),
         },
         private_metadata: private,
     };
@@ -253,10 +253,11 @@ pub(crate) struct ParseCtx {
     /// keyed by label. Fed into `Scene::artifacts` for the per-frame
     /// whole-document recompiler (Phase 2).
     pub(crate) mobject_body_ranges: HashMap<Label, (usize, usize)>,
-    /// Source range of each explicit `#scene(...)` call's body, keyed by scene
-    /// id. Fed into `Scene::artifacts` so non-active scenes can be `#hide[…]`-ed
-    /// in the whole-document recompile.
-    pub(crate) scene_body_ranges: HashMap<usize, (usize, usize)>,
+    /// Source range of each explicit `#scene(...)` call — the *entire*
+    /// `FuncCall` (not just its body), keyed by scene id. Fed into
+    /// `Scene::artifacts` so scenes can be gated with `sys.inputs` (only the
+    /// active scene emits a page) in the whole-document recompile.
+    pub(crate) scene_call_ranges: HashMap<usize, (usize, usize)>,
 }
 
 /// Recursively walk the syntax tree.
@@ -357,20 +358,15 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
                 _ => None,
             };
-            // Capture the scene body's source range for Phase 2: the
-            // whole-document recompiler `#hide[…]`-es a non-active scene's body
-            // so scene auto-hide stays faithful. The body is the single
-            // positional argument of `#scene(...)`.
-            if let Some(r) = call
-                .args()
-                .items()
-                .find_map(|a| match a {
-                    ast::Arg::Pos(p) => range_of(node, p.to_untyped()).map(|r| (r.start, r.end)),
-                    _ => None,
-                })
-            {
-                ctx.scene_body_ranges.insert(id, r);
-            }
+            // Capture the *entire* `#scene(...)` call span for Phase 2: the
+            // whole-document recompiler gates each scene with
+            // `sys.inputs.at("candy:active_scene")` so only the active scene
+            // emits a page (keeping every Typst invocation to a single page).
+            // Gating the whole call (rather than just its body) is required
+            // because `#scene(…)` expands to `page(…)`, which would still emit
+            // an (empty) page if only its body were blanked.
+            let cr = node.range();
+            ctx.scene_call_ranges.insert(id, (cr.start, cr.end));
             let start = ctx.cursor;
             ctx.scenes.push(SceneInfo {
                 id,

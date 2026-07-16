@@ -4,6 +4,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use typst::compile;
+use typst_library::foundations::Dict;
 use typst_layout::PagedDocument;
 use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse_code};
@@ -218,7 +219,7 @@ pub(crate) fn subtitle_doc(
         ph = page_h,
     );
     let source = state.detached_cached(&src);
-    let world = CandyWorld::new(state, source);
+    let world = CandyWorld::new(state, source, Dict::new());
     // Mirror `Renderer::compile`: a malformed body can make typst panic rather
     // than return a diagnostic — catch it so the error is always reported as
     // `E006` instead of crashing the process (notably in release builds).

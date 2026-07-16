@@ -19,6 +19,7 @@ use crate::renderer::typst::{
     PT_PER_CM, Renderer, collect_formula_leaves, composite_over_at_xf, crop_formula_rgba,
     imports_preamble, localize_formula_ids,
 };
+use typst_library::foundations::Dict;
 
 /// One animated glyph/decoration in a per-glyph `transform`. The fragment is
 /// cropped from the *whole* old or new formula render (so it keeps Typst's
@@ -402,7 +403,7 @@ impl Renderer {
     /// compositor adds to the target mobject's position at render time.
     fn render_formula_svg(&self, body: &str, preamble: &str) -> Option<String> {
         let src = place_source(self.page_w, self.page_h, 0.0, 0.0, 100.0, 0.0, body, preamble);
-        let doc = self.compile_cached(&src).ok()?;
+        let doc = self.compile_cached(&src, &Dict::new()).ok()?;
         let page = doc.pages().first()?;
         Some(typst_svg::svg(page, &SvgOptions::default()))
     }
@@ -476,7 +477,7 @@ impl Renderer {
     ) -> Result<RenderedFrame, CandyError> {
         let preamble = imports_preamble(&self.scene);
         let placed = place_source(pw, ph, x_cm, y_cm, scale_pct, rotation, body, &preamble);
-        let doc = self.compile_cached(&placed)?;
+        let doc = self.compile_cached(&placed, &Dict::new())?;
         let page = doc
             .pages()
             .first()

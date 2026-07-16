@@ -55,6 +55,18 @@
     typst-syntax  = "0.15"
     typst-utils   = "0.15"
 
+    # Bounded-memory guard for the per-frame recompiler. typst's internal
+    # functions (`compile`, `eval`, `layout`, …) are memoized via comemo and are
+    # keyed by the `World`. Because the whole-document native-Typst path varies
+    # the `World` per frame (different `sys.inputs` ⇒ a different `Library`),
+    # comemo would otherwise accumulate one compiled document per distinct
+    # inputs set and OOM on long animations. We evict comemo's global cache after
+    # each compile (our own LRU `body_cache` retains the documents we need), so
+    # comemo only ever holds the current frame's transient sub-computations.
+    # Version is pinned to match the comemo typst itself depends on, so the
+    # `evict` call clears the *same* global cache typst's memoized fns use.
+    comemo       = "=0.5.1"
+
     # typst-kit provides the same font discovery and package resolution that the
     # official `typst` CLI uses, so candy's in-process World behaves identically to
     # `typst compile` (system fonts, @preview package fetch, embedded fallbacks).
