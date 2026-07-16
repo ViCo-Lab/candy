@@ -28,12 +28,12 @@
   step: 1,
   duration: none,
   easing: "linear",
-) = seed
+) = none
 
 /// Read the current value of an easing counter. Inside an animating candy
 /// pipeline, `ecval(...)` is substituted (by the Rust renderer) with the live,
 /// eased integer value and may be used directly as a Typst parameter (e.g.
-/// `rect(width: ecval(n) * 1cm)`).
+/// `rect(width: ecval("n") * 1cm)`).
 ///
 /// Under **standard Typst** there is no shared mutable registry, so pass the
 /// value returned by `ecounter` (which is the `seed`) rather than the
@@ -41,7 +41,7 @@
 ///
 /// ```typ
 /// #let n = ecounter("n", seed: 40)
-/// #rect(width: ecval(n) * 1pt)   // standard Typst → 40; candy → live value
+/// #rect(width: ecval("n") * 1pt)   // standard Typst → 40; candy → live value
 /// ```
 ///
 /// `ecval` returns its argument unchanged when it is already a number (the
@@ -49,7 +49,7 @@
 /// correct initial value. If a non-numeric argument is given (e.g. the bare
 /// name string `ecval("n")`, which standard Typst cannot resolve to a value),
 /// it falls back to `default`.
-#let ecval(value, default: 0) = default
+#let ecval(key, default: 0) = default
 
 /// Pause a counter (freeze its stepping) at the current timeline position.
 /// Inert under standard Typst.

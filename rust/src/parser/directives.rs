@@ -326,6 +326,14 @@ fn process_play(
     ctx.block_counter += 1;
     ctx.items.insert(label.clone(), body);
     register_label(ctx, label.clone(), ctx.current_scene);
+    // Record the body's source range so the whole-document recompiler wraps the
+    // `play` block with the per-frame transform (a `play` block is just a
+    // synthetic mobject and must be animated/positioned exactly like a real one
+    // — without this it renders as inert static `block(body)` and ignores its
+    // `FadeIn`/transform).
+    if let Some(r) = range_of(node, body_expr.to_untyped()).map(|r| (r.start, r.end)) {
+        ctx.mobject_body_ranges.insert(label.clone(), r);
+    }
     ctx.initial.insert(
         label.clone(),
         FrameData {
@@ -1333,7 +1341,7 @@ fn process_subtitle(
     let end_ms = duration.map(|d| start_ms + d);
 
     ctx.subtitles.push(Subtitle {
-        id,
+        id: id.clone(),
         scope: current_scope(ctx),
         body,
         start_ms,
@@ -1341,6 +1349,16 @@ fn process_subtitle(
         position,
         easing: easing.clone(),
     });
+    // Record the `#subtitle(...)` call's source range (including the leading
+    // `#`) so the whole-document recompiler can blank it out of the base
+    // document (`#none`). The caption is drawn as a separate, camera-independent
+    // overlay; leaving it in the base double-renders it (see `ParseArtifacts`).
+    let cr = node.range();
+    let mut s = cr.start;
+    if s > 0 && raw.as_bytes()[s - 1] == b'#' {
+        s -= 1;
+    }
+    ctx.subtitle_call_ranges.insert(id, (s, cr.end));
 }
 
 /// `ecounter(name, seed:, step:, duration:, easing:)` — define a named integer

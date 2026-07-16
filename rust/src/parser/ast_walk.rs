@@ -166,6 +166,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
             source: raw,
             mobject_body: ctx.mobject_body_ranges.clone(),
             scene_call: ctx.scene_call_ranges.clone(),
+            subtitle_call: ctx.subtitle_call_ranges.clone(),
         },
         private_metadata: private,
     };
@@ -258,6 +259,11 @@ pub(crate) struct ParseCtx {
     /// `Scene::artifacts` so scenes can be gated with `sys.inputs` (only the
     /// active scene emits a page) in the whole-document recompile.
     pub(crate) scene_call_ranges: HashMap<usize, (usize, usize)>,
+    /// Source range (including the leading `#`) of each `#subtitle(...)` call,
+    /// keyed by the subtitle's generated id. Fed into `Scene::artifacts` so the
+    /// whole-document recompiler can blank the caption out of the base document
+    /// (it is drawn as a separate, camera-independent overlay).
+    pub(crate) subtitle_call_ranges: HashMap<String, (usize, usize)>,
 }
 
 /// Recursively walk the syntax tree.

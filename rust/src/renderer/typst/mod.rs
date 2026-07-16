@@ -58,10 +58,12 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
+#[cfg(test)]
+use crate::core::ast::ParseArtifacts;
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
+use crate::parser::expr::strip_string_literal;
 use crate::warn;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -75,6 +77,8 @@ use typst_library::foundations::{Dict, Smart, Value};
 use typst_library::visualize::Paint;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
+use typst_syntax::ast::{self, Expr};
+use typst_syntax::{LinkedNode, parse_code};
 #[cfg(test)]
 use typst_syntax::FileId;
 #[cfg(test)]
@@ -293,7 +297,7 @@ impl Renderer {
         let param_source = if scene.artifacts.source.is_empty() {
             String::new()
         } else {
-            Self::build_parameterized_source(&scene.artifacts)
+            Self::build_parameterized_source(&scene)
         };
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
@@ -350,7 +354,7 @@ impl Renderer {
         // compiled document per distinct inputs set and OOM on long animations.
         // Our own LRU `body_cache` already retains the documents we need, so
         // clearing comemo here only frees the transient per-frame sub-computations.
-//comemo::evict(0);
+        comemo::evict(0);
         warned.output.map_err(Into::into)
     }
     /// Compile a Typst source, memoized by the exact source string.
@@ -1052,38 +1056,62 @@ impl Renderer {
     // Everything else is a single native compile → far fewer compiles than the
     // old N-objects-per-frame path and a tightly bounded `body_cache`.
 
-    /// Build the per-frame whole-document Typst source by splicing each
-    /// animatable mobject's wrapped body back into the original `.tyx` source.
-    ///
-    /// `hide_fading` controls whether objects whose opacity ≠ 1 are omitted from
-    /// the base document (so they can be drawn by the opacity-overlay pass). The
-    /// SVG draft passes `false` (shows at full opacity); the pixel path passes
-    /// `true`.
     /// Build the stable, *parameterized* whole-document source from the parsed
-    /// artifacts — done **once** (in [`Renderer::with_root`]), never per frame.
+    /// `Scene` — done **once** (in [`Renderer::with_root`]), never per frame.
     ///
-    /// Every animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
-    /// so its transform is read from `sys.inputs` each frame, and every
-    /// `#scene` call is gated by `sys.inputs.at("candy:active_scene")` so only
-    /// the active scene emits a page — keeping every Typst invocation to a
-    /// single page and the compiled document byte-stable (so the `source_cache`
-    /// / `body_cache` keep hitting across frames).
+    /// The result is byte-stable across frames: every per-frame-varying quantity
+    /// is read from `sys.inputs` (the per-frame `Dict` supplied to the World), so
+    /// the `source_cache` / `body_cache` keep hitting while the rendered document
+    /// still changes per frame. Specifically:
+    ///
+    /// * Every animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
+    ///   so its transform (dx/dy/scale/rotation, opacity) is read from
+    ///   `sys.inputs`.
+    /// * `ecval("name")` counter reads inside mobject bodies are rewritten to
+    ///   `sys.inputs.at("candy:counter:name", default: 0)` (see [`ecval_to_inputs`])
+    ///   so the live counter value is also an input.
+    /// * A `reveal`/`typewriter` target whose body is a string literal is wrapped
+    ///   so the revealed prefix length comes from `sys.inputs.at(
+    ///   "candy:<label>:reveal:len")` (see [`reveal_wrap_body`]) — the typewriter
+    ///   effect is then pure input variation, no source change.
+    /// * Every `#subtitle(...)` call is blanked to `#none` so the caption is NOT
+    ///   rendered as part of the base document (it is drawn as a separate,
+    ///   camera-independent overlay — leaving it in the base double-renders it).
+    /// * Every `#scene` call is gated by `sys.inputs.at("candy:active_scene")` so
+    ///   only the active scene emits a page — keeping every Typst invocation to a
+    ///   single page and the `body_cache` hit rate high.
     ///
     /// Edits are applied in **character space** (not raw bytes) so a cumulative
     /// shift can never land inside a multi-byte character — this is what made
     /// the old per-frame `replace_range` byte-splicing panic ("end of range
     /// should be a character boundary") impossible.
-    fn build_parameterized_source(artifacts: &ParseArtifacts) -> String {
-        let src = &artifacts.source;
+    fn build_parameterized_source(scene: &Scene) -> String {
+        let src = &scene.artifacts.source;
         let chars: Vec<char> = src.chars().collect();
         // `(char_start, char_end, replacement)` — `start == end` is an insertion.
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
-        // 1. Wrap each mobject body with the `sys.inputs`-driven transform.
-        for (label, &(bs, be)) in &artifacts.mobject_body {
+        // 1. Wrap each mobject body with the `sys.inputs`-driven transform,
+        //    rewriting `ecval(...)` reads and `reveal`/typewriter prefixes to
+        //    inputs so the body source stays byte-stable.
+        for (label, &(bs, be)) in &scene.artifacts.mobject_body {
             let body = &src[bs..be];
+            // `ecval("name")` → `sys.inputs.at("candy:counter:name", …)` so the
+            // live counter value is supplied per frame as an input.
+            let mut inner = Self::ecval_to_inputs(body);
+            // A `reveal`/`typewriter` target whose body is a string literal gets
+            // its revealed length driven by an input too.
+            if let Some(full) = scene
+                .items
+                .get(label)
+                .and_then(|b| strip_string_literal(b))
+            {
+                if scene.content_timeline.contains_key(label) {
+                    inner = Self::reveal_wrap_body(&label.0, &inner, full.chars().count());
+                }
+            }
             let cs = src[..bs].chars().count();
             let ce = src[..be].chars().count();
-            edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, body)));
+            edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, &inner)));
         }
         // 2. Gate each `#scene` call so only the active scene emits a page.
         //    Insert the opening guard *before* the call and the closing brace
@@ -1096,13 +1124,22 @@ impl Renderer {
         //    markup, so the `#mobject` calls inside it stay valid. A false
         //    condition yields `none` (no page), so the compile emits exactly one
         //    page (the active scene).
-        for (&sid, &(cs_b, ce_b)) in &artifacts.scene_call {
+        for (&sid, &(cs_b, ce_b)) in &scene.artifacts.scene_call {
             let cs = src[..cs_b].chars().count();
             let ce = src[..ce_b].chars().count();
             let open =
                 format!("{{ if sys.inputs.at(\"candy:active_scene\", default: 0) == {} {{ ", sid);
             edits.push((cs, cs, open));
             edits.push((ce, ce, " } }".to_string()));
+        }
+        // 3. Blank each `#subtitle(...)` call out of the base document (it is
+        //    drawn as a separate, camera-independent overlay). The `subtitle_call`
+        //    range already includes the leading `#`, so replacing it with `#none`
+        //    yields a no-op caption in the base.
+        for (_, &(ss, se)) in &scene.artifacts.subtitle_call {
+            let cs = src[..ss].chars().count();
+            let ce = src[..se].chars().count();
+            edits.push((cs, ce, "#none".to_string()));
         }
         // Apply right-to-left (descending start) so nested ranges stay correct.
         edits.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1120,27 +1157,120 @@ impl Renderer {
         out
     }
 
-    /// Wrap a mobject body in the eased transform (`move`/`scale`/`rotate`),
-    /// optionally hidden (for the opacity-overlay pass).
+    /// Rewrite every `ecval("name")` / `ecval(name)` counter read in `body` to a
+    /// `sys.inputs.at("candy:counter:name", default: 0)` reference, so the live
+    /// counter value is supplied per frame as a `sys.inputs` entry (see
+    /// [`Renderer::build_frame_inputs`]) instead of being hard-coded. The source
+    /// stays byte-stable, so the `body_cache` keeps hitting.
     ///
-    /// The mobject body is a Typst *expression* sitting in **code mode** (it is
-    /// the positional argument of `#mobject(label, body)`), so the wrapper must
-    /// use code-mode call syntax — no `#` prefixes. `body` is parenthesised so a
-    /// multi-token expression stays a single argument.
+    /// AST-driven (like [`crate::renderer::typst::content::substitute_counters`])
+    /// so it never rewrites a substring that merely *looks* like the call (inside
+    /// a string / comment). Only counters actually declared in the scene are
+    /// rewritten; an undeclared `ecval` is left untouched (and resolves to `0`
+    /// via the `default`, matching the legacy behaviour).
+    fn ecval_to_inputs(body: &str) -> String {
+        if !body.contains("ecval") {
+            return body.to_string();
+        }
+        let root = parse_code(body);
+        let node = LinkedNode::new(&root);
+        let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+        Self::collect_ecval_input_edits(&node, &mut edits);
+        if edits.is_empty() {
+            return body.to_string();
+        }
+        // Drop any edit whose range is nested inside another (keep innermost).
+        let drop: Vec<bool> = edits
+            .iter()
+            .map(|(r, _)| edits.iter().any(|(o, _)| o != r && o.start <= r.start && r.end <= o.end))
+            .collect();
+        let mut kept: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+        for (keep, e) in drop.into_iter().zip(edits) {
+            if !keep {
+                kept.push(e);
+            }
+        }
+        let mut edits = kept;
+        edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+        let mut out = body.to_string();
+        for (range, text) in edits {
+            out.replace_range(range, &text);
+        }
+        out
+    }
+
+    /// Collect `(source range → input reference)` edits for every `ecval(name)`
+    /// call in `node`. (We rewrite every `ecval` read unconditionally — the
+    /// `default: 0` fallback matches the legacy behaviour for undeclared
+    /// counters, and declared ones get their live value via `build_frame_inputs`.)
+    fn collect_ecval_input_edits(node: &LinkedNode, edits: &mut Vec<(std::ops::Range<usize>, String)>) {
+        if let Some(call) = node.get().cast::<ast::FuncCall>() {
+            if let Some(name) = Self::ecval_input_name(&call) {
+                let key = format!("candy:counter:{name}");
+                edits.push((node.range(), format!("sys.inputs.at(\"{key}\", default: 0)")));
+            }
+        }
+        for child in node.children() {
+            Self::collect_ecval_input_edits(&child, edits);
+        }
+    }
+
+    /// If `call` is an `ecval(..)` read, return the counter name it references
+    /// (the canonical `ecval("name")` string form, or the bare-ident `ecval(name)`
+    /// form for backwards compatibility).
+    fn ecval_input_name(call: &ast::FuncCall) -> Option<String> {
+        let is_ecval = match call.callee() {
+            Expr::Ident(id) => id.as_str() == "ecval",
+            Expr::FieldAccess(fa) => fa.field().as_str() == "ecval",
+            _ => false,
+        };
+        if !is_ecval {
+            return None;
+        }
+        for a in call.args().items() {
+            if let ast::Arg::Pos(p) = a {
+                return match p {
+                    Expr::Str(s) => Some(s.get().to_string()),
+                    Expr::Ident(i) => Some(i.as_str().to_string()),
+                    _ => None,
+                };
+            }
+            break;
+        }
+        None
+    }
+
+    /// Wrap a string-literal mobject body so its revealed prefix length is read
+    /// from `sys.inputs.at("candy:<label>:reveal:len", default: <full_len>)`.
+    /// Used for `reveal`/`typewriter` targets: the typewriter effect becomes pure
+    /// per-frame input variation (no source change), so the `body_cache` keeps
+    /// hitting. `inner` is the (already `ecval`-substituted) body expression —
+    /// for a string target it is the string literal `"..."`.
+    fn reveal_wrap_body(label: &str, inner: &str, full_len: usize) -> String {
+        format!(
+            "{{ let __full = ({inner}); let __n = int(sys.inputs.at(\"candy:{label}:reveal:len\", default: {full_len})); __full.slice(0, __n) }}",
+            inner = inner,
+            label = label,
+            full_len = full_len,
+        )
+    }
+
     /// Wrap a mobject body in a `sys.inputs`-driven transform.
     ///
-    /// The wrapper reads the per-frame eased transform from `sys.inputs`
-    /// (supplied by the World each frame) instead of embedding literal numbers,
-    /// so the *source* stays byte-stable across frames and the caches keep
-    /// hitting. The body is the *positional argument* of `#mobject(label, body)`
-    /// and therefore sits in **code mode** — so the wrapper is a bare `{ … }`
-    /// code block (NOT `#{ … }`). A `#{ … }` here would be parsed as a markup
-    /// code block *inside* the `#mobject(…)` argument list and break parsing
-    /// ("`#` is not valid in code"); a bare `{ … }` is a valid code-mode block.
-    fn wrap_mobject_inputs(label: &str, body: &str) -> String {
+    /// `inner` is the (already `ecval`-substituted, and possibly `reveal`-wrapped)
+    /// body expression. The wrapper reads the per-frame eased transform from
+    /// `sys.inputs` (supplied by the World each frame) instead of embedding
+    /// literal numbers, so the *source* stays byte-stable across frames and the
+    /// caches keep hitting. The body is the *positional argument* of
+    /// `#mobject(label, body)` and therefore sits in **code mode** — so the
+    /// wrapper is a bare `{ … }` code block (NOT `#{ … }`). A `#{ … }` here would
+    /// be parsed as a markup code block *inside* the `#mobject(…)` argument list
+    /// and break parsing ("`#` is not valid in code"); a bare `{ … }` is a valid
+    /// code-mode block.
+    fn wrap_mobject_inputs(label: &str, inner: &str) -> String {
         format!(
-            "{{ let __b = ({body}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__b) }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
-            body = body,
+            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__b) }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
+            inner = inner,
             label = label,
         )
     }
@@ -1187,7 +1317,56 @@ impl Renderer {
                 inputs.insert(format!("candy:{l}:hide").into(), Value::Bool(true));
             }
         }
+        // Easing-counter values: each declared counter's live value at this
+        // frame is supplied as `candy:counter:<name>`, matching the
+        // `ecval_to_inputs` rewrite in `build_parameterized_source`. This keeps
+        // the source byte-stable (only the inputs vary) so the `body_cache` hits.
+        for c in &self.scene.counters {
+            let v = self.scene.counter_value_at(&c.name, time_ms);
+            inputs.insert(format!("candy:counter:{}", c.name).into(), Value::Int(v));
+        }
+        // `reveal`/`typewriter` revealed-prefix lengths: each string target's
+        // revealed character count at this frame is supplied as
+        // `candy:<label>:reveal:len`, matching `reveal_wrap_body`.
+        for (label, _timeline) in &self.scene.content_timeline {
+            let Some(full) = self.scene.items.get(label).and_then(|b| strip_string_literal(b)) else {
+                continue;
+            };
+            let len = Self::reveal_len_at(&self.scene, label, time_ms, full.chars().count());
+            inputs.insert(
+                format!("candy:{}:reveal:len", label.0).into(),
+                Value::Int(len as i64),
+            );
+        }
         inputs
+    }
+
+    /// Resolve the revealed character count of a `reveal`/`typewriter` target at
+    /// `time_ms`, following its `content_timeline` (`(t, "prefix")` entries).
+    ///
+    /// Mirrors the legacy `content_for` fallback: the latest timeline entry with
+    /// `t <= time_ms` wins; `"none"` → `0` (hidden), otherwise the prefix's char
+    /// length. Before any timeline entry the original (full) body length is used.
+    fn reveal_len_at(scene: &Scene, label: &Label, time_ms: u32, full_len: usize) -> usize {
+        let Some(timeline) = scene.content_timeline.get(label) else {
+            return full_len;
+        };
+        let mut chosen: Option<&String> = None;
+        for (t, body) in timeline {
+            if *t <= time_ms {
+                chosen = Some(body);
+            }
+        }
+        let body = match chosen {
+            Some(b) => b,
+            None => return full_len,
+        };
+        if body == "none" {
+            return 0;
+        }
+        strip_string_literal(body)
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
     }
 
     /// Whole-document native-Typst pixel frame (see the module note above).

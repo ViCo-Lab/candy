@@ -49,19 +49,22 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             cross: false
-          # macOS (both arches native on macos-latest)
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            cross: false
+          # macOS: macos-latest is now Apple Silicon (arm64), so aarch64 is the
+          # native (non-cross) target. x86_64 is cross-compiled; `cross` has no
+          # macOS images, so it still builds with plain `cargo` via the universal
+          # macOS SDK (see the build steps below).
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - if: matrix.cross
+      - if: matrix.cross && !startsWith(matrix.os, 'macos')
         run: cargo install cross --git https://github.com/cross-rs/cross
       - uses: actions/cache@v4
         with:
@@ -71,10 +74,13 @@ jobs:
             rust/target
           key: ${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: ${{ matrix.target }}-cargo-
-      - if: '!matrix.cross'
+      # `cross` has no macOS images, so even cross-marked macOS targets build
+      # with plain `cargo` (the universal macOS SDK cross-compiles x86_64 from
+      # Apple Silicon). Only Linux cross targets use the `cross` tool.
+      - if: '!matrix.cross || startsWith(matrix.os, ''macos'')'
         run: cargo build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
-      - if: matrix.cross
+      - if: matrix.cross && !startsWith(matrix.os, 'macos')
         run: cross build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
       - id: binpath
@@ -105,9 +111,9 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest

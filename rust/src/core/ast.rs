@@ -564,6 +564,15 @@ pub struct ParseArtifacts {
     /// recompile emits exactly one page per frame (the active scene), keeping
     /// memory bounded and the `body_cache` hit rate high.
     pub scene_call: HashMap<usize, (usize, usize)>,
+    /// Source range `(start, end)` of each `#subtitle(...)` call — the *entire*
+    /// call **including its leading `#`** — keyed by the subtitle's generated
+    /// id. The whole-document recompiler blanks each one out (replacing it with
+    /// `#none`) so the caption is **not** rendered as part of the base document:
+    /// captions are drawn as a separate, camera-independent overlay, and leaving
+    /// the `#subtitle[...]` body in the base would double-render it (once warped
+    /// by the global camera, once as the fixed overlay) — the "基底未过滤字幕"
+    /// rendering anomaly.
+    pub subtitle_call: HashMap<String, (usize, usize)>,
 }
 
 impl Scene {
