@@ -195,19 +195,12 @@ fn process_animate(
             });
         }
     }
-    // Relative move: `dx:` / `dy:` (cm) are the canonical names.
-    // `x:` / `y:` (cm) are intuitive aliases a user naturally
-    // reaches for ("move it 5cm to the right"); without them
-    // `#animate(target, x: 5cm)` silently produced NO translation —
-    // the exact "平移动画没有附加" bug.
-    let dx = named
-        .get("x")
-        .or_else(|| named.get("dx"))
-        .and_then(expr_to_f64);
-    let dy = named
-        .get("y")
-        .or_else(|| named.get("dy"))
-        .and_then(expr_to_f64);
+    // Relative move: `dx:` / `dy:` (cm) — the canonical names, matching the
+    // `animate` signature declared in the Typst package (`typst/src/core.typ`).
+    // The Rust parser must accept exactly the named arguments the Typst
+    // signature declares; it does not invent extra aliases.
+    let dx = named.get("dx").and_then(expr_to_f64);
+    let dy = named.get("dy").and_then(expr_to_f64);
     if dx.is_some() || dy.is_some() {
         actions.push(Action::MoveBy {
             target: label.clone(),

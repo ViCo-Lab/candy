@@ -533,7 +533,26 @@ fn stream_encode_cpu(
     // flickers / is time-shuffled). Instead we tag every frame with its
     // `sample_times` index and let the consumer reassemble them in order via a
     // small reorder buffer (bounded by `cap`, so peak memory stays bounded).
-    let cap = jobs.max(1);
+    // Effective parallelism and the reorder *window*. The producer renders each
+    // window of frames in parallel but advances window-by-window (a barrier
+    // between windows), so the consumer's reorder buffer only ever holds frames
+    // from the single in-flight window. That bounds peak RGBA memory to ≈
+    // `window` frames regardless of the total frame count `N`.
+    //
+    // Without this, a plain `par_iter` over all frames lets rayon race
+    // far-ahead contiguous chunks to completion while the frame the consumer is
+    // waiting for is still rendering; every finished out-of-order frame then
+    // piles into the reorder buffer (`pending`), which grows to ≈ O(N) frames'
+    // RGBA — the exact unbounded-memory case the streaming pipeline is meant to
+    // avoid. (A tiny `sync_channel` capacity does NOT help: the consumer keeps
+    // draining it into `pending` to free slots.)
+    let par = if jobs > 0 {
+        jobs
+    } else {
+        rayon::current_num_threads().max(1)
+    };
+    let window = (par * 2).max(2);
+    let cap = window;
     let (tx, rx) =
         std::sync::mpsc::sync_channel::<(usize, Result<RenderedFrame, CandyError>)>(cap);
     // Hoist owned/Copy values out of the thread closure so it captures *no*
@@ -553,32 +572,29 @@ fn stream_encode_cpu(
         })
         .map_err(|e| CandyError::Encode(format!("spawn encoder thread: {e}")))?;
 
-    // Producers: data-parallel over frames, each sending its rendered RGBA into
-    // the bounded channel. `tx.send` blocks when the channel is full, which is
-    // exactly the back-pressure that bounds memory.
+    // Producers: render one `window` of frames at a time, data-parallel within
+    // the window, and send each into the bounded channel. The outer loop is a
+    // barrier between windows, so at most one window's frames are ever in
+    // flight — this is what keeps the consumer's reorder buffer (and thus peak
+    // memory) bounded to ≈ `window` frames. `tx.send` blocking on a full
+    // channel provides the additional back-pressure within a window.
     let render = |t: u32| renderer.render_frame_pixels_par(t, frames, pixel_per_pt);
+    let run_windows = || {
+        for (wi, chunk) in sample_times.chunks(window).enumerate() {
+            let base = wi * window;
+            chunk.par_iter().enumerate().for_each(|(j, &t)| {
+                let _ = tx.send((base + j, render(t)));
+            });
+        }
+    };
     if jobs > 0 {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(jobs)
             .build()
             .map_err(|e| CandyError::Encode(format!("rayon pool init: {e}")))?;
-        pool.install(|| {
-            sample_times
-                .par_iter()
-                .enumerate()
-                .map(|(i, &t)| {
-                    let _ = tx.send((i, render(t)));
-                })
-                .count();
-        });
+        pool.install(run_windows);
     } else {
-        sample_times
-            .par_iter()
-            .enumerate()
-            .map(|(i, &t)| {
-                let _ = tx.send((i, render(t)));
-            })
-            .count();
+        run_windows();
     }
     drop(tx); // close the channel so the consumer thread terminates
     enc_handle

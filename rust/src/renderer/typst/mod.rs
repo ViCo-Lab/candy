@@ -1247,8 +1247,14 @@ impl Renderer {
     /// hitting. `inner` is the (already `ecval`-substituted) body expression —
     /// for a string target it is the string literal `"..."`.
     fn reveal_wrap_body(label: &str, inner: &str, full_len: usize) -> String {
+        // The revealed length `__n` is a *codepoint* count (the renderer supplies
+        // `full.chars().count()`), but Typst's `str.slice(start, end)` indexes by
+        // *byte* offset and panics ("string index N is not a character boundary")
+        // when the prefix ends inside a multi-byte character (e.g. an em-dash).
+        // Slice the codepoint array instead so the prefix is always taken on a
+        // character boundary; `calc.min` clamps against any out-of-range `__n`.
         format!(
-            "{{ let __full = ({inner}); let __n = int(sys.inputs.at(\"candy:{label}:reveal:len\", default: {full_len})); __full.slice(0, __n) }}",
+            "{{ let __full = ({inner}); let __cp = str(__full).codepoints(); let __n = calc.min(int(sys.inputs.at(\"candy:{label}:reveal:len\", default: {full_len})), __cp.len()); __cp.slice(0, __n).join() }}",
             inner = inner,
             label = label,
             full_len = full_len,
@@ -2833,6 +2839,35 @@ fn transform_target_renders_after_window() {
     std::fs::remove_file(&tmp).ok();
 }
 
+/// Regression: a `#typewriter` on a string containing a multi-byte character
+/// (e.g. an em-dash `—`, 3 bytes) must render mid-window without panicking.
+/// The revealed prefix length is a *codepoint* count, but Typst's `str.slice`
+/// indexes by *byte* offset, so slicing the string directly panicked with
+/// "string index N is not a character boundary" when the prefix ended inside a
+/// multi-byte char. `reveal_wrap_body` now slices the codepoint array instead.
+#[test]
+fn typewriter_multibyte_prefix_does_not_panic() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"outro\", \"The quadratic formula — done.\")\n\
+               #typewriter(\"outro\", duration: 100)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_typewriter_mb.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Sweep across the reveal window: every prefix length (including the one that
+    // ends right at the em-dash) must compile to a valid frame, not error.
+    for t in [10u32, 30, 50, 70, 90, 120] {
+        let out = r.render_frame_at(t, &frames);
+        assert!(out.is_ok(), "frame at {t}ms must render, got {out:?}");
+    }
+    std::fs::remove_file(&tmp).ok();
+}
+
 /// Regression: the per-glyph transform overlay must embed each old/new formula
 /// exactly ONCE in `<defs>` and reference it via clipped `<use>` elements — not
 /// repeat the whole formula markup inside every fragment's clip (which let
@@ -2892,7 +2927,7 @@ fn transform_composes_with_concurrent_animate() {
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
-               #animate(\"eq\", scale: 2.0, rotation: 30deg, duration: 60)\n\
+               #animate(\"eq\", scale: 2.0, rotate: 30deg, duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_compose.tyx");
@@ -2917,7 +2952,7 @@ fn transform_composes_with_concurrent_animate() {
     std::fs::remove_file(&tmp).ok();
 }
 
-/// Regression: a `#transform` must compose with a concurrent `#animate(x: …)`
+/// Regression: a `#transform` must compose with a concurrent `#animate(dx: …)`
 /// translation so the WHOLE formula glides — every fragment's translate must
 /// shift by the *full* translation amount. This pins the positioning fix:
 /// previously each fragment was offset by ~2·glyph-center, so a translation
@@ -2952,12 +2987,12 @@ fn transform_translation_animate_shifts_all_fragments() {
         xs
     }
     // `base`: a plain transform (no translation). `moved`: the SAME
-    // transform, but preceeded by `#animate(x: 5cm)` so the formula is
+    // transform, but preceeded by `#animate(dx: 5cm)` so the formula is
     // already shifted when the transform window runs. Because candy runs
     // `#animate` and `#transform` as *sequential* slides, the animate must
     // come BEFORE the transform for the translation to be live during the
     // transform window (at the transform's mid, the animate has already
-    // finished and its x=5cm is inherited as the transform's base offset).
+    // finished and its dx=5cm is inherited as the transform's base offset).
     let base = "#import \"candy\": *\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
@@ -2967,7 +3002,7 @@ fn transform_translation_animate_shifts_all_fragments() {
     let moved = "#import \"candy\": *\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
-               #animate(\"eq\", x: 5cm, duration: 60)\n\
+               #animate(\"eq\", dx: 5cm, duration: 60)\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";

@@ -9,3 +9,9 @@
     keywords    = ["animation", "typst", "graphics", "manim"]
     categories  = ["scripting", "presentation", "fun"]
     exclude     = ["README.md"]
+
+[tool.candy]
+    candy    = "TYX"
+    tyx      = "Candy"
+    codename = "Ribose"
+    secret   = "Built for Candy(TYX). In memory of CChO2025."

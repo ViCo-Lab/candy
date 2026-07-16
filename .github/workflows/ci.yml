@@ -182,8 +182,19 @@ jobs:
       - uses: actions/checkout@v4
       - shell: bash
         run: |
-          VERSION=$(grep -m1 '^version' typst/typst.toml | sed -E 's/.*= *"([^"]+)".*/\1/')
-          tar -czf "candy-typst-${VERSION}.tar.gz" -C typst .
+          VERSION=$(grep -m1 '^[[:space:]]*version' typst/typst.toml | sed -E 's/.*= *"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse 'version' from typst/typst.toml" >&2
+            exit 1
+          fi
+          # Respect the `exclude` list declared in typst/typst.toml so the
+          # published tarball matches what `typst` itself would package.
+          mapfile -t EXCLUDES < <(grep -m1 '^[[:space:]]*exclude' typst/typst.toml | grep -oE '"[^"]+"' | sed 's/"//g')
+          TAR_EXTRA=()
+          for f in "${EXCLUDES[@]}"; do
+            TAR_EXTRA+=(--exclude="$f")
+          done
+          tar -czf "candy-typst-${VERSION}.tar.gz" "${TAR_EXTRA[@]}" -C typst .
       - uses: actions/upload-artifact@v4
         with:
           name: candy-typst

@@ -23,7 +23,10 @@
     exclude = ["/.github", "/target", "/.candy", "/dist"]
 
     [package.metadata.candy]
+        candy    = "TYX"
+        tyx      = "Candy"
         codename = "Ribose"
+        secret   = "Built for Candy(TYX). In memory of CChO2025."
 
 [lib]
     name = "candy"
