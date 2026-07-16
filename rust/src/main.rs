@@ -191,14 +191,12 @@ fn run() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Candy => {
-            // Hidden easter egg: `candy candy` / `candy tyx`. The text is shown
-            // bold (the terminal analogue of Typst's `#strong` / 强调), but only
-            // on a TTY with `NO_COLOR` unset so piped / CI output stays plain.
-            let secret = "Built for Candy(TYX). In memory of CChO2025.";
+            // Hidden easter egg: `candy candy` / `candy tyx`.
+            const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";
             if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
-                eprintln!("{}", secret.bold());
+                eprintln!("{}", SECRET.bold());
             } else {
-                eprintln!("{secret}");
+                eprintln!("{SECRET}");
             }
         }
         Commands::Build {
@@ -388,7 +386,7 @@ fn run() -> Result<(), CandyError> {
                     // deliberately bypasses the `64`-based rule). `111` ≈
                     // "yī yī yī" → "yee~": the strangled little noise you make
                     // after biting into something spoiled.
-                    error!(CandyError::Yee("yee~ Batch failed".to_string()));
+                    error!(CandyError::Yee("yee~ Batch failed. \\(!_!)/".to_string()));
                 } else {
                     // Single input (non-batch): keep the specific `E00x` code
                     // via the diagnostic pipeline — no "Batch failed" summary.

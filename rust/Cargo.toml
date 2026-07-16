@@ -65,7 +65,7 @@
     # comemo only ever holds the current frame's transient sub-computations.
     # Version is pinned to match the comemo typst itself depends on, so the
     # `evict` call clears the *same* global cache typst's memoized fns use.
-    comemo       = "=0.5.1"
+    comemo = "=0.5.1"
 
     # typst-kit provides the same font discovery and package resolution that the
     # official `typst` CLI uses, so candy's in-process World behaves identically to
@@ -142,6 +142,16 @@
     # layout (exact positions, correct script sizes, true fraction bars) instead
     # of a hand-rolled token scanner.
     roxmltree = "0.21.1"
+
+    # SVG → pixels rasterization for the per-glyph `#transform` overlay. The
+    # overlay is kept as SVG (`<path>`/`<use>` fragments) and rasterized ONCE at
+    # the final step (replacing the old per-fragment pixel path), so the formula
+    # is embedded only once in `<defs>` and memory stays bounded. resvg / usvg /
+    # tiny-skia are already pulled in transitively by the `gpu` feature; pinning
+    # them directly lets the CPU path reuse the exact same versions.
+    resvg     = "0.47"
+    usvg      = "0.47"
+    tiny-skia = "0.12"
 
     # Parallel frame rasterization (data-parallel over animation frames).
     rayon = "1"

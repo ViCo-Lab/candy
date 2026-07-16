@@ -53,7 +53,7 @@ pub enum CandyError {
     NoCandyImport(String),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
-    /// failed" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
+    /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
     /// n - 1` scheme used by E001–E007 — its process exit code is the dedicated
     /// [`BATCH_ERROR_EXIT`] (111) instead, so a CI pipeline / shell script can
     /// detect "some inputs failed" without aborting the remaining inputs.

@@ -49,7 +49,7 @@
 /// correct initial value. If a non-numeric argument is given (e.g. the bare
 /// name string `ecval("n")`, which standard Typst cannot resolve to a value),
 /// it falls back to `default`.
-#let ecval(key, default: 0) = default
+#let ecval(name, default: 0) = default
 
 /// Pause a counter (freeze its stepping) at the current timeline position.
 /// Inert under standard Typst.

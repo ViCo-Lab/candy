@@ -9,7 +9,6 @@
 
 pub mod audio;
 pub mod encode;
-#[cfg(feature = "gpu")]
 pub mod raster;
 pub mod typst;
 

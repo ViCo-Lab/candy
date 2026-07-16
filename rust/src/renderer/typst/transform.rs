@@ -1,23 +1,27 @@
 //! Per-glyph `#transform` plan types, the Typst source builders for placing a
 //! single mobject body (and for morph outlines), and the whole per-glyph
 //! transform engine: building the fragment layout (`build_transform_fragments`),
-//! rasterizing/compositing it into the pixel path (`transform_fragment_frames`),
 //! and emitting the interpolated SVG overlay (`transform_overlay_svg`).
+//!
+//! The overlay is kept as SVG (`<path>` / `<use>` fragments) and rasterized
+//! **once** at the final step (see [`Renderer::render_transform_overlay_pixels`]
+//! and the CPU rasterizer in `crate::renderer::raster::cpu`) — replacing the old
+//! per-fragment pixel path, which rasterized the whole formula once *per
+//! fragment* and composited each crop. Keeping the overlay as SVG means the
+//! formula is embedded only once (in `<defs>`, reused via `<use>`), so it is
+//! never copied many times and only the single final rasterization touches
+//! pixels.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
-use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
-use typst_utils::Scalar;
 
 use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
 use crate::core::diag::CandyError;
 use crate::renderer::RenderedFrame;
 use crate::renderer::typst::{
-    PT_PER_CM, Renderer, collect_formula_leaves, composite_over_at_xf, crop_formula_rgba,
-    imports_preamble, localize_formula_ids,
+    PT_PER_CM, Renderer, collect_formula_leaves, imports_preamble, localize_formula_ids,
 };
 use typst_library::foundations::Dict;
 
@@ -65,16 +69,11 @@ pub(crate) struct TransformFragmentPlan {
     pub(crate) start_ms: u32,
     pub(crate) end_ms: u32,
     pub(crate) easing: Easing,
-    /// Raw bodies (used by the pixel path to rasterize the whole formulas).
-    pub(crate) old_body: String,
-    pub(crate) new_body: String,
     /// SVG inner markup of the old / new formulas (used by the SVG path).
     pub(crate) old_inner: String,
     pub(crate) new_inner: String,
     /// Per-glyph animation fragments.
     pub(crate) anims: Vec<GlyphAnim>,
-    /// Pixel-path cache of whole-formula RGBA, keyed by `(which: 0/1, ppi_q, page_w, page_h)`.
-    pub(crate) formula_cache: Mutex<HashMap<(u8, u32, u64, u64), Arc<RenderedFrame>>>,
 }
 
 /// Build the Typst source that places a single mobject body at `(x_cm, y_cm)`
@@ -388,12 +387,9 @@ impl Renderer {
             start_ms: plan.start_ms,
             end_ms: plan.end_ms,
             easing: plan.easing.clone(),
-            old_body: plan.old_body.clone(),
-            new_body: plan.new_body.clone(),
             old_inner,
             new_inner,
             anims,
-            formula_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -462,61 +458,6 @@ impl Renderer {
         }
     }
 
-    /// Render a body at an explicit absolute page position (cm) — used for
-    /// transform glyph fragments. No sprite cache (positions change per frame).
-    fn render_placed_pixels(
-        &self,
-        body: &str,
-        x_cm: f64,
-        y_cm: f64,
-        scale_pct: f64,
-        rotation: f64,
-        pixel_per_pt: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<RenderedFrame, CandyError> {
-        let preamble = imports_preamble(&self.scene);
-        let placed = place_source(pw, ph, x_cm, y_cm, scale_pct, rotation, body, &preamble);
-        let doc = self.compile_cached(&placed, &Dict::new())?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let opts = RenderOptions {
-            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
-            render_bleed: false,
-        };
-        let pix = render(page, &opts);
-        Ok(RenderedFrame {
-            width: pix.width() as usize,
-            height: pix.height() as usize,
-            rgba: pix.data().to_vec(),
-        })
-    }
-
-    /// Render the whole old (`src == 0`) or new (`src == 1`) formula to a
-    /// page-sized RGBA at the page origin, so each `GlyphAnim` can be cropped
-    /// from it by its `bx*..` box (which is already in page pt). Cached per
-    /// `(src, quantized_ppi)` so the formula is rasterized once per plan.
-    fn formula_rgba(
-        &self,
-        p: &TransformFragmentPlan,
-        src: u8,
-        ppi: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<Arc<RenderedFrame>, CandyError> {
-        let ppi_q = (ppi * 100.0).round() as u32;
-        let key = (src, ppi_q, pw.to_bits(), ph.to_bits());
-        if let Some(f) = p.formula_cache.lock().unwrap().get(&key) {
-            return Ok(f.clone());
-        }
-        let body = if src == 0 { &p.old_body } else { &p.new_body };
-        let frame = Arc::new(self.render_placed_pixels(body, 0.0, 0.0, 100.0, 0.0, ppi, pw, ph)?);
-        p.formula_cache.lock().unwrap().insert(key, frame.clone());
-        Ok(frame)
-    }
-
     /// Whether `label` is hidden by an active per-glyph transform (its `target`
     /// or `old` mobject), so the renderer can draw the interpolated fragments
     /// instead. Only plans that actually produced fragments hide their labels.
@@ -561,101 +502,50 @@ impl Renderer {
         Some((sx, sy, te, scale, rot))
     }
 
-    /// Build the interpolated glyph-fragment overlays for the current frame and
-    /// composite them *directly* into `canvas` (so they are warped by the camera
-    /// together with the other mobjects, and we never allocate a full-page
-    /// buffer per fragment — which made rendering pathologically slow).
+    /// Build the per-glyph `#transform` overlay SVG for this frame and rasterize
+    /// it **once** to a page-sized RGBA (transparent background), so it can be
+    /// alpha-composited over the base frame.
     ///
-    /// Each `GlyphAnim` is cropped from the whole old/new formula (rasterized
-    /// once at the page origin and cached) by its `bx*..` box, then composited at
-    /// its interpolated position. The position adds the target mobject's natural
-    /// offset (`nat`) plus its current translation (`state.x/y`) so the transform
-    /// stays glued to the mobject and to the rest of the scene.
+    /// This replaces the old per-fragment pixel path (`transform_fragment_frames`),
+    /// which rasterized the whole old/new formula once *per fragment* and pasted
+    /// each crop — slow and artefact-prone. Here the overlay stays SVG: the
+    /// formula is embedded only once in `<defs>` (reused by every fragment via
+    /// `<use>`), and only this single final rasterization touches pixels, so the
+    /// formula is never copied many times and memory stays bounded. The fragment
+    /// positions already include the target mobject's natural offset (`nat`) plus
+    /// its current translation (`state.x/y`), so the transform stays glued to the
+    /// mobject and to the rest of the scene.
     ///
-    /// Two correctness fixes are baked in here:
-    /// * **Surviving glyphs stay opaque and don't flicker.** A matched glyph is
-    ///   drawn from the old formula for the whole tween. Multiplying its opacity
-    ///   by the target's artificial 0→1 crossfade (or switching to the new
-    ///   formula at the midpoint) made stationary characters fade in and jump;
-    ///   since the target is hidden during the window and the old/new inks are
-    ///   identical for matched shapes, drawing one source the whole way gives a
-    ///   smooth move with no pop.
-    /// * **Composable with other animations.** The target's current `scale` /
-    ///   `rotation` (from a simultaneous `#animate`) are applied to every
-    ///   fragment, so a `transform` can glide *and* scale/spin at once instead of
-    ///   ignoring the other tracks.
-    pub(crate) fn transform_fragment_frames(
+    /// Returns `None` when no plan is active at `time_ms` (nothing to draw), so the
+    /// caller can skip compositing entirely.
+    pub(crate) fn render_transform_overlay_pixels(
         &self,
         states: &HashMap<Label, FrameData>,
         time_ms: u32,
         pixel_per_pt: f32,
         pw: f64,
         ph: f64,
-        canvas: &mut [u8],
-        w: usize,
-        h: usize,
-    ) -> Result<(), CandyError> {
-        let ppi = pixel_per_pt as f64;
-        for p in &self.transform_fragments {
-            let Some((sx, sy, te, scale, rot)) =
-                self.transform_progress(p, states, time_ms)
-            else {
-                continue;
-            };
-            // Matrix that maps a fragment's local px (origin = its top-left) into
-            // canvas px: first the user scale/rotation (pivot at glyph center),
-            // then the cm→pt→px placement.
-            let r = rot.to_radians();
-            let (s, c) = (r.sin(), r.cos());
-            let sc = scale;
-            // a,b,c,d compose scale*rotate; e,f are filled per-fragment below.
-            let ma = sc * c;
-            let mb = sc * s;
-            let mc = -sc * s;
-            let md = sc * c;
-            for f in &p.anims {
-                let lx = f.from_x + (f.to_x - f.from_x) * te;
-                let ly = f.from_y + (f.to_y - f.from_y) * te;
-                let op = f.from_op + (f.to_op - f.from_op) * te;
-                if op <= 0.001 {
-                    continue;
-                }
-                // Draw from the source this fragment was assigned at layout time
-                // (old formula for deleted/matched, new formula for inserted).
-                // The target is hidden during the window, so there is no live
-                // new glyph to overlap; using a single source avoids a midpoint
-                // pop when old and new formula renders differ slightly.
-                let src = f.src;
-                // Crop from the *same* formula we draw (old or new): an inserted
-                // glyph must crop the new formula's box, while a deleted/matched
-                // one uses its old box.
-                let (bbx0, bby0, bbx1, bby1) = if src == 1 {
-                    (f.nbx0, f.nby0, f.nbx1, f.nby1)
-                } else {
-                    (f.bx0, f.by0, f.bx1, f.by1)
-                };
-                let whole = self.formula_rgba(p, src, pixel_per_pt, pw, ph)?;
-                let crop = crop_formula_rgba(&whole, bbx0, bby0, bbx1, bby1, pixel_per_pt);
-                // cm (nat + state + interpolation) -> pt -> px
-                let fx_px = (sx + lx) * PT_PER_CM * ppi;
-                let fy_px = (sy + ly) * PT_PER_CM * ppi;
-                // Destination (canvas px) of the source crop's center. The crop's
-                // center is the glyph's center in formula-local px; we want it at the
-                // interpolated page position of the glyph *center* — i.e. the
-                // interpolated top-left plus the (scale*rotate)-transformed offset
-                // from top-left to center. (Previously this subtracted the full
-                // center coordinate, shifting every fragment ~2·center toward the
-                // top-left — the "scattered fragments / ghost" artefact.)
-                let dx_pt = (bbx0 + bbx1) / 2.0 - bbx0; // cx - bbx0
-                let dy_pt = (bby0 + bby1) / 2.0 - bby0; // cy - bby0
-                let me = fx_px + sc * (c * dx_pt - s * dy_pt) * ppi;
-                let mf = fy_px + sc * (s * dx_pt + c * dy_pt) * ppi;
-                composite_over_at_xf(
-                    canvas, &crop, op, me, mf, ma, mb, mc, md, w, h,
-                );
-            }
+    ) -> Result<Option<RenderedFrame>, CandyError> {
+        let overlay = self.transform_overlay_svg(states, time_ms);
+        if overlay.trim().is_empty() {
+            return Ok(None);
         }
-        Ok(())
+        let w = (pw * pixel_per_pt as f64).round().max(1.0) as u32;
+        let h = (ph * pixel_per_pt as f64).round().max(1.0) as u32;
+        // The overlay's fragment coordinates are in page pt; set the SVG root to
+        // the target pixel size with a pt viewBox so `usvg` applies the
+        // viewBox→viewport scale and the single rasterization fills the canvas.
+        let doc = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
+             width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {pw} {ph}\">{overlay}</svg>",
+            w = w,
+            h = h,
+            pw = pw,
+            ph = ph,
+            overlay = overlay,
+        );
+        let frame = crate::renderer::raster::cpu::rasterize_svg_once(&doc, w, h)?;
+        Ok(Some(frame))
     }
 
     /// Emit the per-glyph transform SVG overlay for the current frame.

@@ -1302,10 +1302,13 @@ impl Renderer {
                     continue;
                 }
             }
+            let l = &label.0;
             if self.transform_hidden(label, time_ms) {
+                // The target/old mobjects are replaced by the interpolated
+                // per-glyph fragments, so hide them in the base document.
+                inputs.insert(format!("candy:{l}:hide").into(), Value::Bool(true));
                 continue;
             }
-            let l = &label.0;
             inputs.insert(format!("candy:{l}:dx").into(), Value::Float(st.x));
             inputs.insert(format!("candy:{l}:dy").into(), Value::Float(st.y));
             inputs.insert(
@@ -1437,8 +1440,15 @@ impl Renderer {
                 h,
             );
         }
-        // Per-glyph `#transform` overlay (Manim-style fragment tween).
-        self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph, &mut canvas, w, h)?;
+        // Per-glyph `#transform` overlay (Manim-style fragment tween): kept as
+        // SVG and rasterized ONCE at the final step (the formula is embedded once
+        // in `<defs>`, not copied per fragment), then composited over the base
+        // canvas — so it is warped by the camera together with the rest.
+        if let Some(overlay) =
+            self.render_transform_overlay_pixels(&states, time_ms, pixel_per_pt, pw, ph)?
+        {
+            composite_over_at(&mut canvas, &overlay, 1.0, 0.0, 0.0, w, h);
+        }
         // Camera warp (subtitles are composited afterwards, so they stay fixed).
         if let Some(cam) = &camera {
             let bg = if self.scene.scenes.is_empty() {
@@ -1476,19 +1486,29 @@ impl Renderer {
 
     /// Whole-document native-Typst SVG draft (compatible standard Typst SVG,
     /// not the hand-rolled composite the old path emitted — so it opens in any
-    /// viewer, not just Inkscape).
+    /// viewer, not just Inkscape). The per-glyph `#transform` overlay and the
+    /// subtitles are injected here, so the draft is the single source of truth
+    /// for the whole frame (the "new" SVG path).
     fn render_frame_at_whole_doc(
         &self,
         time_ms: u32,
         all_frames: &[FrameData],
     ) -> Result<Vec<u8>, CandyError> {
-        let (states, _cam) = self.prepare_states(all_frames, time_ms);
+        let (states, camera) = self.prepare_states(all_frames, time_ms);
         let active = if self.scene.scenes.is_empty() {
             0
         } else {
             self.scene.active_scene_at(time_ms)
         };
         let active_page = self.pages.active_page_of(active, time_ms);
+        let (pw, ph) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            self.scene_pages
+                .get(&active)
+                .copied()
+                .unwrap_or((self.page_w, self.page_h))
+        };
         // `hide_fading = false`: the draft shows fading objects at full opacity
         // (typst 0.15 cannot express per-object opacity in-document).
         let inputs = self.build_frame_inputs(&states, active, active_page, false, time_ms);
@@ -1498,7 +1518,83 @@ impl Renderer {
             .get(active_page)
             .or_else(|| doc.pages().first())
             .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        Ok(typst_svg::svg(page, &SvgOptions::default()).into_bytes())
+        let base = typst_svg::svg(page, &SvgOptions::default());
+        // Compose the full draft: base document + (camera group wrapping the
+        // mobjects and the per-glyph transform overlay) + subtitles. The transform
+        // overlay is the "new" SVG path — the formula is embedded once in `<defs>`
+        // and reused via `<use>`, so it is never copied many times.
+        let out = self.compose_frame_svg(&base, &states, time_ms, &camera, pw, ph)?;
+        Ok(out.into_bytes())
+    }
+
+    /// Compose the full draft SVG for one frame: the base document (typst_svg
+    /// output) with the per-glyph `#transform` overlay and subtitles injected.
+    ///
+    /// The base document's mobjects and the transform overlay are wrapped in a
+    /// single camera group (so they pan/zoom/rotate with the view together),
+    /// while the background `<rect>` and the subtitle overlays stay fixed (drawn
+    /// outside the camera group). The transform overlay embeds each formula once
+    /// in `<defs>` and references it via `<use>`, so the formula is never
+    /// duplicated.
+    fn compose_frame_svg(
+        &self,
+        base_svg: &str,
+        states: &HashMap<Label, FrameData>,
+        time_ms: u32,
+        camera: &Option<FrameData>,
+        pw: f64,
+        ph: f64,
+    ) -> Result<String, CandyError> {
+        // Extract the inner markup of the typst_svg document (between `<svg …>`
+        // and `</svg>`), then split the leading background `<rect>` (which must
+        // stay fixed, outside the camera group) from the mobject content.
+        let open = base_svg
+            .find("<svg")
+            .ok_or_else(|| CandyError::Typst("bad svg".into()))?;
+        let after = open
+            + base_svg[open..]
+                .find('>')
+                .ok_or_else(|| CandyError::Typst("bad svg".into()))?
+            + 1;
+        let end = base_svg
+            .rfind("</svg>")
+            .ok_or_else(|| CandyError::Typst("bad svg".into()))?;
+        let inner = &base_svg[after..end];
+        let (bg, content) = match inner.find("<rect") {
+            Some(i) => {
+                let rend = i
+                    + inner[i..]
+                        .find("/>")
+                        .ok_or_else(|| CandyError::Typst("bad svg".into()))?
+                    + 2;
+                (&inner[i..rend], &inner[rend..])
+            }
+            None => ("", inner),
+        };
+        let mut out = String::new();
+        out.push_str(&format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{pw}\" height=\"{ph}\" viewBox=\"0 0 {pw} {ph}\">\n",
+            pw = pw, ph = ph,
+        ));
+        out.push_str(bg);
+        out.push('\n');
+        if let Some(cam) = camera {
+            out.push_str(&format!("<g transform=\"{}\">\n", camera_transform_svg(cam, pw, ph)));
+        }
+        out.push_str(content);
+        out.push('\n');
+        out.push_str(&self.transform_overlay_svg(states, time_ms));
+        if camera.is_some() {
+            out.push_str("</g>\n");
+        }
+        for sub in &self.scene.subtitles {
+            if self.scene.visible_subtitle_ids_at(time_ms).contains(&sub.id) {
+                out.push_str(&self.render_subtitle_svg(sub, time_ms)?);
+                out.push('\n');
+            }
+        }
+        out.push_str("</svg>\n");
+        Ok(out)
     }
 
     /// Stable paint index for each label, following source *declaration* order:
@@ -1543,7 +1639,7 @@ impl Renderer {
         all_frames: &[FrameData],
         pixel_per_pt: f32,
     ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        if !self.scene.artifacts.source.is_empty() && self.scene.transform_plans.is_empty() {
+        if !self.scene.artifacts.source.is_empty() {
             return self.render_frame_pixels_whole_doc_par(time_ms, all_frames, pixel_per_pt);
         }
         self.render_frame_pixels_legacy_par(time_ms, all_frames, pixel_per_pt)
@@ -1662,12 +1758,15 @@ impl Renderer {
                 h,
             );
         }
-        // Per-glyph transform overlays (Manim-style), composited directly into
-        // the canvas so they are warped by the camera together with the other
-        // mobjects — and so we never allocate a full-page buffer per fragment
-        // (which made rendering pathologically slow). Fragments are placed with
-        // correct cm→pt→px scaling, so they stay glued to the target mobject.
-        self.transform_fragment_frames(&states, time_ms, pixel_per_pt, pw, ph, &mut canvas, w, h)?;
+        // Per-glyph `#transform` overlay (Manim-style): kept as SVG and
+        // rasterized ONCE at the final step (the formula is embedded once in
+        // `<defs>`, not copied per fragment), then composited over the base
+        // canvas so it is warped by the camera together with the other mobjects.
+        if let Some(overlay) =
+            self.render_transform_overlay_pixels(&states, time_ms, pixel_per_pt, pw, ph)?
+        {
+            composite_over_at(&mut canvas, &overlay, 1.0, 0.0, 0.0, w, h);
+        }
         // Apply the global camera (pan + zoom + rotate) by warping the
         // composited object canvas through the inverse camera transform.
         // Subtitles are deliberately NOT warped here — they are overlaid
@@ -1774,7 +1873,7 @@ impl Renderer {
         all_frames: &[FrameData],
     ) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
-        if !self.scene.artifacts.source.is_empty() && self.scene.transform_plans.is_empty() {
+        if !self.scene.artifacts.source.is_empty() {
             return self.render_frame_at_whole_doc(time_ms, all_frames);
         }
         // Resolve per-object effective transforms (group composition applied)
@@ -2719,16 +2818,17 @@ fn transform_target_renders_after_window() {
     let svg_mid = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
     assert!(svg_mid.contains("<svg"), "mid-window svg empty");
     // After window (past the transform's end_ms, still inside the document): the
-    // target shows its new content — must contain a nested `<svg` for the
-    // rendered glyphs, not just the background rect. Scenes are mutually
-    // exclusive slides, so this also verifies the scene stays on stage (its
-    // interval is extended to the document end) and the target is not hidden.
+    // target shows its new content — the whole-document render must therefore
+    // emit glyph drawing (`<path`) beyond the background `<rect>`, not just an
+    // empty background. Scenes are mutually exclusive slides, so this also
+    // verifies the scene stays on stage (its interval is extended to the
+    // document end) and the target is not hidden.
     let after = 90u32;
     let svg_after = String::from_utf8(r.render_frame_at(after, &frames).unwrap()).unwrap();
-    let nested = svg_after.matches("<svg").count();
+    let glyphs = svg_after.matches("<path").count();
     assert!(
-        nested >= 2,
-        "after window target must render (nested svg count={nested})"
+        glyphs >= 1,
+        "after window target must render its new content (glyph path count={glyphs})"
     );
     std::fs::remove_file(&tmp).ok();
 }

@@ -89,6 +89,10 @@
 /// Absolute and relative transforms may be combined in one `animate` call:
 /// each produces a separate action that animates in parallel over the slide's
 /// duration. Inert under standard Typst (returns `none`).
+///
+/// The trailing `..` argument sink tolerates the intuitive aliases the Candy
+/// DSL parser also accepts (e.g. `x:` / `y:` for `dx:` / `dy:`) so a source
+/// using them still compiles cleanly through the whole-document render path.
 #let animate(
   target,
   to: none,
@@ -101,6 +105,7 @@
   opacity: none,
   duration: 500,
   easing: "linear",
+  ..,
 ) = none
 
 /// Hold the current frame for `duration` milliseconds (default `500`, a manual pause marker).
