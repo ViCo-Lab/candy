@@ -5,217 +5,18 @@ use super::*;
 pub(crate) type LargestShape = (Vec<[f64; 2]>, Option<String>, Option<String>);
 
 impl Renderer {
-    /// Render a single mobject at its placed position onto a transparent
-    /// full-canvas RGBA frame (page-sized).
-    fn render_object_pixels(
-        &self,
-        label: &Label,
-        st: &FrameData,
-        time_ms: u32,
-        page_w: f64,
-        page_h: f64,
-        pixel_per_pt: f32,
-    ) -> Result<Arc<CachedSprite>, CandyError> {
-        let nat = self.nat.get(label).cloned().unwrap_or((0.0, 0.0));
-        let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
-        let abs_x_cm = nat_cm.0 + st.x;
-        let abs_y_cm = nat_cm.1 + st.y;
-        let scale_pct = st.scale * 100.0;
-        let body = self.resolve_body(label, time_ms);
-        let preamble = imports_preamble(&self.scene);
-        // Sprite cache: identical (label + body + quantized transform + ppi)
-        // states reuse the previously rasterized RGBA, skipping Typst's
-        // `render`. Paused / static objects are the common case and hit this
-        // every frame; genuinely moving objects miss it (correctly re-raster).
-        let body_hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            body.hash(&mut h);
-            std::hash::Hasher::finish(&h)
-        };
-        let key = SpriteKey {
-            label: label.0.clone(),
-            body_hash,
-            scale_q: (scale_pct * 10.0).round().max(0.0) as u32,
-            rot_q: (st.rotation * 10.0).round() as u32,
-            x_q: ((abs_x_cm + 1e6) * 100.0).round().max(0.0) as u32,
-            y_q: ((abs_y_cm + 1e6) * 100.0).round().max(0.0) as u32,
-            ppi_q: (pixel_per_pt * 100.0).round() as u32,
-        };
-        if let Some(cached) = self.sprite_cache.lock().unwrap().get(&key) {
-            return Ok(cached.clone());
-        }
-        let placed = place_source(
-            page_w,
-            page_h,
-            abs_x_cm,
-            abs_y_cm,
-            scale_pct,
-            st.rotation,
-            &body,
-            &preamble,
-        );
-        let doc = self.compile_cached(&placed, &Dict::new())?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let opts = RenderOptions {
-            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
-            render_bleed: false,
-        };
-        let pix = render(page, &opts);
-        let full = crate::renderer::RenderedFrame {
-            width: pix.width() as usize,
-            height: pix.height() as usize,
-            // `take()` moves the pixmap's buffer out instead of copying it.
-            rgba: pix.take(),
-        };
-        // Crop to the object's tight bounding box. This is the core HD/high-FPS
-        // OOM fix: without it the cache would hold full-canvas RGBA frames
-        // (~8MB at 1080p), and 512 of them alone would blow memory. The crop is
-        // only the object's ink (KB), and `ox`/`oy` let the compositor paste it
-        // back at the exact page position so output is bit-identical to
-        // compositing the full page.
-        let sprite = Arc::new(crop_to_content(&full.rgba, full.width, full.height));
-        self.sprite_cache
-            .lock()
-            .unwrap()
-            .insert(key, sprite.clone());
-        Ok(sprite)
-    }
     // =========================================================================
     // Whole-document native-Typst render path (the authentic typesetting model)
     // =========================================================================
     //
-    // Instead of re-placing every mobject on a full canvas (the old approach,
-    // which both risked layout drift and blew memory on one full-page
-    // `PagedDocument` per object), we let Typst typeset the *entire* document
-    // natively each frame. Every mobject body is wrapped in
-    // `#move`/`#scale`/`#rotate` (all exist in typst 0.15) so the animation is
-    // just a code expansion driven by the eased per-frame counters — exactly the
-    // "easing-counter → Typst code expansion" model. Static content stays in
-    // native flow, so positions and Z-order are always correct and static +
-    // dynamic content is freely interleaved.
-    //
-    // Per-object *opacity* is the one thing typst 0.15 cannot express in-document
-    // (there is no `opacity()` function), so fading objects are omitted from the
-    // base document and drawn as a small, object-sized opacity overlay on top.
-    // Everything else is a single native compile → far fewer compiles than the
-    // old N-objects-per-frame path and a tightly bounded `body_cache`.
-
-    /// Whole-document native-Typst pixel frame (see the module note above).
-    fn render_frame_pixels_whole_doc_par(
-        &self,
-        time_ms: u32,
-        all_frames: &[FrameData],
-        pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        let (states, camera) = self.prepare_states(all_frames, time_ms);
-        let active = if self.scene.scenes.is_empty() {
-            0
-        } else {
-            self.scene.active_scene_at(time_ms)
-        };
-        let active_page = self.pages.active_page_of(active, time_ms);
-        let (pw, ph) = if self.scene.scenes.is_empty() {
-            (self.page_w, self.page_h)
-        } else {
-            self.scene_pages
-                .get(&active)
-                .copied()
-                .unwrap_or((self.page_w, self.page_h))
-        };
-        // The source is stable (`param_source`); only the per-frame `inputs`
-        // vary. Compiling yields exactly the active scene's page.
-        let inputs = self.build_frame_inputs(&states, active, active_page, true, time_ms);
-        let doc = self.compile_param_source(&inputs)?;
-        let page = doc
-            .pages()
-            .get(active_page)
-            .or_else(|| doc.pages().first())
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let opts = RenderOptions {
-            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
-            render_bleed: false,
-        };
-        let pix = render(page, &opts);
-        let w = pix.width() as usize;
-        let h = pix.height() as usize;
-        // `take()` transfers the pixmap's RGBA buffer instead of copying it
-        // (the old `pix.data().to_vec()` duplicated the whole canvas every frame).
-        let mut canvas: Vec<u8> = pix.take();
-        // Opacity-overlay pass: draw fading objects (typst 0.15 has no
-        // `opacity()`, so they were hidden in the base document above).
-        for (label, st) in &states {
-            if st.opacity >= 1.0 - 1e-4 {
-                continue;
-            }
-            let owner = self.label_scene.get(label).copied().unwrap_or(active);
-            if owner != active {
-                continue;
-            }
-            if let Some(p) = self.pages.page_of(label) {
-                if p != active_page {
-                    continue;
-                }
-            }
-            if self.transform_hidden(label, time_ms) {
-                continue;
-            }
-            let sprite = self.render_object_pixels(label, st, time_ms, pw, ph, pixel_per_pt)?;
-            composite_over_at(
-                &mut canvas,
-                &sprite.frame,
-                st.opacity,
-                sprite.ox as f64,
-                sprite.oy as f64,
-                w,
-                h,
-            );
-        }
-        // Per-glyph `#transform` overlay (Manim-style fragment tween): kept as
-        // SVG and rasterized ONCE at the final step (the formula is embedded once
-        // in `<defs>`, not copied per fragment), then composited over the base
-        // canvas — so it is warped by the camera together with the rest.
-        if let Some(overlay) =
-            self.render_transform_overlay_pixels(&states, time_ms, pixel_per_pt, pw, ph)?
-        {
-            composite_over_at(&mut canvas, &overlay, 1.0, 0.0, 0.0, w, h);
-        }
-        // Camera warp (subtitles are composited afterwards, so they stay fixed).
-        if let Some(cam) = &camera {
-            let bg = if self.scene.scenes.is_empty() {
-                [255u8, 255, 255, 255]
-            } else {
-                Self::hex_to_rgba(&self.scene_bg_hex(active)?)
-            };
-            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg);
-        }
-        // Subtitle overlay (topmost, independent Typst layer).
-        for sub in &self.scene.subtitles {
-            if self
-                .scene
-                .visible_subtitle_ids_at(time_ms)
-                .contains(&sub.id)
-            {
-                let frame = self.render_subtitle_pixels(sub, time_ms, pixel_per_pt)?;
-                composite_over_at(
-                    &mut canvas,
-                    &frame.frame,
-                    1.0,
-                    frame.ox as f64,
-                    frame.oy as f64,
-                    w,
-                    h,
-                );
-            }
-        }
-        Ok(crate::renderer::RenderedFrame {
-            width: w,
-            height: h,
-            rgba: canvas,
-        })
-    }
+    // Typst typesets the *entire* document natively each frame. Every mobject
+    // body is wrapped in `#move`/`#scale`/`#rotate` (all exist in typst 0.15) so
+    // the animation is just a code expansion driven by the eased per-frame
+    // counters — exactly the "easing-counter → Typst code expansion" model.
+    // Static content stays in native flow, so positions and Z-order are always
+    // correct and static + dynamic content is freely interleaved. The result is
+    // a single standard SVG (`render_frame_at`), rasterized once by the `raster`
+    // module — never a per-object pixel composite.
 
     /// Whole-document native-Typst SVG draft (compatible standard Typst SVG,
     /// not the hand-rolled composite the old path emitted — so it opens in any
@@ -312,7 +113,10 @@ impl Renderer {
         out.push_str(bg);
         out.push('\n');
         if let Some(cam) = camera {
-            out.push_str(&format!("<g transform=\"{}\">\n", camera_transform_svg(cam, pw, ph)));
+            out.push_str(&format!(
+                "<g transform=\"{}\">\n",
+                camera_transform_svg(cam, pw, ph)
+            ));
         }
         out.push_str(content);
         out.push('\n');
@@ -321,7 +125,11 @@ impl Renderer {
             out.push_str("</g>\n");
         }
         for sub in &self.scene.subtitles {
-            if self.scene.visible_subtitle_ids_at(time_ms).contains(&sub.id) {
+            if self
+                .scene
+                .visible_subtitle_ids_at(time_ms)
+                .contains(&sub.id)
+            {
                 out.push_str(&self.render_subtitle_svg(sub, time_ms)?);
                 out.push('\n');
             }
@@ -346,180 +154,7 @@ impl Renderer {
         }
         idx
     }
-    /// Composite all mobjects (per-object opacity) onto an opaque-white canvas.
-    pub fn render_frame_pixels(
-        &mut self,
-        time_ms: u32,
-        all_frames: &[FrameData],
-        pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        self.ensure_natural()?;
-        self.render_frame_pixels_par(time_ms, all_frames, pixel_per_pt)
-    }
-    /// Parallel-safe variant of [`render_frame_pixels`](Self::render_frame_pixels).
-    ///
-    /// Takes `&self` (not `&mut self`) so it can be called from a rayon
-    /// parallel iterator. **Precondition:** `ensure_natural()` must have been
-    /// called once before any parallel call (it initializes `nat`/`page_w`/
-    /// `page_h`). The [`Renderer::ensure_natural_public`] method exposes this.
-    /// Dispatch to the whole-document native-Typst path when the parsed source
-    /// carries render artifacts (real `.tyx` inputs), otherwise fall back to the
-    /// legacy per-object compositing path (hand-built test scenes without
-    /// artifacts). Both satisfy the same `FrameData → RGBA` contract.
-    pub fn render_frame_pixels_par(
-        &self,
-        time_ms: u32,
-        all_frames: &[FrameData],
-        pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        if !self.scene.artifacts.source.is_empty() {
-            return self.render_frame_pixels_whole_doc_par(time_ms, all_frames, pixel_per_pt);
-        }
-        self.render_frame_pixels_legacy_par(time_ms, all_frames, pixel_per_pt)
-    }
 
-    /// Legacy per-object compositing path (kept for hand-built test scenes that
-    /// carry no parsed `artifacts`). See [`render_frame_pixels_par`].
-    fn render_frame_pixels_legacy_par(
-        &self,
-        time_ms: u32,
-        all_frames: &[FrameData],
-        pixel_per_pt: f32,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        // Resolve per-object effective transforms (group composition applied)
-        // and extract the optional global camera state.
-        let (states, camera) = self.prepare_states(all_frames, time_ms);
-        // Resolve the active scene (innermost scene at this frame time) and its
-        // canvas. Entering a child scene hides its parent — we render only the
-        // active scene's mobjects. With no scene tree, the whole document is one
-        // scene and everything renders (legacy behavior).
-        let active = if self.scene.scenes.is_empty() {
-            0
-        } else {
-            self.scene.active_scene_at(time_ms)
-        };
-        // Cross-page scene: the page currently playing. Only mobjects on this
-        // page are drawn; the other pages' timelines stay frozen until this page
-        // finishes and the renderer auto-advances to the next page.
-        // Cross-page scene: the page currently playing. Only mobjects on this
-        // page are drawn; the other pages' timelines stay frozen until this page
-        // finishes and the renderer auto-advances to the next page.
-        let active_page = self.pages.active_page_of(active, time_ms);
-        let (pw, ph) = if self.scene.scenes.is_empty() {
-            (self.page_w, self.page_h)
-        } else {
-            self.scene_pages
-                .get(&active)
-                .copied()
-                .unwrap_or((self.page_w, self.page_h))
-        };
-        let mut labels: Vec<&Label> = states.keys().collect();
-        let order = self.draw_order_index();
-        labels.sort_by(|a, b| order.get(*a).cmp(&order.get(*b)).then(a.0.cmp(&b.0)));
-        let mut objs: Vec<(f64, Arc<CachedSprite>)> = Vec::new();
-        for label in &labels {
-            // Scene auto-hide: a mobject is visible ONLY when its owner scene IS
-            // the active scene (`label_scene[label] == active`). This is what
-            // makes scenes behave like independent slides — entering a child
-            // scene hides its parent, and when the root scene is active only the
-            // root's own mobjects are drawn (a child scene's content does NOT
-            // leak onto the root canvas). Mobjects not attributed to any scene
-            // (legacy / global) are kept visible.
-            if !self.scene.scenes.is_empty() {
-                let owner = self.label_scene.get(*label).copied().unwrap_or(active);
-                if owner != active {
-                    continue;
-                }
-            }
-            // Cross-page gate: skip mobjects that belong to a different page.
-            // Their timeline is frozen (not drawn) until the renderer advances
-            // to their page.
-            if let Some(p) = self.pages.page_of(label) {
-                if p != active_page {
-                    continue;
-                }
-            }
-            // Per-glyph transform: the `target`/`old` mobjects are replaced by
-            // the interpolated glyph fragments, so skip them during the window.
-            if self.transform_hidden(label, time_ms) {
-                continue;
-            }
-            let st = states.get(*label).unwrap();
-            let sprite = self.render_object_pixels(label, st, time_ms, pw, ph, pixel_per_pt)?;
-            objs.push((st.opacity, sprite));
-        }
-        // Subtitle overlays are collected separately: they must be composited
-        // AFTER the global camera warp so they stay pinned at a fixed page
-        // position/size regardless of the current view (pan/zoom/rotate).
-        let mut subs: Vec<CachedSprite> = Vec::new();
-        for sub in &self.scene.subtitles {
-            if self
-                .scene
-                .visible_subtitle_ids_at(time_ms)
-                .contains(&sub.id)
-            {
-                let frame = self.render_subtitle_pixels(sub, time_ms, pixel_per_pt)?;
-                subs.push(frame);
-            }
-        }
-        // Canvas size follows the active scene's page (not an arbitrary frame).
-        let w = (pw * pixel_per_pt as f64).round().max(1.0) as usize;
-        let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
-        // Seed the canvas with the active scene's background color (inheriting
-        // from a parent scene, defaulting to opaque white), so the configured
-        // `bg` actually shows in the encoded video — not a hardcoded white.
-        let bg_rgba = if self.scene.scenes.is_empty() {
-            [255u8, 255, 255, 255]
-        } else {
-            Self::hex_to_rgba(&self.scene_bg_hex(active)?)
-        };
-        let mut canvas = vec![0u8; w * h * 4];
-        for chunk in canvas.chunks_mut(4) {
-            chunk.copy_from_slice(&bg_rgba);
-        }
-        for (opacity, sprite) in &objs {
-            // Paste the cropped sprite at its page-pixel offset so the result is
-            // identical to compositing the full page (but at a fraction of the
-            // memory: the sprite is only the object's ink, not the whole canvas).
-            composite_over_at(
-                &mut canvas,
-                &sprite.frame,
-                *opacity,
-                sprite.ox as f64,
-                sprite.oy as f64,
-                w,
-                h,
-            );
-        }
-        // Per-glyph `#transform` overlay (Manim-style): kept as SVG and
-        // rasterized ONCE at the final step (the formula is embedded once in
-        // `<defs>`, not copied per fragment), then composited over the base
-        // canvas so it is warped by the camera together with the other mobjects.
-        if let Some(overlay) =
-            self.render_transform_overlay_pixels(&states, time_ms, pixel_per_pt, pw, ph)?
-        {
-            composite_over_at(&mut canvas, &overlay, 1.0, 0.0, 0.0, w, h);
-        }
-        // Apply the global camera (pan + zoom + rotate) by warping the
-        // composited object canvas through the inverse camera transform.
-        // Subtitles are deliberately NOT warped here — they are overlaid
-        // afterwards so they remain at a fixed page position and fixed size
-        // no matter what the camera does.
-        if let Some(cam) = &camera {
-            warp_canvas_with_camera(&mut canvas, w, h, cam, pw, ph, pixel_per_pt, bg_rgba);
-        }
-        // Overlay subtitles on top of the warped canvas, at their fixed
-        // page-anchored positions. They are cropped (offset stored), so paste
-        // at the offset to reproduce the full-page position.
-        for s in &subs {
-            composite_over_at(&mut canvas, &s.frame, 1.0, s.ox as f64, s.oy as f64, w, h);
-        }
-        Ok(crate::renderer::RenderedFrame {
-            width: w,
-            height: h,
-            rgba: canvas,
-        })
-    }
     /// Public wrapper around `ensure_natural` so callers (e.g. the parallel
     /// rasterization loop in `build_input_with_gpu`) can pre-compute the
     /// natural layout before spawning parallel frame renders.
@@ -551,52 +186,12 @@ impl Renderer {
             .map(|p| p.anims.len())
             .sum()
     }
-    /// GPU-accelerated variant of [`render_frame_pixels`](Self::render_frame_pixels).
-    ///
-    /// Available only when the `gpu` cargo feature is enabled. Renders the
-    /// frame to SVG (same as `render_frame_at`, with per-object opacity
-    /// already applied via `<g opacity>` wrappers), then rasterizes the SVG on
-    /// the GPU via vello + wgpu. The result is identical to the CPU path
-    /// (modulo GPU rasterization differences like anti-aliasing quality), so
-    /// the downstream video encoder consumes it unchanged.
-    ///
-    /// Pass a reusable [`crate::renderer::raster::gpu::GpuRenderer`] — constructing a
-    /// wgpu device is expensive, so it should be created once and reused
-    /// across every frame in the animation.
-    #[cfg(feature = "gpu")]
-    pub fn render_frame_pixels_gpu(
-        &mut self,
-        time_ms: u32,
-        all_frames: &[FrameData],
-        pixel_per_pt: f32,
-        gpu: &mut crate::renderer::raster::gpu::GpuRenderer,
-    ) -> Result<crate::renderer::RenderedFrame, CandyError> {
-        // 1. Produce the composite SVG for this frame (with opacity baked in).
-        let svg_bytes = self.render_frame_at(time_ms, all_frames)?;
-        let svg_str = std::str::from_utf8(&svg_bytes)
-            .map_err(|e| CandyError::Typst(format!("svg utf8: {e}")))?;
-        // 2. Compute target pixel dimensions from the active scene's page size + ppi.
-        let (pw, ph) = if self.scene.scenes.is_empty() {
-            (self.page_w, self.page_h)
-        } else {
-            let active = self.scene.active_scene_at(time_ms);
-            self.scene_pages
-                .get(&active)
-                .copied()
-                .unwrap_or((self.page_w, self.page_h))
-        };
-        let width = (pw * pixel_per_pt as f64).round().max(1.0) as u32;
-        let height = (ph * pixel_per_pt as f64).round().max(1.0) as u32;
-        // 3. Rasterize on the GPU.
-        gpu.render_svg(svg_str, width, height)
-    }
     /// Render the full scene at a frame index to an SVG string (draft / fallback).
     ///
     /// Unlike the older implementation, this applies per-object `opacity` by
     /// rendering each mobject as its own SVG and composing them via nested
-    /// `<svg opacity="...">` elements. This closes the gap with the video path
-    /// (which always applied opacity via `composite_over`) — the SVG draft and
-    /// the encoded video now agree visually.
+    /// `<svg opacity="...">` elements. The SVG draft and the encoded video now
+    /// agree visually.
     /// Dispatch to the whole-document native-Typst SVG path (compatible
     /// standard Typst SVG) when artifacts are present, else the legacy
     /// hand-composed SVG (test scenes).
@@ -606,6 +201,19 @@ impl Renderer {
         all_frames: &[FrameData],
     ) -> Result<Vec<u8>, CandyError> {
         self.ensure_natural()?;
+        self.render_frame_at_par(time_ms, all_frames)
+    }
+    /// Parallel-safe variant of [`render_frame_at`].
+    ///
+    /// Takes `&self` so it can be called from a rayon parallel iterator.
+    /// **Precondition:** `ensure_natural()` must have been called once before
+    /// any parallel call (it initializes `nat`/`page_w`/`page_h`). The
+    /// [`Renderer::ensure_natural_public`] method exposes this.
+    pub(crate) fn render_frame_at_par(
+        &self,
+        time_ms: u32,
+        all_frames: &[FrameData],
+    ) -> Result<Vec<u8>, CandyError> {
         if !self.scene.artifacts.source.is_empty() {
             return self.render_frame_at_whole_doc(time_ms, all_frames);
         }
@@ -741,7 +349,6 @@ impl Renderer {
         Ok(out.into_bytes())
     }
     /// Render a single mobject at its placed position as an SVG string.
-    /// Uses the same placement math as `render_object_pixels`.
     fn render_object_svg(
         &self,
         label: &Label,
@@ -820,43 +427,6 @@ impl Renderer {
             self.page_h,
             time_ms,
         )
-    }
-    /// Render a subtitle to an RGBA frame (page-sized) for the pixel path.
-    fn render_subtitle_pixels(
-        &self,
-        sub: &Subtitle,
-        time_ms: u32,
-        pixel_per_pt: f32,
-    ) -> Result<CachedSprite, CandyError> {
-        let doc = subtitle_doc(
-            &self.state,
-            &self.scene,
-            sub,
-            self.page_w,
-            self.page_h,
-            time_ms,
-        )?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
-        let opts = RenderOptions {
-            pixel_per_pt: Scalar::new(pixel_per_pt as f64),
-            render_bleed: false,
-        };
-        let pix = render(page, &opts);
-        let full = crate::renderer::RenderedFrame {
-            width: pix.width() as usize,
-            height: pix.height() as usize,
-            // `take()` moves the pixmap's buffer out instead of copying it.
-            rgba: pix.take(),
-        };
-        // Crop to the subtitle's tight bounding box (the text is positioned
-        // inside a full page by `subtitle_place_expr`); the stored offset pastes
-        // it back at the exact page position. This keeps per-frame allocation to
-        // the text's ink instead of a full HD canvas, and the composite result
-        // is identical to pasting the full page at (0,0).
-        Ok(crop_to_content(&full.rgba, full.width, full.height))
     }
     /// Render a mobject body in isolation and return its largest outline shape
     /// (by absolute area) as a ring of points plus its paint. Returns `None` if

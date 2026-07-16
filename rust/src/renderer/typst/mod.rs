@@ -26,10 +26,8 @@
 //!   substitution, and subtitle placement / compilation.
 //! * [`svg`] — SVG geometry parsing (bounding boxes, path tokenization,
 //!   attribute extraction) for the native-layout pass and formula fragments.
-//! * [`matrix`] — 2-D affine matrix math for the camera warp.
-//! * [`camera`] — the global `#camera` pan/zoom/rotate transform + warp.
-//! * [`composite`] — alpha compositing ("over"), offset paste, formula crop,
-//!   and formula-id localization for the per-glyph transform path.
+//! * [`camera`] — the global `#camera` pan/zoom/rotate SVG transform.
+//! * [`composite`] — formula-id localization for the per-glyph transform path.
 //! * [`morph`] — shape-`#morph` rendering helpers: ring localization, SVG
 //!   color → Typst conversion, and `polygon(...)` source generation.
 //! * [`pages`] — cross-page scene playback: the per-scene page schedule that
@@ -46,13 +44,12 @@
 //!   computation (group composition, camera scoping, cross-page gating).
 //! * [`source`] — the stable *parameterized* whole-document Typst source
 //!   (mobject/ecval/reveal wrapping) and the per-frame `sys.inputs` builder.
-//! * [`frame`] — the frame-render pipeline: whole-document + legacy pixel/SVG
-//!   paths, opacity/subtitle overlays, and the per-object sprite rasterizer.
+//! * [`frame`] — the frame-render pipeline: the whole-document native-Typst SVG
+//!   path, opacity/subtitle overlays, and the per-glyph transform overlay.
 pub(crate) mod camera;
 pub(crate) mod composite;
 pub(crate) mod content;
 pub(crate) mod lru;
-pub(crate) mod matrix;
 pub(crate) mod morph;
 pub(crate) mod pages;
 pub(crate) mod svg;
@@ -93,7 +90,6 @@ use std::sync::{Arc, Mutex};
 use typst_layout::PagedDocument;
 use typst_library::foundations::{Dict, Smart, Value};
 use typst_library::visualize::Paint;
-use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
 #[cfg(test)]
 use typst_syntax::FileId;
@@ -103,100 +99,12 @@ use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse_code};
 #[cfg(test)]
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
-use typst_utils::Scalar;
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// Maximum segment length (in Typst points) when bisecting morph outline rings.
 /// Smaller = smoother morph but more points (the plan is sampled per frame, so
 /// the per-frame cost is linear in the point count — 3pt is a good balance).
 const MORPH_MAX_SEGMENT: f64 = 3.0;
-#[derive(Hash, PartialEq, Eq, Clone)]
-struct SpriteKey {
-    label: String,
-    body_hash: u64,
-    scale_q: u32,
-    rot_q: u32,
-    x_q: u32,
-    y_q: u32,
-    ppi_q: u32,
-}
-
-/// A rasterized object sprite plus the pixel offset of its top-left within the
-/// full canvas page.
-///
-/// Each mobject is rasterized on a *full-page* document (so its position is
-/// correct), but the rendered frame is cropped to the object's tight bounding
-/// box before caching. Storing the crop instead of the full page is what keeps
-/// the `sprite_cache` bounded in memory: a small mobject becomes a KB-sized
-/// sprite rather than an MB-sized full-canvas RGBA. `ox`/`oy` (page pixels)
-/// let `render_frame_pixels_par` paste the crop back at the right place so the
-/// composited result is bit-identical to compositing the full page.
-struct CachedSprite {
-    frame: crate::renderer::RenderedFrame,
-    ox: i64,
-    oy: i64,
-}
-
-/// Crop `rgba` (a `w`×`h` RGBA buffer) to the tight bounding box of its
-/// non-transparent pixels. Returns the cropped buffer and the top-left offset
-/// (in pixels) of that box within the original buffer. A fully transparent
-/// buffer yields a 1×1 transparent sprite at offset (0,0).
-fn crop_to_content(rgba: &[u8], w: usize, h: usize) -> CachedSprite {
-    let mut min_x = w as i64;
-    let mut min_y = h as i64;
-    let mut max_x = -1i64;
-    let mut max_y = -1i64;
-    for y in 0..h as i64 {
-        let row = (y * w as i64) * 4;
-        for x in 0..w as i64 {
-            if rgba[(row + x * 4 + 3) as usize] > 0 {
-                if x < min_x {
-                    min_x = x;
-                }
-                if x > max_x {
-                    max_x = x;
-                }
-                if y < min_y {
-                    min_y = y;
-                }
-                if y > max_y {
-                    max_y = y;
-                }
-            }
-        }
-    }
-    if max_x < min_x {
-        return CachedSprite {
-            frame: crate::renderer::RenderedFrame {
-                width: 1,
-                height: 1,
-                rgba: vec![0u8; 4],
-            },
-            ox: 0,
-            oy: 0,
-        };
-    }
-    let cw = (max_x - min_x + 1) as usize;
-    let ch = (max_y - min_y + 1) as usize;
-    let mut out = vec![0u8; cw * ch * 4];
-    for y in 0..ch as i64 {
-        for x in 0..cw as i64 {
-            let si = (((min_y + y) * w as i64 + (min_x + x)) * 4) as usize;
-            let di = ((y * cw as i64 + x) * 4) as usize;
-            out[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
-        }
-    }
-    CachedSprite {
-        frame: crate::renderer::RenderedFrame {
-            width: cw,
-            height: ch,
-            rgba: out,
-        },
-        ox: min_x,
-        oy: min_y,
-    }
-}
-
 /// Capacity of the per-frame compiled-document cache (`body_cache`). Bounded so
 /// an animated render cannot accumulate one `PagedDocument` per frame (that was
 /// the OOM). Static / paused objects keep a stable key and stay resident; the
@@ -211,14 +119,6 @@ fn crop_to_content(rgba: &[u8], w: usize, h: usize) -> CachedSprite {
 /// documents + `jobs` in-flight RGBA frames + the (small, cropped) sprite
 /// cache — independent of the total frame count `N`.
 const BODY_CACHE_CAP: usize = 16;
-/// Capacity of the per-object rasterized-sprite cache (`sprite_cache`).
-///
-/// After cropping (see [`render_object_pixels`] / [`crop_to_content`]) each
-/// cached entry is only the object's tight bounding box (KB for a small
-/// mobject), so this cap can stay high: it bounds the *count* of cached
-/// sprites, not their pixel area. 512 cropped sprites is a few MB at most,
-/// versus 512 full-canvas frames which would be gigabytes at HD and OOM.
-const SPRITE_CACHE_CAP: usize = 512;
 
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
@@ -271,19 +171,6 @@ pub struct Renderer {
     /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
     /// parallel frame-render loop.
     body_cache: Mutex<LruCache<String, Arc<PagedDocument>>>,
-    /// Per-object rasterized-sprite cache. Keyed by the effective render state
-    /// (label + body source + quantized scale/rotation/position + ppi). This is
-    /// the *second* performance layer on top of `body_cache`: even after the
-    /// Typst source is memoized, rasterizing it to RGBA (`render`) is expensive,
-    /// so identical states reuse the previously rasterized frame. The page
-    /// size / canvas is constant, so the cached `RenderedFrame` composites
-    /// directly. `Mutex` for the same `&self`-shared reason as `body_cache`.
-    ///
-    /// Bounded LRU: animated objects produce a distinct key every frame, so an
-    /// unbounded `HashMap` would accumulate one sprite per frame and OOM. The
-    /// LRU evicts that per-frame churn while keeping stable (paused) keys
-    /// resident — see [`LruCache`].
-    sprite_cache: Mutex<LruCache<SpriteKey, Arc<CachedSprite>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
     /// The stable, *parameterized* whole-document source used by the native
@@ -346,7 +233,6 @@ impl Renderer {
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
-            sprite_cache: Mutex::new(LruCache::with_capacity(SPRITE_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
             param_source,
             param_source_key,
@@ -395,7 +281,7 @@ impl Renderer {
     /// Compile a Typst source, memoized by the exact source string.
     ///
     /// This is the unified compile entry point for every object render path
-    /// (`render_object_svg`, `render_object_pixels`, `render_frame`). It is
+    /// (`render_object_svg`, `render_frame`). It is
     /// behavior-preserving: identical `(source, inputs)` → identical document.
     /// The win is that frames sharing a source (static / paused objects, or a
     /// counter value that repeats) skip a redundant Typst compile. Bodies that
@@ -539,50 +425,6 @@ impl Renderer {
         }
         Ok("white".to_string())
     }
-    /// Parse a `#rrggbb(aa)` hex (or a bare `#rgb`) into `(r, g, b, a)`, with
-    /// full opacity as the default alpha. Used to seed the video canvas.
-    fn hex_to_rgba(bg: &str) -> [u8; 4] {
-        let h = bg.trim_start_matches('#');
-        let bytes = match h.len() {
-            3 => {
-                let r = h.as_bytes()[0];
-                let g = h.as_bytes()[1];
-                let b = h.as_bytes()[2];
-                vec![
-                    Self::hex_digit(r),
-                    Self::hex_digit(g),
-                    Self::hex_digit(b),
-                    255u8,
-                ]
-            }
-            6 => {
-                let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(255);
-                let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(255);
-                let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(255);
-                vec![r, g, b, 255]
-            }
-            8 => {
-                let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(255);
-                let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(255);
-                let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(255);
-                let a = u8::from_str_radix(&h[6..8], 16).unwrap_or(255);
-                vec![r, g, b, a]
-            }
-            _ => vec![255, 255, 255, 255],
-        };
-        [bytes[0], bytes[1], bytes[2], bytes[3]]
-    }
-    /// Map a single hex digit (`0-9`, `a-f`, `A-F`) to its 0–15 value, doubling
-    /// it to a 0–255 byte for `#rgb` shorthand expansion. Unknown digits → 15.
-    fn hex_digit(b: u8) -> u8 {
-        match b {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'f' => b - b'a' + 10,
-            b'A'..=b'F' => b - b'A' + 10,
-            _ => 15,
-        }
-        .saturating_mul(17)
-    }
 }
 #[cfg(test)]
 pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
@@ -644,47 +486,6 @@ fn path_parser_includes_bezier_control_points() {
     assert!(
         (min_y - (-10.0)).abs() < 1e-6,
         "control point y=-10 must bound bbox, got {min_y}"
-    );
-}
-/// Regression test for the HD/high-FPS OOM fix: `crop_to_content` must shrink a
-/// full-canvas RGBA frame that contains only a tiny opaque region down to a
-/// small bounding-box sprite. This is what keeps `sprite_cache` (cap 512) at KB
-/// instead of gigabytes — previously every cached sprite was the whole canvas.
-#[test]
-fn crop_to_content_shrinks_sparse_frame() {
-    let w = 1920;
-    let h = 1080;
-    let mut rgba = vec![0u8; w * h * 4]; // fully transparent
-    // Paint a 10×10 opaque red box near the top-left.
-    for y in 5..15 {
-        for x in 5..15 {
-            let o = (y * w + x) * 4;
-            rgba[o] = 255;
-            rgba[o + 3] = 255;
-        }
-    }
-    let sprite = crop_to_content(&rgba, w, h);
-    // Cropped sprite is ~10×10, orders of magnitude smaller than the canvas.
-    assert!(
-        sprite.frame.width <= 12 && sprite.frame.height <= 12,
-        "crop too large: {}x{}",
-        sprite.frame.width,
-        sprite.frame.height
-    );
-    assert_eq!(
-        (sprite.ox, sprite.oy),
-        (5, 5),
-        "crop offset must be the bbox top-left"
-    );
-    // The opaque pixel is preserved at the right place in the crop.
-    // Pixel (row=0, col=0) → byte index (0 * width + 0) * 4 == 0.
-    let o = 0usize;
-    assert_eq!((sprite.frame.rgba[o], sprite.frame.rgba[o + 3]), (255, 255));
-    // A fully transparent frame yields a 1×1 transparent sprite at (0,0).
-    let empty = crop_to_content(&vec![0u8; w * h * 4], w, h);
-    assert_eq!(
-        (empty.frame.width, empty.frame.height, empty.ox, empty.oy),
-        (1, 1, 0, 0)
     );
 }
 /// Verify the content timeline actually swaps an mobject's rendered body

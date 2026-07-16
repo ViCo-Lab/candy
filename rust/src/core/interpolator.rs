@@ -42,7 +42,11 @@ pub fn interpolate(keyframes: Vec<FrameData>) -> Vec<FrameData> {
 /// The interpolator samples the timeline at `1000/fps` ms intervals (the
 /// video frame rate). Keyframe times are in ms; the output has one
 /// `FrameData` per video frame, per target.
-pub fn interpolate_with(keyframes: Vec<FrameData>, method: InterpMethod, fps: u32) -> Vec<FrameData> {
+pub fn interpolate_with(
+    keyframes: Vec<FrameData>,
+    method: InterpMethod,
+    fps: u32,
+) -> Vec<FrameData> {
     if keyframes.is_empty() {
         return Vec::new();
     }
@@ -168,16 +172,20 @@ fn interp_catmull(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
 fn catmull1(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
-    0.5 * (
-        2.0 * p1
-            + (-p0 + p2) * t
-            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-    )
+    0.5 * (2.0 * p1
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
 }
 
 /// Catmull-Rom interpolation across all FrameData fields.
-fn catmull_rom(p0: &FrameData, p1: &FrameData, p2: &FrameData, p3: &FrameData, t: f64) -> FrameData {
+fn catmull_rom(
+    p0: &FrameData,
+    p1: &FrameData,
+    p2: &FrameData,
+    p3: &FrameData,
+    t: f64,
+) -> FrameData {
     FrameData {
         time_ms: p1.time_ms,
         target: p1.target.clone(),
@@ -324,7 +332,10 @@ mod tests {
         ];
         let out = interpolate(kf);
         // Find the sample closest to t=0.5 (2000ms).
-        let mid = out.iter().min_by_key(|f| (f.time_ms as i64 - 2000).abs()).unwrap();
+        let mid = out
+            .iter()
+            .min_by_key(|f| (f.time_ms as i64 - 2000).abs())
+            .unwrap();
         // At t=0.5, smooth = 0.5, so x ≈ 5.0
         assert!((mid.x - 5.0).abs() < 0.1, "mid x={}", mid.x);
     }

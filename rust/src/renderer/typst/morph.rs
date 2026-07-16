@@ -53,7 +53,11 @@ pub(crate) fn svg_color_to_typst(color: &str) -> String {
 
 /// Build a Typst `polygon(...)` body (no leading `#`) from a ring, preserving
 /// the target shape's paint. Points are emitted as absolute `(x*pt, y*pt)`.
-pub(crate) fn polygon_svg(ring: &[[f64; 2]], fill: &Option<String>, stroke: &Option<String>) -> String {
+pub(crate) fn polygon_svg(
+    ring: &[[f64; 2]],
+    fill: &Option<String>,
+    stroke: &Option<String>,
+) -> String {
     let pts: Vec<String> = ring
         .iter()
         .map(|p| format!("({:.2}pt, {:.2}pt)", p[0], p[1]))

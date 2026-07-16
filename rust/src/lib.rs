@@ -286,7 +286,7 @@ pub fn build_input_with_gpu(
     }
 
     // Pre-compute natural layout once (serial) so the parallel rasterization
-    // loop can use the &self render_frame_pixels_par method.
+    // loop can use the `&self` `render_frame_at_par` method.
     renderer.ensure_natural_public()?;
 
     // Rasterize every frame in parallel via rayon (data-parallel over frames).
@@ -561,7 +561,7 @@ fn stream_encode_cpu(
     renderer: &Renderer,
     frames: &[FrameData],
     sample_times: &[u32],
-    pixel_per_pt: f32,
+    _pixel_per_pt: f32,
     fps: u32,
     codec: Codec,
     container: Container,
@@ -640,7 +640,16 @@ fn stream_encode_cpu(
     // flight — this is what keeps the consumer's reorder buffer (and thus peak
     // memory) bounded to ≈ `window` frames. `tx.send` blocking on a full
     // channel provides the additional back-pressure within a window.
-    let render = |t: u32| renderer.render_frame_pixels_par(t, frames, pixel_per_pt);
+    // The renderer emits one standard SVG per frame (`render_frame_at_par`,
+    // `&self` so it is safe to call from the parallel loop); the raster module
+    // then rasterizes that SVG to RGBA at the uniform canvas size. This is the
+    // single source of truth — the same SVG the draft path writes to `.candy/`.
+    let render = |t: u32| -> Result<RenderedFrame, CandyError> {
+        let svg = renderer.render_frame_at_par(t, frames)?;
+        let svg_str =
+            std::str::from_utf8(&svg).map_err(|e| CandyError::Encode(format!("svg utf8: {e}")))?;
+        crate::renderer::raster::cpu::rasterize_svg(svg_str, tw as u32, th as u32)
+    };
     let run_windows = || {
         for (wi, chunk) in sample_times.chunks(window).enumerate() {
             let base = wi * window;
@@ -674,7 +683,7 @@ fn stream_encode_gpu(
     renderer: &mut Renderer,
     frames: &[FrameData],
     sample_times: &[u32],
-    pixel_per_pt: f32,
+    _pixel_per_pt: f32,
     fps: u32,
     codec: Codec,
     container: Container,
@@ -700,7 +709,12 @@ fn stream_encode_gpu(
         None
     };
     for &t in sample_times {
-        let f = renderer.render_frame_pixels_gpu(t, frames, pixel_per_pt, gpu)?;
+        // Same single source of truth as the CPU path: one standard SVG per
+        // frame, rasterized on the GPU at the uniform canvas size.
+        let svg = renderer.render_frame_at(t, frames)?;
+        let svg_str =
+            std::str::from_utf8(&svg).map_err(|e| CandyError::Encode(format!("svg utf8: {e}")))?;
+        let f = gpu.render_svg(svg_str, tw as u32, th as u32)?;
         if let Some(d) = draft.as_mut() {
             d.write_all(&(f.width as u32).to_le_bytes())?;
             d.write_all(&(f.height as u32).to_le_bytes())?;

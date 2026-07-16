@@ -4,8 +4,7 @@
 //! and emitting the interpolated SVG overlay (`transform_overlay_svg`).
 //!
 //! The overlay is kept as SVG (`<path>` / `<use>` fragments) and rasterized
-//! **once** at the final step (see [`Renderer::render_transform_overlay_pixels`]
-//! and the CPU rasterizer in `crate::renderer::raster::cpu`) — replacing the old
+//! **once** at the final step by `crate::renderer::raster::cpu` — replacing the old
 //! per-fragment pixel path, which rasterized the whole formula once *per
 //! fragment* and composited each crop. Keeping the overlay as SVG means the
 //! formula is embedded only once (in `<defs>`, reused via `<use>`), so it is
@@ -18,8 +17,6 @@ use typst_svg::SvgOptions;
 
 use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
-use crate::core::diag::CandyError;
-use crate::renderer::RenderedFrame;
 use crate::renderer::typst::{
     PT_PER_CM, Renderer, collect_formula_leaves, imports_preamble, localize_formula_ids,
 };
@@ -84,8 +81,8 @@ pub(crate) struct TransformFragmentPlan {
 /// generated source minimal for the common case (and matching the v0.1 output
 /// exactly, so existing SVG drafts are byte-identical when no rotation is
 /// applied).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn place_source(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_source(
     page_w: f64,
     page_h: f64,
     x_cm: f64,
@@ -330,10 +327,9 @@ impl Renderer {
                 continue;
             }
             let (fx, fy) = tl(&old_frags[o].0);
-            let (tx, ty) = nearest_matched(u.cx, u.cy, &matched, &old_u, |&(_, n)| {
-                tl(&new_frags[n].0)
-            })
-            .unwrap_or((fx, fy));
+            let (tx, ty) =
+                nearest_matched(u.cx, u.cy, &matched, &old_u, |&(_, n)| tl(&new_frags[n].0))
+                    .unwrap_or((fx, fy));
             anims.push(GlyphAnim {
                 src: 0,
                 bx0: old_frags[o].0.0,
@@ -360,10 +356,9 @@ impl Renderer {
                 continue;
             }
             let (tx, ty) = tl(&new_frags[n].0);
-            let (fx, fy) = nearest_matched_new(u.cx, u.cy, &matched, &new_u, |&(o, _)| {
-                tl(&old_frags[o].0)
-            })
-            .unwrap_or((tx, ty));
+            let (fx, fy) =
+                nearest_matched_new(u.cx, u.cy, &matched, &new_u, |&(o, _)| tl(&old_frags[o].0))
+                    .unwrap_or((tx, ty));
             anims.push(GlyphAnim {
                 src: 1,
                 bx0: new_frags[n].0.0,
@@ -399,7 +394,16 @@ impl Renderer {
     /// is already relative to the formula's top-left — exactly the offset the
     /// compositor adds to the target mobject's position at render time.
     fn render_formula_svg(&self, body: &str, preamble: &str) -> Option<String> {
-        let src = place_source(self.page_w, self.page_h, 0.0, 0.0, 100.0, 0.0, body, preamble);
+        let src = place_source(
+            self.page_w,
+            self.page_h,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            body,
+            preamble,
+        );
         let doc = self.compile_cached(&src, &Dict::new()).ok()?;
         let page = doc.pages().first()?;
         Some(typst_svg::svg(page, &SvgOptions::default()))
@@ -418,7 +422,9 @@ impl Renderer {
     /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
     /// applying its (and ancestors') transforms to its path geometry, and sign
     /// it by the path data so identical glyphs match across formulas.
-    fn extract_formula(svg: &str) -> Option<(String, Vec<crate::renderer::typst::svg::FormulaLeaf>)> {
+    fn extract_formula(
+        svg: &str,
+    ) -> Option<(String, Vec<crate::renderer::typst::svg::FormulaLeaf>)> {
         let doc = roxmltree::Document::parse(svg).ok()?;
         let root = doc.root_element();
         // Inner markup: everything between `<svg …>` and `</svg>`.
@@ -468,7 +474,9 @@ impl Renderer {
             // draws the exact target formula (see `transform_progress`), so the
             // base `target`/`old` mobjects must stay hidden through `end_ms` to
             // avoid a double-draw / the old formula flashing on the last frame.
-            if time_ms >= p.start_ms && time_ms <= p.end_ms && (&p.target == label || &p.old == label)
+            if time_ms >= p.start_ms
+                && time_ms <= p.end_ms
+                && (&p.target == label || &p.old == label)
             {
                 return true;
             }
@@ -518,52 +526,6 @@ impl Renderer {
         Some((sx, sy, te, scale, rot))
     }
 
-    /// Build the per-glyph `#transform` overlay SVG for this frame and rasterize
-    /// it **once** to a page-sized RGBA (transparent background), so it can be
-    /// alpha-composited over the base frame.
-    ///
-    /// This replaces the old per-fragment pixel path (`transform_fragment_frames`),
-    /// which rasterized the whole old/new formula once *per fragment* and pasted
-    /// each crop — slow and artefact-prone. Here the overlay stays SVG: the
-    /// formula is embedded only once in `<defs>` (reused by every fragment via
-    /// `<use>`), and only this single final rasterization touches pixels, so the
-    /// formula is never copied many times and memory stays bounded. The fragment
-    /// positions already include the target mobject's natural offset (`nat`) plus
-    /// its current translation (`state.x/y`), so the transform stays glued to the
-    /// mobject and to the rest of the scene.
-    ///
-    /// Returns `None` when no plan is active at `time_ms` (nothing to draw), so the
-    /// caller can skip compositing entirely.
-    pub(crate) fn render_transform_overlay_pixels(
-        &self,
-        states: &HashMap<Label, FrameData>,
-        time_ms: u32,
-        pixel_per_pt: f32,
-        pw: f64,
-        ph: f64,
-    ) -> Result<Option<RenderedFrame>, CandyError> {
-        let overlay = self.transform_overlay_svg(states, time_ms);
-        if overlay.trim().is_empty() {
-            return Ok(None);
-        }
-        let w = (pw * pixel_per_pt as f64).round().max(1.0) as u32;
-        let h = (ph * pixel_per_pt as f64).round().max(1.0) as u32;
-        // The overlay's fragment coordinates are in page pt; set the SVG root to
-        // the target pixel size with a pt viewBox so `usvg` applies the
-        // viewBox→viewport scale and the single rasterization fills the canvas.
-        let doc = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
-             width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {pw} {ph}\">{overlay}</svg>",
-            w = w,
-            h = h,
-            pw = pw,
-            ph = ph,
-            overlay = overlay,
-        );
-        let frame = crate::renderer::raster::cpu::rasterize_svg_once(&doc, w, h)?;
-        Ok(Some(frame))
-    }
-
     /// Emit the per-glyph transform SVG overlay for the current frame.
     ///
     /// For each active plan the whole old/new formula is embedded exactly ONCE
@@ -598,9 +560,7 @@ impl Renderer {
         }
         // Pass 2: the clipped, translated <use> for every fragment.
         for (pi, p) in self.transform_fragments.iter().enumerate() {
-            let Some((sx, sy, te, scale, rot)) =
-                self.transform_progress(p, states, time_ms)
-            else {
+            let Some((sx, sy, te, scale, rot)) = self.transform_progress(p, states, time_ms) else {
                 continue;
             };
             let prefix = self.transform_id_prefix(&p.target, pi);
@@ -644,7 +604,12 @@ impl Renderer {
                 let ncy = -cy;
                 let mtx = format!(
                     "translate({px:.4}, {py:.4}) rotate({rot:.4}) scale({scale:.4}) translate({ncx:.4}, {ncy:.4})",
-                    px = px, py = py, rot = rot, scale = scale, ncx = ncx, ncy = ncy,
+                    px = px,
+                    py = py,
+                    rot = rot,
+                    scale = scale,
+                    ncx = ncx,
+                    ncy = ncy,
                 );
                 // Pad the clip rect on *all* sides; the previous right/bottom-only
                 // padding clipped the left/top edges of moving glyphs.
@@ -691,7 +656,11 @@ mod tests {
         let new = vec![unit("x", 110.0, 0.0), unit("x", 5.0, 0.0)];
         let mut m = match_shapes(&old, &new);
         m.sort();
-        assert_eq!(m, vec![(0, 1), (1, 0)], "expected nearest-neighbour pairing");
+        assert_eq!(
+            m,
+            vec![(0, 1), (1, 0)],
+            "expected nearest-neighbour pairing"
+        );
     }
 
     /// Only same-signature units are ever paired; a differing glyph is left

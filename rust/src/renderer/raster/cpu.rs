@@ -1,39 +1,88 @@
-//! CPU SVG → pixels rasterization for the per-glyph `#transform` overlay.
+//! CPU SVG → pixels rasterization for the frame render path.
 //!
-//! The overlay is kept as SVG (`<path>` / `<use>` fragments) and rasterized
-//! **once** at the final step — replacing the old per-fragment pixel path
-//! (`transform_fragment_frames`), which rasterized the whole formula once *per
-//! fragment* and composited each crop. Keeping the overlay as SVG means the
-//! formula is embedded only once (in `<defs>`, reused via `<use>`), and only
-//! this single rasterization touches pixels, so memory and CPU stay bounded.
+//! The renderer produces one standard SVG per frame (see
+//! [`crate::renderer::typst::Renderer::render_frame_at`]); this module
+//! rasterizes it to an RGBA8 buffer in a single pass. The per-glyph `#transform`
+//! overlay is embedded in that same SVG (never rasterized separately), so only
+//! this one rasterization touches pixels — keeping memory and CPU bounded.
 
 use crate::core::diag::CandyError;
 use crate::renderer::RenderedFrame;
 
 /// Rasterize a complete SVG document to a `width × height` RGBA8 buffer in a
-/// single pass. The SVG root is expected to carry `width`/`height` (px) matching
-/// `width`/`height` and a `viewBox` in the document's native coordinate space
-/// (pt); `usvg` applies the viewBox→viewport scale, so an identity root
-/// transform fills the pixmap exactly.
+/// single pass.
 ///
-/// The pixmap starts transparent, so the result can be alpha-composited over a
-/// base frame (the `#transform` overlay is drawn on top of the mobjects it
-/// replaces).
-pub(crate) fn rasterize_svg_once(
+/// The SVG root carries `width`/`height` in *point* units (the scene's page
+/// size) with a matching `viewBox`. We rewrite the root viewport to the target
+/// pixel size (leaving the `viewBox` in pt) so `usvg` applies the
+/// viewBox→viewport scale and the scene fills the whole pixmap.
+pub(crate) fn rasterize_svg(
     svg: &str,
     width: u32,
     height: u32,
 ) -> Result<RenderedFrame, CandyError> {
-    let tree = usvg::Tree::from_str(svg, &usvg::Options::default())
+    let svg = set_svg_viewport_px(svg, width, height);
+    let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())
         .map_err(|e| CandyError::Encode(format!("usvg parse: {e}")))?;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)
         .ok_or_else(|| CandyError::Encode("failed to allocate pixmap".into()))?;
     // Identity root transform: the SVG's own viewBox→viewport scale (applied by
-    // usvg during parsing) already maps the document into the pixmap.
-    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+    // `usvg` during parsing, after `set_svg_viewport_px`) already maps the
+    // document into the pixmap.
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
     Ok(RenderedFrame {
         width: width as usize,
         height: height as usize,
         rgba: pixmap.data().to_vec(),
     })
+}
+
+/// Rewrite the root `<svg>` element's `width`/`height` (the viewport) to the
+/// given pixel dimensions, leaving the `viewBox` (in pt) untouched.
+///
+/// `usvg` fits the `viewBox` into the viewport via a scale transform, so this
+/// is what maps the scene's point-space geometry to the pixel-sized render
+/// target. Only the first `width`/`height` attributes — those on the opening
+/// `<svg ...>` tag — are touched; child elements live after the closing `>`
+/// and are never affected.
+pub(crate) fn set_svg_viewport_px(svg: &str, w: u32, h: u32) -> String {
+    let open = match svg.find("<svg") {
+        Some(i) => i,
+        None => return svg.to_string(),
+    };
+    let close = match svg[open..].find('>') {
+        Some(i) => open + i,
+        None => return svg.to_string(),
+    };
+    let tag = &svg[open..=close];
+    let tag = replace_attr(tag, "width", w);
+    let tag = replace_attr(&tag, "height", h);
+    let mut out = String::with_capacity(svg.len());
+    out.push_str(&svg[..open]);
+    out.push_str(&tag);
+    out.push_str(&svg[close + 1..]);
+    out
+}
+
+/// Replace the first `name="..."` attribute value within `s` with `value`.
+fn replace_attr(s: &str, name: &str, value: u32) -> String {
+    let needle = format!("{}=\"", name);
+    let start = match s.find(&needle) {
+        Some(i) => i,
+        None => return s.to_string(),
+    };
+    let val_start = start + needle.len();
+    let end = match s[val_start..].find('"') {
+        Some(i) => val_start + i,
+        None => return s.to_string(),
+    };
+    let mut out = String::with_capacity(s.len());
+    out.push_str(&s[..val_start]);
+    out.push_str(&value.to_string());
+    out.push_str(&s[end..]);
+    out
 }

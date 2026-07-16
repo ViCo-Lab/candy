@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
-use crate::core::easing::Easing;
+use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
 use crate::core::diag::CandyError;
+use crate::core::easing::Easing;
 
 /// Per-target animation state. Internal to the scheduler.
 #[derive(Debug, Clone, Copy)]
@@ -151,7 +151,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     // Mid keyframe (halfway) = scaled + shifted.
@@ -165,14 +169,22 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: mid,
                         target: t.clone(),
-                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        x: peak.x,
+                        y: peak.y,
+                        scale: peak.scale,
+                        opacity: peak.opacity,
+                        rotation: peak.rotation,
                         easing: Easing::ThereAndBack,
                     });
                     // End keyframe = back to original (state unchanged).
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     // State unchanged — Indicate returns to origin.
@@ -183,7 +195,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     let mid = ptr + slide.duration_ms / 2;
@@ -195,14 +211,22 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: mid,
                         target: t.clone(),
-                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        x: peak.x,
+                        y: peak.y,
+                        scale: peak.scale,
+                        opacity: peak.opacity,
+                        rotation: peak.rotation,
                         easing: Easing::ThereAndBack,
                     });
                     // End: restored to original (Flash is a transient effect).
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     continue;
@@ -214,21 +238,36 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: Easing::Wiggle,
                     });
                     let mid = ptr + slide.duration_ms / 2;
-                    let peak = State { rotation: s.rotation + degrees, ..s };
+                    let peak = State {
+                        rotation: s.rotation + degrees,
+                        ..s
+                    };
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: mid,
                         target: t.clone(),
-                        x: peak.x, y: peak.y, scale: peak.scale, opacity: peak.opacity, rotation: peak.rotation,
+                        x: peak.x,
+                        y: peak.y,
+                        scale: peak.scale,
+                        opacity: peak.opacity,
+                        rotation: peak.rotation,
                         easing: Easing::Wiggle,
                     });
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: Easing::Wiggle,
                     });
                     continue;
@@ -240,13 +279,21 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: saved_state.x, y: saved_state.y, scale: saved_state.scale, opacity: saved_state.opacity, rotation: saved_state.rotation,
+                        x: saved_state.x,
+                        y: saved_state.y,
+                        scale: saved_state.scale,
+                        opacity: saved_state.opacity,
+                        rotation: saved_state.rotation,
                         easing: easing.clone(),
                     });
                     state.insert(t.clone(), saved_state);
@@ -254,7 +301,12 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 }
 
                 // ---- MoveAlongPath: keyframe at each path point ----
-                Action::MoveAlongPath { points, mode, orient, .. } => {
+                Action::MoveAlongPath {
+                    points,
+                    mode,
+                    orient,
+                    ..
+                } => {
                     if points.is_empty() {
                         continue;
                     }
@@ -274,7 +326,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     // One keyframe per resolved path point, evenly distributed.
@@ -290,13 +346,24 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         per_item.entry(t.clone()).or_default().push(FrameData {
                             time_ms: kf_frame,
                             target: t.clone(),
-                            x: px, y: py, scale: s.scale, opacity: s.opacity, rotation: rot,
+                            x: px,
+                            y: py,
+                            scale: s.scale,
+                            opacity: s.opacity,
+                            rotation: rot,
                             easing: easing.clone(),
                         });
                     }
                     // Update state to the last point.
                     let last = *pts.last().unwrap();
-                    state.insert(t.clone(), State { x: last.0, y: last.1, ..s });
+                    state.insert(
+                        t.clone(),
+                        State {
+                            x: last.0,
+                            y: last.1,
+                            ..s
+                        },
+                    );
                     continue;
                 }
 
@@ -312,7 +379,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     let mut cur = s;
@@ -328,7 +399,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         per_item.entry(t.clone()).or_default().push(FrameData {
                             time_ms: tt,
                             target: t.clone(),
-                            x: ns.x, y: ns.y, scale: ns.scale, opacity: ns.opacity, rotation: ns.rotation,
+                            x: ns.x,
+                            y: ns.y,
+                            scale: ns.scale,
+                            opacity: ns.opacity,
+                            rotation: ns.rotation,
                             easing: easing.clone(),
                         });
                         cur = ns;
@@ -338,11 +413,17 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                 }
 
                 // ---- Camera: a global pan + zoom + rotate (synthetic target) ----
-                Action::Camera { x, y, zoom, rotate, .. } => {
+                Action::Camera {
+                    x, y, zoom, rotate, ..
+                } => {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
-                        x: s.x, y: s.y, scale: s.scale, opacity: s.opacity, rotation: s.rotation,
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        opacity: s.opacity,
+                        rotation: s.rotation,
                         easing: easing.clone(),
                     });
                     let ns = State {
@@ -355,7 +436,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: ns.x, y: ns.y, scale: ns.scale, opacity: ns.opacity, rotation: ns.rotation,
+                        x: ns.x,
+                        y: ns.y,
+                        scale: ns.scale,
+                        opacity: ns.opacity,
+                        rotation: ns.rotation,
                         easing: easing.clone(),
                     });
                     state.insert(t.clone(), ns);
@@ -553,14 +638,8 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
             rotation: s.rotation + delta_degrees,
             ..s
         },
-        Action::FadeIn { .. } => State {
-            opacity: 1.0,
-            ..s
-        },
-        Action::FadeOut { .. } => State {
-            opacity: 0.0,
-            ..s
-        },
+        Action::FadeIn { .. } => State { opacity: 1.0, ..s },
+        Action::FadeOut { .. } => State { opacity: 0.0, ..s },
         Action::FadeTo { opacity, .. } => State {
             opacity: *opacity,
             ..s
@@ -605,7 +684,9 @@ fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
 fn catmull1(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
-    0.5 * (2.0 * p1 + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+    0.5 * (2.0 * p1
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
         + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
 }
 
@@ -711,8 +792,26 @@ mod tests {
     #[test]
     fn non_monotonic_returns_err_not_panic() {
         let frames = vec![
-            FrameData { time_ms: 5000, target: Label("x".into()), x: 0.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
-            FrameData { time_ms: 3000, target: Label("x".into()), x: 1.0, y: 0.0, scale: 1.0, opacity: 1.0, rotation: 0.0, easing: Easing::Linear },
+            FrameData {
+                time_ms: 5000,
+                target: Label("x".into()),
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 1.0,
+                rotation: 0.0,
+                easing: Easing::Linear,
+            },
+            FrameData {
+                time_ms: 3000,
+                target: Label("x".into()),
+                x: 1.0,
+                y: 0.0,
+                scale: 1.0,
+                opacity: 1.0,
+                rotation: 0.0,
+                easing: Easing::Linear,
+            },
         ];
         let err = validate_monotonic(&frames).unwrap_err();
         assert_eq!(err.code(), "E002");

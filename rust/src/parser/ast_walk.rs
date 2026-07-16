@@ -334,8 +334,9 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                         // Recover the expression's source text from the
                         // FuncCall's LinkedNode children (the AST `Named` node
                         // only exposes the `Expr`, not its source range).
-                        if let Some(args_node) =
-                            node.children().find_map(|c| c.get().cast::<ast::Args>().map(|_| c))
+                        if let Some(args_node) = node
+                            .children()
+                            .find_map(|c| c.get().cast::<ast::Args>().map(|_| c))
                         {
                             bg_src = args_node.children().find_map(|arg| {
                                 arg.get().cast::<ast::Named>().and_then(|nn| {
@@ -346,9 +347,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                                         // casts to `Expr`, so skip the child
                                         // whose source text equals the name).
                                         arg.children()
-                                            .filter_map(|c| {
-                                                c.get().cast::<Expr>().map(|_| c)
-                                            })
+                                            .filter_map(|c| c.get().cast::<Expr>().map(|_| c))
                                             .find(|c| raw[c.range()].trim() != name)
                                             .map(|c| raw[c.range()].to_string())
                                     } else {
@@ -516,10 +515,7 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
                 // Accept the local `candy`, a path `…/candy`, and the published
                 // `@preview/candy:<version>` package (so a real `.tyx` that
                 // imports the published package as a module resolves too).
-                if src == "candy"
-                    || src.ends_with("/candy")
-                    || src.starts_with("@preview/candy:")
-                {
+                if src == "candy" || src.ends_with("/candy") || src.starts_with("@preview/candy:") {
                     if let Ok(alias) = imp.bare_name() {
                         ctx.candy_aliases.insert(alias.to_string());
                     }
@@ -645,11 +641,7 @@ mod tests {
         let scene = parse_tyx(&tmp).unwrap();
         std::fs::remove_file(&tmp).ok();
 
-        let root = scene
-            .scenes
-            .iter()
-            .find(|s| s.id == 0)
-            .expect("root scene");
+        let root = scene.scenes.iter().find(|s| s.id == 0).expect("root scene");
         assert_eq!(
             root.owns_labels,
             vec![
@@ -883,11 +875,21 @@ mod tests {
         ));
 
         // Inline content (formula) → per-glyph TransformPlan; shape → blob morph.
-        assert_eq!(scene.transform_plans.len(), 1, "transform_plans: {:?}", scene.transform_plans);
+        assert_eq!(
+            scene.transform_plans.len(),
+            1,
+            "transform_plans: {:?}",
+            scene.transform_plans
+        );
         assert_eq!(scene.transform_plans[0].target.0, "eq");
         assert_eq!(scene.transform_plans[0].old_body, "[$a + b = c$]");
         assert_eq!(scene.transform_plans[0].new_body, "[$a + b + d = c$]");
-        assert_eq!(scene.morph_pairs.len(), 1, "morph_pairs: {:?}", scene.morph_pairs);
+        assert_eq!(
+            scene.morph_pairs.len(),
+            1,
+            "morph_pairs: {:?}",
+            scene.morph_pairs
+        );
         assert_eq!(scene.morph_pairs[0].to.0, "box");
         std::fs::remove_file(&tmp).ok();
     }
@@ -1028,7 +1030,12 @@ mod tests {
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp).unwrap();
 
-        assert_eq!(scene.scenes.len(), 3, "root + 2 siblings: {:?}", scene.scenes);
+        assert_eq!(
+            scene.scenes.len(),
+            3,
+            "root + 2 siblings: {:?}",
+            scene.scenes
+        );
         let owner = scene.label_scene_map();
         assert_eq!(owner[&Label("a".into())], 1, "a → scene 1");
         assert_eq!(owner[&Label("b".into())], 2, "b → scene 2");
@@ -1043,10 +1050,18 @@ mod tests {
         );
         // During scene 1's window only scene 1 is active (never the root).
         assert_eq!(scene.active_scene_at(10), 1);
-        assert_ne!(scene.active_scene_at(10), 0, "root must not leak over scene 1");
+        assert_ne!(
+            scene.active_scene_at(10),
+            0,
+            "root must not leak over scene 1"
+        );
         // During scene 2's window only scene 2 is active.
         assert_eq!(scene.active_scene_at(60), 2);
-        assert_ne!(scene.active_scene_at(60), 0, "root must not leak over scene 2");
+        assert_ne!(
+            scene.active_scene_at(60),
+            0,
+            "root must not leak over scene 2"
+        );
         // Scene 2 (the last) persists to the document end, not just its content.
         assert_eq!(s2.end_ms, 100, "last scene extends to doc end: {:?}", s2);
         std::fs::remove_file(&tmp).ok();

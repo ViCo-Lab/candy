@@ -45,11 +45,7 @@ impl Renderer {
             let mut inner = Self::ecval_to_inputs(body);
             // A `reveal`/`typewriter` target whose body is a string literal gets
             // its revealed length driven by an input too.
-            if let Some(full) = scene
-                .items
-                .get(label)
-                .and_then(|b| strip_string_literal(b))
-            {
+            if let Some(full) = scene.items.get(label).and_then(|b| strip_string_literal(b)) {
                 if scene.content_timeline.contains_key(label) {
                     inner = Self::reveal_wrap_body(&label.0, &inner, full.chars().count());
                 }
@@ -72,8 +68,10 @@ impl Renderer {
         for (&sid, &(cs_b, ce_b)) in &scene.artifacts.scene_call {
             let cs = src[..cs_b].chars().count();
             let ce = src[..ce_b].chars().count();
-            let open =
-                format!("{{ if sys.inputs.at(\"candy:active_scene\", default: 0) == {} {{ ", sid);
+            let open = format!(
+                "{{ if sys.inputs.at(\"candy:active_scene\", default: 0) == {} {{ ",
+                sid
+            );
             edits.push((cs, cs, open));
             edits.push((ce, ce, " } }".to_string()));
         }
@@ -127,7 +125,11 @@ impl Renderer {
         // Drop any edit whose range is nested inside another (keep innermost).
         let drop: Vec<bool> = edits
             .iter()
-            .map(|(r, _)| edits.iter().any(|(o, _)| o != r && o.start <= r.start && r.end <= o.end))
+            .map(|(r, _)| {
+                edits
+                    .iter()
+                    .any(|(o, _)| o != r && o.start <= r.start && r.end <= o.end)
+            })
             .collect();
         let mut kept: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for (keep, e) in drop.into_iter().zip(edits) {
@@ -148,11 +150,17 @@ impl Renderer {
     /// call in `node`. (We rewrite every `ecval` read unconditionally — the
     /// `default: 0` fallback matches the legacy behaviour for undeclared
     /// counters, and declared ones get their live value via `build_frame_inputs`.)
-    fn collect_ecval_input_edits(node: &LinkedNode, edits: &mut Vec<(std::ops::Range<usize>, String)>) {
+    fn collect_ecval_input_edits(
+        node: &LinkedNode,
+        edits: &mut Vec<(std::ops::Range<usize>, String)>,
+    ) {
         if let Some(call) = node.get().cast::<ast::FuncCall>() {
             if let Some(name) = Self::ecval_input_name(&call) {
                 let key = format!("candy:counter:{name}");
-                edits.push((node.range(), format!("sys.inputs.at(\"{key}\", default: 0)")));
+                edits.push((
+                    node.range(),
+                    format!("sys.inputs.at(\"{key}\", default: 0)"),
+                ));
             }
         }
         for child in node.children() {
@@ -282,7 +290,12 @@ impl Renderer {
         // revealed character count at this frame is supplied as
         // `candy:<label>:reveal:len`, matching `reveal_wrap_body`.
         for label in self.scene.content_timeline.keys() {
-            let Some(full) = self.scene.items.get(label).and_then(|b| strip_string_literal(b)) else {
+            let Some(full) = self
+                .scene
+                .items
+                .get(label)
+                .and_then(|b| strip_string_literal(b))
+            else {
                 continue;
             };
             let len = Self::reveal_len_at(&self.scene, label, time_ms, full.chars().count());

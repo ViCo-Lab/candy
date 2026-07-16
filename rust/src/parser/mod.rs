@@ -16,8 +16,8 @@
 
 pub mod ast_walk;
 pub mod directives;
-pub mod svg;
 pub mod expr;
+pub mod svg;
 
 pub use ast_walk::parse_tyx;
 pub use svg::extract_scene_from_svg;

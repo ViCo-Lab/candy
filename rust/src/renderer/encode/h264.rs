@@ -54,7 +54,8 @@ impl H264Stream {
         // makes OpenH264's `initialize_ext` return `Native:5`. We must set a
         // valid frame rate (and a bitrate scaled to the resolution) before
         // encoding.
-        let target_bps = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000) as u32;
+        let target_bps =
+            ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000) as u32;
         // Insert an IDR at least once per second (≈ `fps` frames). A lone
         // keyframe at frame 0 makes scrubbing/thumbnail extraction decode the
         // whole stream from the start; a periodic IDR keeps seeking snappy. The
@@ -72,8 +73,7 @@ impl H264Stream {
         )
         .map_err(|e| CandyError::Encode(format!("openh264 init failed: {e}")))?;
 
-        let (samples_file, samples_path) =
-            crate::renderer::encode::video::new_samples_tempfile()?;
+        let (samples_file, samples_path) = crate::renderer::encode::video::new_samples_tempfile()?;
 
         Ok(Self {
             encoder,
@@ -138,7 +138,9 @@ impl H264Stream {
     /// samples stay in their temp file; only metadata is returned). The caller
     /// (the streaming muxer) streams the file into the container, so nothing is
     /// ever buffered in RAM.
-    pub(crate) fn finish_file(self) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
+    pub(crate) fn finish_file(
+        self,
+    ) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
         let (sps, pps) = match (self.sps, self.pps) {
             (Some(s), Some(p)) => (s, p),
             _ => {

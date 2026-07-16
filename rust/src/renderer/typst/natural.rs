@@ -94,36 +94,35 @@ impl Renderer {
         // also snapshots every item — including the synthetic camera — at the
         // document's final frame, which would otherwise pin the camera transform
         // to the very end; keying off the *first* keyframe avoids that trap.)
-        if !self.scene.scenes.is_empty()
-            && camera.is_some() {
-                // Home scene = the scene active when the camera *animation*
-                // actually begins. The interpolator expands the sparse camera
-                // keyframes into one dense frame per sample time, and the
-                // scheduler also seeds `__camera__` with an identity keyframe at
-                // `time_ms = 0`, so we can't just take the minimum keyframe time.
-                // Instead we locate the first frame where the camera deviates
-                // from identity — that is the start of the `#camera` directive —
-                // and use its home scene. The camera then applies only while the
-                // current frame's active scene is that same home scene; once the
-                // scene ends it returns to identity (no leak into later scenes).
-                let is_nonidentity = |f: &FrameData| {
-                    f.x.abs() > 1e-6
-                        || f.y.abs() > 1e-6
-                        || (f.scale - 1.0).abs() > 1e-6
-                        || f.rotation.abs() > 1e-6
-                };
-                let cam_start = all_frames
-                    .iter()
-                    .filter(|f| f.target.0 == CAMERA_LABEL && is_nonidentity(f))
-                    .map(|f| f.time_ms)
-                    .min()
-                    .unwrap_or(0);
-                let home = self.scene.active_scene_at(cam_start);
-                let active = self.scene.active_scene_at(time_ms);
-                if active != home {
-                    camera = None;
-                }
+        if !self.scene.scenes.is_empty() && camera.is_some() {
+            // Home scene = the scene active when the camera *animation*
+            // actually begins. The interpolator expands the sparse camera
+            // keyframes into one dense frame per sample time, and the
+            // scheduler also seeds `__camera__` with an identity keyframe at
+            // `time_ms = 0`, so we can't just take the minimum keyframe time.
+            // Instead we locate the first frame where the camera deviates
+            // from identity — that is the start of the `#camera` directive —
+            // and use its home scene. The camera then applies only while the
+            // current frame's active scene is that same home scene; once the
+            // scene ends it returns to identity (no leak into later scenes).
+            let is_nonidentity = |f: &FrameData| {
+                f.x.abs() > 1e-6
+                    || f.y.abs() > 1e-6
+                    || (f.scale - 1.0).abs() > 1e-6
+                    || f.rotation.abs() > 1e-6
+            };
+            let cam_start = all_frames
+                .iter()
+                .filter(|f| f.target.0 == CAMERA_LABEL && is_nonidentity(f))
+                .map(|f| f.time_ms)
+                .min()
+                .unwrap_or(0);
+            let home = self.scene.active_scene_at(cam_start);
+            let active = self.scene.active_scene_at(time_ms);
+            if active != home {
+                camera = None;
             }
+        }
         // Synthetic group parents (empty body) are containers, not drawn.
         let parent_labels: std::collections::HashSet<&Label> = self.scene.groups.values().collect();
         let mut out: HashMap<Label, FrameData> = HashMap::new();

@@ -239,8 +239,8 @@ fn stream_samples_into(
     out: &mut std::fs::File,
 ) -> Result<(), CandyError> {
     use std::io::Read;
-    let mut src = std::fs::File::open(path)
-        .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+    let mut src =
+        std::fs::File::open(path).map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
     let mut buf = vec![0u8; 1 << 20];
     for &sz in sizes {
         let mut remaining = sz as usize;
@@ -1047,10 +1047,19 @@ pub(crate) fn mux_matroska_to_file(
     let mut cluster_total = 0u64;
     for (c_ms, f0, f1) in &clusters {
         cluster_total += cluster_size(
-            *c_ms, *f0, *f1, &v.sample_sizes, &v.keyframes, audio, last_ms, nframes, v.fps,
+            *c_ms,
+            *f0,
+            *f1,
+            &v.sample_sizes,
+            &v.keyframes,
+            audio,
+            last_ms,
+            nframes,
+            v.fps,
         );
     }
-    let seg_size = info_el.len() as u64 + tracks_el.len() as u64 + tags_el.len() as u64 + cluster_total;
+    let seg_size =
+        info_el.len() as u64 + tracks_el.len() as u64 + tags_el.len() as u64 + cluster_total;
 
     // EBML header.
     let mut ebml = Vec::new();
@@ -1064,8 +1073,8 @@ pub(crate) fn mux_matroska_to_file(
     ebml.extend_from_slice(&ebml_elem(&[0x42, 0x85], &u64_to_bytes(2)));
     let ebml_el = ebml_elem(&[0x1A, 0x45, 0xDF, 0xA3], &ebml);
 
-    let mut out = File::create(output)
-        .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
+    let mut out =
+        File::create(output).map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
     out.write_all(&ebml_el)
         .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
     out.write_all(&[0x18, 0x53, 0x80, 0x67])
@@ -1080,10 +1089,12 @@ pub(crate) fn mux_matroska_to_file(
         .map_err(|e| CandyError::Encode(format!("container write: {e}")))?;
 
     // Stream clusters, reading coded samples sequentially from the temp file.
-    let mut sf = File::open(&v.samples_path)
-        .map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+    let mut sf =
+        File::open(&v.samples_path).map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
     for (c_ms, f0, f1) in &clusters {
-        write_cluster_to_file(&mut out, *c_ms, *f0, *f1, v, &mut sf, audio, last_ms, nframes, v.fps)?;
+        write_cluster_to_file(
+            &mut out, *c_ms, *f0, *f1, v, &mut sf, audio, last_ms, nframes, v.fps,
+        )?;
     }
     let _ = std::fs::remove_file(&v.samples_path);
     Ok(())
@@ -1145,8 +1156,8 @@ fn cluster_size(
         for af in &a.frames {
             let ms = af.timestamp_ms;
             if ms >= c_ms && ms <= last_ms && f0 < nframes as usize {
-                let in_range =
-                    ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
+                let in_range = ms >= c_ms
+                    && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
                 if in_range {
                     size += simple_block_size(2, af.data.len() as u64);
                 }
@@ -1192,8 +1203,8 @@ fn write_cluster_to_file(
         for af in &a.frames {
             let ms = af.timestamp_ms;
             if ms >= c_ms && ms <= last_ms && f0 < nframes as usize {
-                let in_range =
-                    ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
+                let in_range = ms >= c_ms
+                    && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
                 if in_range {
                     let rel = (ms as i64 - c_ms as i64) as i16;
                     let block = simple_block(2, rel, false, &af.data);

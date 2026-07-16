@@ -46,7 +46,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Check whether `ffmpeg` is on `$PATH`. Returns the path if found.
 pub fn find_ffmpeg() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         let candidate = dir.join(exe);
@@ -214,7 +218,9 @@ pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, Ca
     let _ = std::fs::remove_file(tmp_path);
 
     if bytes.is_empty() {
-        return Err(CandyError::Encode("ffmpeg produced no output (E007)".into()));
+        return Err(CandyError::Encode(
+            "ffmpeg produced no output (E007)".into(),
+        ));
     }
     Ok(bytes)
 }

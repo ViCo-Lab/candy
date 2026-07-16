@@ -67,10 +67,11 @@ pub fn extract_shapes_from_svg(svg: &str) -> Vec<Shape> {
             None => break,
         };
         let tag_start = lt + 1;
-        let tag_end = match svg[tag_start..].find(|c: char| c.is_whitespace() || c == '>' || c == '/') {
-            Some(i) => tag_start + i,
-            None => break,
-        };
+        let tag_end =
+            match svg[tag_start..].find(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+                Some(i) => tag_start + i,
+                None => break,
+            };
         let tag = &svg[tag_start..tag_end];
         let gt = match svg[lt..].find('>') {
             Some(i) => lt + i,
@@ -80,13 +81,51 @@ pub fn extract_shapes_from_svg(svg: &str) -> Vec<Shape> {
         let fill = svg_attr(tag_content, "fill");
         let stroke = svg_attr(tag_content, "stroke");
         match tag {
-            "rect" => { if let Some(r) = svg_rect(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
-            "circle" => { if let Some(r) = svg_circle(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
-            "ellipse" => { if let Some(r) = svg_ellipse(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
-            "polygon" | "polyline" => { if let Some(r) = svg_polyline(tag_content) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); } }
+            "rect" => {
+                if let Some(r) = svg_rect(tag_content) {
+                    shapes.push(Shape {
+                        ring: r,
+                        fill: fill.clone(),
+                        stroke: stroke.clone(),
+                    });
+                }
+            }
+            "circle" => {
+                if let Some(r) = svg_circle(tag_content) {
+                    shapes.push(Shape {
+                        ring: r,
+                        fill: fill.clone(),
+                        stroke: stroke.clone(),
+                    });
+                }
+            }
+            "ellipse" => {
+                if let Some(r) = svg_ellipse(tag_content) {
+                    shapes.push(Shape {
+                        ring: r,
+                        fill: fill.clone(),
+                        stroke: stroke.clone(),
+                    });
+                }
+            }
+            "polygon" | "polyline" => {
+                if let Some(r) = svg_polyline(tag_content) {
+                    shapes.push(Shape {
+                        ring: r,
+                        fill: fill.clone(),
+                        stroke: stroke.clone(),
+                    });
+                }
+            }
             "path" => {
                 if let Some(d) = svg_attr(tag_content, "d") {
-                    if let Some(r) = parse_path_d(&d) { shapes.push(Shape { ring: r, fill: fill.clone(), stroke: stroke.clone() }); }
+                    if let Some(r) = parse_path_d(&d) {
+                        shapes.push(Shape {
+                            ring: r,
+                            fill: fill.clone(),
+                            stroke: stroke.clone(),
+                        });
+                    }
                 }
             }
             _ => {}
@@ -99,14 +138,21 @@ pub fn extract_shapes_from_svg(svg: &str) -> Vec<Shape> {
 /// Extract polygon rings from an SVG string (paint information dropped).
 /// Convenience wrapper over [`extract_shapes_from_svg`].
 pub fn extract_rings_from_svg(svg: &str) -> Vec<Ring> {
-    extract_shapes_from_svg(svg).into_iter().map(|s| s.ring).collect()
+    extract_shapes_from_svg(svg)
+        .into_iter()
+        .map(|s| s.ring)
+        .collect()
 }
 
 /// Convert a ring to an SVG path string (`M x,y L x,y ... Z`).
 pub fn ring_to_path_string(ring: &[Point]) -> String {
-    if ring.is_empty() { return String::new(); }
+    if ring.is_empty() {
+        return String::new();
+    }
     let mut s = format!("M{:.2},{:.2}", ring[0][0], ring[0][1]);
-    for p in &ring[1..] { s.push_str(&format!(" L{:.2},{:.2}", p[0], p[1])); }
+    for p in &ring[1..] {
+        s.push_str(&format!(" L{:.2},{:.2}", p[0], p[1]));
+    }
     s.push('Z');
     s
 }
@@ -115,7 +161,9 @@ fn svg_attr(tag: &str, name: &str) -> Option<String> {
     let pat = format!("{}=", name);
     let i = tag.find(&pat)? + pat.len();
     let b = tag.as_bytes().get(i)?;
-    if *b != b'"' && *b != b'\'' { return None; }
+    if *b != b'"' && *b != b'\'' {
+        return None;
+    }
     let q = *b as char;
     let start = i + 1;
     let end = start + tag[start..].find(q)?;
@@ -123,25 +171,38 @@ fn svg_attr(tag: &str, name: &str) -> Option<String> {
 }
 
 fn svg_num(tag: &str, name: &str) -> f64 {
-    svg_attr(tag, name).and_then(|s| s.parse().ok()).unwrap_or(0.0)
+    svg_attr(tag, name)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0)
 }
 
 fn svg_rect(tag: &str) -> Option<Ring> {
     let (x, y) = (svg_num(tag, "x"), svg_num(tag, "y"));
     let (w, h) = (svg_num(tag, "width"), svg_num(tag, "height"));
-    if w < 1.0 || h < 1.0 { return None; }
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
     Some(vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
 }
 
 fn svg_circle(tag: &str) -> Option<Ring> {
     let (cx, cy, r) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "r"));
-    if r < 0.5 { return None; }
+    if r < 0.5 {
+        return None;
+    }
     Some(circle_points(cx, cy, r, 32))
 }
 
 fn svg_ellipse(tag: &str) -> Option<Ring> {
-    let (cx, cy, rx, ry) = (svg_num(tag, "cx"), svg_num(tag, "cy"), svg_num(tag, "rx"), svg_num(tag, "ry"));
-    if rx < 0.5 || ry < 0.5 { return None; }
+    let (cx, cy, rx, ry) = (
+        svg_num(tag, "cx"),
+        svg_num(tag, "cy"),
+        svg_num(tag, "rx"),
+        svg_num(tag, "ry"),
+    );
+    if rx < 0.5 || ry < 0.5 {
+        return None;
+    }
     let n = 32;
     let mut pts = Ring::with_capacity(n);
     for i in 0..n {
@@ -154,9 +215,21 @@ fn svg_ellipse(tag: &str) -> Option<Ring> {
 
 fn svg_polyline(tag: &str) -> Option<Ring> {
     let s = svg_attr(tag, "points")?;
-    let nums: Vec<f64> = s.split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|t| !t.is_empty()).filter_map(|t| t.trim().parse().ok()).collect();
-    let ring: Ring = nums.chunks(2).filter_map(|c| if c.len()==2 {Some([c[0],c[1]])} else {None}).collect();
+    let nums: Vec<f64> = s
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.trim().parse().ok())
+        .collect();
+    let ring: Ring = nums
+        .chunks(2)
+        .filter_map(|c| {
+            if c.len() == 2 {
+                Some([c[0], c[1]])
+            } else {
+                None
+            }
+        })
+        .collect();
     if ring.len() >= 3 { Some(ring) } else { None }
 }
 
@@ -511,11 +584,7 @@ fn parse_path_d(d: &str) -> Option<Ring> {
     }
     // Drop consecutive near-duplicate points introduced by curve flattening.
     ring.dedup_by(|a, b| dist(a, b) < 1e-6);
-    if ring.len() >= 3 {
-        Some(ring)
-    } else {
-        None
-    }
+    if ring.len() >= 3 { Some(ring) } else { None }
 }
 
 /// Flatten an SVG elliptical arc (endpoint parameterization) into line
@@ -536,11 +605,7 @@ fn arc_to_points(start: Point, rx_in: f64, ry_in: f64, end: &Point, ring: &mut R
     // Center in the transformed (axis-aligned) frame.
     let num = (rx * rx * ry * ry) - (rx * rx * dy * dy) - (ry * ry * dx * dx);
     let den = (rx * rx * dy * dy) + (ry * ry * dx * dx);
-    let coef = if den <= 0.0 {
-        0.0
-    } else {
-        (num / den).sqrt()
-    };
+    let coef = if den <= 0.0 { 0.0 } else { (num / den).sqrt() };
     let cx = coef * (rx * dy) / ry;
     let cy = -coef * (ry * dx) / rx;
     // Transform center back to the original coordinate frame.
@@ -741,7 +806,11 @@ fn rotate(from: &mut Ring, to: &[Point]) {
 ///
 /// This is the core of Flubber's `interpolateRing`: equalize point counts,
 /// find best cyclic alignment, then lerp index-by-index.
-pub fn interpolate_ring(mut from: Ring, mut to: Ring, max_segment_length: f64) -> impl Fn(f64) -> Ring {
+pub fn interpolate_ring(
+    mut from: Ring,
+    mut to: Ring,
+    max_segment_length: f64,
+) -> impl Fn(f64) -> Ring {
     // Normalize both rings.
     normalize_ring(&mut from, max_segment_length);
     normalize_ring(&mut to, max_segment_length);
@@ -1181,7 +1250,9 @@ fn convex_hull(points: &[Point]) -> Ring {
     // Upper hull.
     let lower_size = hull.len() + 1;
     for &p in pts.iter().rev() {
-        while hull.len() >= lower_size && cross(&hull[hull.len() - 2], &hull[hull.len() - 1], &p) <= 0.0 {
+        while hull.len() >= lower_size
+            && cross(&hull[hull.len() - 2], &hull[hull.len() - 1], &p) <= 0.0
+        {
             hull.pop();
         }
         hull.push(p);
@@ -1318,6 +1389,10 @@ mod tests {
         // Both rings should be equalized to the larger count (8).
         // The result has 8 points.
         assert!(!mid.is_empty(), "result should not be empty");
-        assert!(mid.len() >= 4, "result should have at least 4 points, got {}", mid.len());
+        assert!(
+            mid.len() >= 4,
+            "result should have at least 4 points, got {}",
+            mid.len()
+        );
     }
 }

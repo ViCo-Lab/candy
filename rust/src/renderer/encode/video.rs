@@ -30,16 +30,16 @@
 
 use std::fs;
 use std::io::Write;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin};
 
+use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
-use crate::core::diag::{CandyWarn, CandyError};
-use crate::warn;
 use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
+use crate::warn;
 
 /// Video codec selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,8 +236,7 @@ impl StreamingVideo {
             return Err(CandyError::Encode("fps must be >= 1".into()));
         }
         let uses_ffmpeg = codec.uses_ffmpeg()
-            || (codec == Codec::H265
-                && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some());
+            || (codec == Codec::H265 && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some());
         if uses_ffmpeg {
             let (child, stdin, tmp) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
                 codec, container, tw as u32, th as u32, fps, meta,
@@ -276,7 +275,9 @@ impl StreamingVideo {
                 // inter-prediction pass the way the batch `encode` does. all-intra
                 // disables motion estimation entirely, sidestepping the rav1e
                 // 0.8.1 tiling assert that panics during ME for some geometries.
-                rav1e: Some(crate::renderer::encode::rav1e::Rav1eStream::new(tw, th, fps, true)?),
+                rav1e: Some(crate::renderer::encode::rav1e::Rav1eStream::new(
+                    tw, th, fps, true,
+                )?),
                 h264: None,
             })
         } else {
@@ -308,15 +309,16 @@ impl StreamingVideo {
             return match catch_unwind(AssertUnwindSafe(|| r.push(&composed))) {
                 Ok(res) => res,
                 Err(_) => Err(CandyError::Encode(
-                    "rav1e aborted during AV1 streaming encode (E007); try `--codec h264`"
-                        .into(),
+                    "rav1e aborted during AV1 streaming encode (E007); try `--codec h264`".into(),
                 )),
             };
         }
         if let Some(h) = self.h264.as_mut() {
             return h.push(&composed);
         }
-        Err(CandyError::Encode("streaming encoder not initialized".into()))
+        Err(CandyError::Encode(
+            "streaming encoder not initialized".into(),
+        ))
     }
 
     /// Finish encoding and write the muxed container directly to `output`
@@ -334,18 +336,28 @@ impl StreamingVideo {
         } else if let Some(h) = self.h264 {
             h.finish_file()?
         } else {
-            return Err(CandyError::Encode("streaming encoder not initialized".into()));
+            return Err(CandyError::Encode(
+                "streaming encoder not initialized".into(),
+            ));
         };
         match self.container {
             Container::Mp4 => {
                 container::mux_mp4_to_file(&video, self.audio.as_ref(), output, &self.meta)
             }
-            Container::Mkv => {
-                container::mux_matroska_to_file(&video, self.audio.as_ref(), false, output, &self.meta)
-            }
-            Container::Webm => {
-                container::mux_matroska_to_file(&video, self.audio.as_ref(), true, output, &self.meta)
-            }
+            Container::Mkv => container::mux_matroska_to_file(
+                &video,
+                self.audio.as_ref(),
+                false,
+                output,
+                &self.meta,
+            ),
+            Container::Webm => container::mux_matroska_to_file(
+                &video,
+                self.audio.as_ref(),
+                true,
+                output,
+                &self.meta,
+            ),
         }
     }
 
@@ -357,7 +369,9 @@ impl StreamingVideo {
         } else if let Some(h) = self.h264 {
             h.finish()
         } else {
-            Err(CandyError::Encode("streaming encoder not initialized".into()))
+            Err(CandyError::Encode(
+                "streaming encoder not initialized".into(),
+            ))
         }
     }
 }
@@ -399,7 +413,8 @@ pub fn encode_frames(
         // reason, transparently fall back to AV1 (rav1e) so a valid,
         // self-contained video is still produced.
         Codec::H264 => {
-            let mut s = StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
+            let mut s =
+                StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
             for f in frames {
                 s.push(f)?;
             }
@@ -409,7 +424,8 @@ pub fn encode_frames(
         // geometries; `Rav1eStream` surfaces that as an error so we fall back to
         // H.264.
         Codec::Av1 => {
-            let mut s = StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
+            let mut s =
+                StreamingVideo::new(fps, codec, Container::Mp4, _private_metadata, tw, th, None)?;
             for f in frames {
                 s.push(f)?;
             }
@@ -417,8 +433,15 @@ pub fn encode_frames(
                 Ok(v) => Ok(v),
                 Err(e) => {
                     warn!(CandyWarn::CodecFallback(format!("AV1 -> H.264: {e}")));
-                    let mut s2 =
-                        StreamingVideo::new(fps, Codec::H264, Container::Mp4, _private_metadata, tw, th, None)?;
+                    let mut s2 = StreamingVideo::new(
+                        fps,
+                        Codec::H264,
+                        Container::Mp4,
+                        _private_metadata,
+                        tw,
+                        th,
+                        None,
+                    )?;
                     for f in frames {
                         s2.push(f)?;
                     }
@@ -682,7 +705,9 @@ mod tests {
         );
         let expected = format!("\"codename\":\"{}\"", meta.codename);
         assert!(
-            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            bytes
+                .windows(expected.len())
+                .any(|w| w == expected.as_bytes()),
             "GIF comment extension should contain private metadata JSON"
         );
     }
@@ -698,12 +723,16 @@ mod tests {
 
         // tEXt chunk keyword "candy-meta" followed by null and then the JSON text.
         assert!(
-            bytes.windows("candy-meta".len()).any(|w| w == b"candy-meta"),
+            bytes
+                .windows("candy-meta".len())
+                .any(|w| w == b"candy-meta"),
             "PNG should contain a candy-meta tEXt chunk"
         );
         let expected = format!("\"codename\":\"{}\"", meta.codename);
         assert!(
-            bytes.windows(expected.len()).any(|w| w == expected.as_bytes()),
+            bytes
+                .windows(expected.len())
+                .any(|w| w == expected.as_bytes()),
             "PNG tEXt chunk should contain private metadata JSON"
         );
     }

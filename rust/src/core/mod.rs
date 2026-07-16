@@ -12,5 +12,5 @@ pub mod morph;
 pub mod scheduler;
 
 pub use ast::*;
-pub use easing::Easing;
 pub use diag::{CandyError, CandyWarn};
+pub use easing::Easing;

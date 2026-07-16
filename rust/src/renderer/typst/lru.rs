@@ -1,10 +1,9 @@
 //! Bounded LRU cache used by the renderer's per-frame memoization tables.
 //!
-//! The renderer memoizes three things that are expensive to recompute per
-//! frame: the parsed Typst source (`WorldState::source_cache`), the compiled
-//! `PagedDocument` (`Renderer::body_cache`), and the rasterized object sprite
-//! (`Renderer::sprite_cache`). For *static / paused* content these keys are
-//! stable and re-touched every frame, so caching is a big win. But for
+//! The renderer memoizes two things that are expensive to recompute per
+//! frame: the parsed Typst source (`WorldState::source_cache`) and the compiled
+//! `PagedDocument` (`Renderer::body_cache`). For *static / paused* content these
+//! keys are stable and re-touched every frame, so caching is a big win. But for
 //! *animated* content every frame produces a **distinct** key (different
 //! `dx/dy/scale/opacity`, counter value, morph polygon, …), so an unbounded
 //! `HashMap` would accumulate one entry per frame and blow up memory — exactly

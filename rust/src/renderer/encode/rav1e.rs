@@ -6,17 +6,17 @@
 //! units are returned as [`crate::renderer::EncodedVideo`] for the container
 //! muxer to package into MP4 / Matroska (WebM/MKV).
 
-use crate::core::diag::{CandyWarn, CandyError};
-use crate::warn;
+use crate::core::diag::{CandyError, CandyWarn};
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
+use crate::warn;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
 #[cfg(feature = "video")]
 use rav1e::prelude::*;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Encode rasterized frames into AV1 and return an [`EncodedVideo`].
 ///
@@ -40,13 +40,14 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
             Ok(r) => r,
             Err(_) => {
                 warn!(CandyWarn::EncodeRetry);
-                catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, true)))
-                    .unwrap_or_else(|_| {
+                catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, true))).unwrap_or_else(
+                    |_| {
                         Err(CandyError::Encode(
                             "rav1e aborted during AV1 encoding (E007); falling back to H.264"
                                 .into(),
                         ))
-                    })
+                    },
+                )
             }
         }
     }
@@ -92,7 +93,12 @@ pub(crate) struct Rav1eStream {
 #[cfg(feature = "video")]
 impl Rav1eStream {
     /// Create a streaming AV1 encoder for `width × height` frames at `fps`.
-    pub(crate) fn new(width: usize, height: usize, fps: u32, all_intra: bool) -> Result<Self, CandyError> {
+    pub(crate) fn new(
+        width: usize,
+        height: usize,
+        fps: u32,
+        all_intra: bool,
+    ) -> Result<Self, CandyError> {
         if fps < 1 {
             return Err(CandyError::Encode("fps must be >= 1".into()));
         }
@@ -124,8 +130,7 @@ impl Rav1eStream {
             .new_context()
             .map_err(|e| CandyError::Encode(format!("invalid rav1e config: {:?}", e)))?;
 
-        let (samples_file, samples_path) =
-            crate::renderer::encode::video::new_samples_tempfile()?;
+        let (samples_file, samples_path) = crate::renderer::encode::video::new_samples_tempfile()?;
 
         Ok(Self {
             ctx,
@@ -173,7 +178,9 @@ impl Rav1eStream {
     /// [`EncodedVideoFile`] (the coded samples stay in their temp file; only
     /// metadata is returned). The streaming muxer streams the file into the
     /// container, so nothing is ever buffered in RAM.
-    pub(crate) fn finish_file(self) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
+    pub(crate) fn finish_file(
+        self,
+    ) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
         let mut this = self;
         this.ctx.flush();
         while let Ok(packet) = this.ctx.receive_packet() {
@@ -243,9 +250,15 @@ impl Rav1eStream {
 /// the fallback retry. This is the batch entry point; the streaming path uses
 /// [`Rav1eStream`] directly.
 #[cfg(feature = "video")]
-fn encode_inner(frames: &[RenderedFrame], fps: u32, all_intra: bool) -> Result<EncodedVideo, CandyError> {
+fn encode_inner(
+    frames: &[RenderedFrame],
+    fps: u32,
+    all_intra: bool,
+) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {
-        return Err(CandyError::Encode("cannot encode an empty animation".into()));
+        return Err(CandyError::Encode(
+            "cannot encode an empty animation".into(),
+        ));
     }
     let mut stream = Rav1eStream::new(frames[0].width, frames[0].height, fps, all_intra)?;
     for f in frames {

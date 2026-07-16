@@ -7,15 +7,15 @@
 //! * [`ffmpeg`] — optional system-FFmpeg encoding path (runtime-detected).
 //! * [`container`] — self-contained MP4 / Matroska (WebM/MKV) muxers.
 
-pub mod video;
-pub mod rav1e;
-pub mod h264;
-pub mod ffmpeg;
 pub mod container;
+pub mod ffmpeg;
+pub mod h264;
+pub mod rav1e;
+pub mod video;
 
+#[allow(unused_imports)]
+pub(crate) use video::EncodedVideoFile;
 pub use video::{
     Codec, Container, EncodedVideo, collect_audio, encode_frames, mux, write_gif, write_png,
     write_rgba_draft,
 };
-#[allow(unused_imports)]
-pub(crate) use video::EncodedVideoFile;

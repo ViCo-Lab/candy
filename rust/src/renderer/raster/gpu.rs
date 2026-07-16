@@ -28,13 +28,14 @@
 
 use vello::{RenderParams, Renderer as VelloRenderer, Scene};
 use wgpu::{
-    Backends, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d,
-    Instance, InstanceFlags, MapMode, Queue, TextureAspect, TextureDescriptor, TextureDimension,
+    Backends, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d, Instance,
+    InstanceFlags, MapMode, Queue, TextureAspect, TextureDescriptor, TextureDimension,
     TextureFormat, TextureUsages, TextureViewDescriptor,
 };
 
 use crate::core::diag::CandyError;
 use crate::renderer::RenderedFrame;
+use crate::renderer::raster::cpu::set_svg_viewport_px;
 
 /// A reusable GPU rasterization context: wgpu device + queue + vello renderer.
 ///
@@ -95,7 +96,11 @@ impl GpuRenderer {
             let vello = VelloRenderer::new(&device, vello::RendererOptions::default())
                 .map_err(|e| CandyError::Encode(format!("vello renderer: {e}")))?;
 
-            Ok(GpuRenderer { device, queue, vello })
+            Ok(GpuRenderer {
+                device,
+                queue,
+                vello,
+            })
         })
     }
 
@@ -105,7 +110,12 @@ impl GpuRenderer {
     /// then copied back to CPU memory. The returned `RenderedFrame` has the
     /// same shape as the CPU path's output, so the video encoder consumes it
     /// unchanged.
-    pub fn render_svg(&mut self, svg: &str, width: u32, height: u32) -> Result<RenderedFrame, CandyError> {
+    pub fn render_svg(
+        &mut self,
+        svg: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<RenderedFrame, CandyError> {
         // 1. Parse SVG → vello Scene.
         //
         // The SVG root carries `width`/`height` in *point* units (the scene's
@@ -122,7 +132,11 @@ impl GpuRenderer {
         // 2. Create target texture (Rgba8Unorm, render target + copy source).
         let texture = self.device.create_texture(&TextureDescriptor {
             label: Some("candy frame texture"),
-            size: Extent3d { width, height, depth_or_array_layers: 1 },
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
@@ -152,7 +166,8 @@ impl GpuRenderer {
         // `width * 4` usually isn't, so we pad to the aligned stride and then
         // de-pad row-by-row below to give the encoder a tightly-packed buffer.
         let unpadded_bpr = (width as usize) * 4;
-        let aligned_bpr = unpadded_bpr.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let aligned_bpr =
+            unpadded_bpr.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
         let buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("candy frame readback"),
             size: (aligned_bpr as u64) * (height as u64),
@@ -180,7 +195,11 @@ impl GpuRenderer {
                     rows_per_image: Some(height),
                 },
             },
-            Extent3d { width, height, depth_or_array_layers: 1 },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(encoder.finish()));
 
@@ -210,52 +229,6 @@ impl GpuRenderer {
     }
 }
 
-/// Rewrite the root `<svg>` element's `width`/`height` (the viewport) to the
-/// given pixel dimensions, leaving the `viewBox` (in pt) untouched.
-///
-/// `usvg` fits the `viewBox` into the viewport via a scale transform, so this
-/// is what maps the scene's point-space geometry to the pixel-sized render
-/// target. Only the first `width`/`height` attributes — those on the opening
-/// `<svg ...>` tag — are touched; child elements live after the closing `>`
-/// and are never affected.
-fn set_svg_viewport_px(svg: &str, w: u32, h: u32) -> String {
-    let open = match svg.find("<svg") {
-        Some(i) => i,
-        None => return svg.to_string(),
-    };
-    let close = match svg[open..].find('>') {
-        Some(i) => open + i,
-        None => return svg.to_string(),
-    };
-    let tag = &svg[open..=close];
-    let tag = replace_attr(tag, "width", w);
-    let tag = replace_attr(&tag, "height", h);
-    let mut out = String::with_capacity(svg.len());
-    out.push_str(&svg[..open]);
-    out.push_str(&tag);
-    out.push_str(&svg[close + 1..]);
-    out
-}
-
-/// Replace the first `name="..."` attribute value within `s` with `value`.
-fn replace_attr(s: &str, name: &str, value: u32) -> String {
-    let needle = format!("{}=\"", name);
-    let start = match s.find(&needle) {
-        Some(i) => i,
-        None => return s.to_string(),
-    };
-    let val_start = start + needle.len();
-    let end = match s[val_start..].find('"') {
-        Some(i) => val_start + i,
-        None => return s.to_string(),
-    };
-    let mut out = String::with_capacity(s.len());
-    out.push_str(&s[..val_start]);
-    out.push_str(&value.to_string());
-    out.push_str(&s[end..]);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,8 +242,14 @@ mod tests {
                    </svg>";
         let out = set_svg_viewport_px(svg, 1360, 765);
         // Root viewport is now pixel-sized...
-        assert!(out.contains("width=\"1360\""), "root width not rewritten: {out}");
-        assert!(out.contains("height=\"765\""), "root height not rewritten: {out}");
+        assert!(
+            out.contains("width=\"1360\""),
+            "root width not rewritten: {out}"
+        );
+        assert!(
+            out.contains("height=\"765\""),
+            "root height not rewritten: {out}"
+        );
         // ...but the viewBox is preserved (pt) so usvg scales the scene.
         assert!(
             out.contains("viewBox=\"0 0 453.543 255.118\""),

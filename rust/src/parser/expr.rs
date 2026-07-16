@@ -19,8 +19,8 @@ use typst_syntax::SyntaxNode;
 use typst_syntax::ast::{self, AstNode, Expr};
 
 use crate::core::diag::CandyWarn;
-use crate::warn;
 use crate::parser::ast_walk::ParseCtx;
+use crate::warn;
 
 /// The Candy symbol names recognized as directives.
 pub(crate) const CANDY: &[&str] = &[
@@ -328,10 +328,10 @@ pub(crate) fn track_key_from_expr(e: &Expr) -> Option<crate::core::ast::TrackKey
         _ => return None,
     } as u32;
     let st: Vec<ast::ArrayItem> = match &parts[1] {
-        ast::ArrayItem::Pos(e) => match as_array(e) {
-            Some(a) => a.items().collect(),
-            None => return None,
-        },
+        ast::ArrayItem::Pos(e) => {
+            let a = as_array(e)?;
+            a.items().collect()
+        }
         _ => return None,
     };
     let x = st.first().and_then(|it| match it {
