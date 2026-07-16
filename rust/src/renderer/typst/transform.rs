@@ -84,7 +84,8 @@ pub(crate) struct TransformFragmentPlan {
 /// generated source minimal for the common case (and matching the v0.1 output
 /// exactly, so existing SVG drafts are byte-identical when no rotation is
 /// applied).
-pub(crate) fn place_source(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn place_source(
     page_w: f64,
     page_h: f64,
     x_cm: f64,
@@ -186,7 +187,7 @@ fn match_shapes(old: &[ShapeUnit], new: &[ShapeUnit]) -> Vec<(usize, usize)> {
         matched.push((oi, ni));
     }
     // Emit in old-index order so downstream draw order is stable.
-    matched.sort_by(|a, b| a.0.cmp(&b.0));
+    matched.sort_by_key(|a| a.0);
     matched
 }
 
@@ -417,7 +418,7 @@ impl Renderer {
     /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
     /// applying its (and ancestors') transforms to its path geometry, and sign
     /// it by the path data so identical glyphs match across formulas.
-    fn extract_formula(svg: &str) -> Option<(String, Vec<((f64, f64, f64, f64), String)>)> {
+    fn extract_formula(svg: &str) -> Option<(String, Vec<crate::renderer::typst::svg::FormulaLeaf>)> {
         let doc = roxmltree::Document::parse(svg).ok()?;
         let root = doc.root_element();
         // Inner markup: everything between `<svg …>` and `</svg>`.
@@ -463,7 +464,11 @@ impl Renderer {
     /// instead. Only plans that actually produced fragments hide their labels.
     pub(crate) fn transform_hidden(&self, label: &Label, time_ms: u32) -> bool {
         for p in &self.transform_fragments {
-            if time_ms >= p.start_ms && time_ms < p.end_ms && (&p.target == label || &p.old == label)
+            // Inclusive of `end_ms`: at the final frame the interpolated overlay
+            // draws the exact target formula (see `transform_progress`), so the
+            // base `target`/`old` mobjects must stay hidden through `end_ms` to
+            // avoid a double-draw / the old formula flashing on the last frame.
+            if time_ms >= p.start_ms && time_ms <= p.end_ms && (&p.target == label || &p.old == label)
             {
                 return true;
             }
@@ -487,7 +492,7 @@ impl Renderer {
         states: &HashMap<Label, FrameData>,
         time_ms: u32,
     ) -> Option<(f64, f64, f64, f64, f64)> {
-        if time_ms < p.start_ms || time_ms >= p.end_ms {
+        if time_ms < p.start_ms || time_ms > p.end_ms {
             return None;
         }
         let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
@@ -496,9 +501,20 @@ impl Renderer {
             Some(s) => (nat_cm.0 + s.x, nat_cm.1 + s.y, s.scale, s.rotation),
             None => (nat_cm.0, nat_cm.1, 1.0, 0.0),
         };
-        let denom = (p.end_ms - p.start_ms).max(1) as f64;
-        let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
-        let te = (p.easing.resolve())(t);
+        // At the final frame (`end_ms`) the eased progress is forced to exactly
+        // 1.0 so the overlay reconstructs the *target* formula pixel-for-pixel
+        // (matched glyphs land on their new positions, inserted units are fully
+        // opaque, deleted units fully faded). This is what makes the last frame
+        // show the target rather than an intermediate (te < 1) morph state. The
+        // force is explicit (not `easing(1.0)`) because some easings — e.g.
+        // `ThereAndBack` — do not return 1.0 at t = 1.
+        let te = if time_ms == p.end_ms {
+            1.0
+        } else {
+            let denom = (p.end_ms - p.start_ms).max(1) as f64;
+            let t = (((time_ms - p.start_ms) as f64) / denom).clamp(0.0, 1.0);
+            (p.easing.resolve())(t)
+        };
         Some((sx, sy, te, scale, rot))
     }
 
@@ -565,9 +581,10 @@ impl Renderer {
         time_ms: u32,
     ) -> String {
         let mut out = String::new();
-        // Pass 1: symbol definitions (one <defs> per active plan).
+        // Pass 1: symbol definitions (one <defs> per active plan). Inclusive of
+        // `end_ms` so the final frame can still draw the exact target formula.
         for (pi, p) in self.transform_fragments.iter().enumerate() {
-            if time_ms < p.start_ms || time_ms >= p.end_ms {
+            if time_ms > p.end_ms {
                 continue;
             }
             let prefix = self.transform_id_prefix(&p.target, pi);

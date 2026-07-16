@@ -81,13 +81,13 @@ impl Renderer {
         //    drawn as a separate, camera-independent overlay). The `subtitle_call`
         //    range already includes the leading `#`, so replacing it with `#none`
         //    yields a no-op caption in the base.
-        for (_, &(ss, se)) in &scene.artifacts.subtitle_call {
+        for &(ss, se) in scene.artifacts.subtitle_call.values() {
             let cs = src[..ss].chars().count();
             let ce = src[..se].chars().count();
             edits.push((cs, ce, "#none".to_string()));
         }
         // Apply right-to-left (descending start) so nested ranges stay correct.
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
         let mut out: Vec<char> = chars;
         for (s, e, rep) in edits {
             let rep_chars: Vec<char> = rep.chars().collect();
@@ -136,7 +136,7 @@ impl Renderer {
             }
         }
         let mut edits = kept;
-        edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
         let mut out = body.to_string();
         for (range, text) in edits {
             out.replace_range(range, &text);
@@ -172,17 +172,16 @@ impl Renderer {
         if !is_ecval {
             return None;
         }
-        for a in call.args().items() {
-            if let ast::Arg::Pos(p) = a {
-                return match p {
-                    Expr::Str(s) => Some(s.get().to_string()),
-                    Expr::Ident(i) => Some(i.as_str().to_string()),
-                    _ => None,
-                };
-            }
-            break;
+        // The first positional argument is the counter name. A leading named
+        // argument means this isn't the canonical read form → bail.
+        match call.args().items().next() {
+            Some(ast::Arg::Pos(p)) => match p {
+                Expr::Str(s) => Some(s.get().to_string()),
+                Expr::Ident(i) => Some(i.as_str().to_string()),
+                _ => None,
+            },
+            _ => None,
         }
-        None
     }
 
     /// Wrap a string-literal mobject body so its revealed prefix length is read
@@ -282,7 +281,7 @@ impl Renderer {
         // `reveal`/`typewriter` revealed-prefix lengths: each string target's
         // revealed character count at this frame is supplied as
         // `candy:<label>:reveal:len`, matching `reveal_wrap_body`.
-        for (label, _timeline) in &self.scene.content_timeline {
+        for label in self.scene.content_timeline.keys() {
             let Some(full) = self.scene.items.get(label).and_then(|b| strip_string_literal(b)) else {
                 continue;
             };

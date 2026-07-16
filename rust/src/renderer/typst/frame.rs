@@ -1,5 +1,9 @@
 use super::*;
 
+/// The largest morphable shape extracted from a body: its outline as a ring of
+/// `[x, y]` points, plus optional fill and stroke paints.
+pub(crate) type LargestShape = (Vec<[f64; 2]>, Option<String>, Option<String>);
+
 impl Renderer {
     /// Render a single mobject at its placed position onto a transparent
     /// full-canvas RGBA frame (page-sized).
@@ -63,7 +67,8 @@ impl Renderer {
         let full = crate::renderer::RenderedFrame {
             width: pix.width() as usize,
             height: pix.height() as usize,
-            rgba: pix.data().to_vec(),
+            // `take()` moves the pixmap's buffer out instead of copying it.
+            rgba: pix.take(),
         };
         // Crop to the object's tight bounding box. This is the core HD/high-FPS
         // OOM fix: without it the cache would hold full-canvas RGBA frames
@@ -123,7 +128,7 @@ impl Renderer {
         // The source is stable (`param_source`); only the per-frame `inputs`
         // vary. Compiling yields exactly the active scene's page.
         let inputs = self.build_frame_inputs(&states, active, active_page, true, time_ms);
-        let doc = self.compile_cached(&self.param_source, &inputs)?;
+        let doc = self.compile_param_source(&inputs)?;
         let page = doc
             .pages()
             .get(active_page)
@@ -136,7 +141,9 @@ impl Renderer {
         let pix = render(page, &opts);
         let w = pix.width() as usize;
         let h = pix.height() as usize;
-        let mut canvas: Vec<u8> = pix.data().to_vec();
+        // `take()` transfers the pixmap's RGBA buffer instead of copying it
+        // (the old `pix.data().to_vec()` duplicated the whole canvas every frame).
+        let mut canvas: Vec<u8> = pix.take();
         // Opacity-overlay pass: draw fading objects (typst 0.15 has no
         // `opacity()`, so they were hidden in the base document above).
         for (label, st) in &states {
@@ -238,7 +245,7 @@ impl Renderer {
         // `hide_fading = false`: the draft shows fading objects at full opacity
         // (typst 0.15 cannot express per-object opacity in-document).
         let inputs = self.build_frame_inputs(&states, active, active_page, false, time_ms);
-        let doc = self.compile_cached(&self.param_source, &inputs)?;
+        let doc = self.compile_param_source(&inputs)?;
         let page = doc
             .pages()
             .get(active_page)
@@ -434,11 +441,11 @@ impl Renderer {
             }
             // Per-glyph transform: the `target`/`old` mobjects are replaced by
             // the interpolated glyph fragments, so skip them during the window.
-            if self.transform_hidden(*label, time_ms) {
+            if self.transform_hidden(label, time_ms) {
                 continue;
             }
             let st = states.get(*label).unwrap();
-            let sprite = self.render_object_pixels(*label, st, time_ms, pw, ph, pixel_per_pt)?;
+            let sprite = self.render_object_pixels(label, st, time_ms, pw, ph, pixel_per_pt)?;
             objs.push((st.opacity, sprite));
         }
         // Subtitle overlays are collected separately: they must be composited
@@ -540,7 +547,7 @@ impl Renderer {
     pub(crate) fn active_fragment_count(&self, time_ms: u32) -> usize {
         self.transform_fragments
             .iter()
-            .filter(|p| time_ms >= p.start_ms && time_ms < p.end_ms)
+            .filter(|p| time_ms >= p.start_ms && time_ms <= p.end_ms)
             .map(|p| p.anims.len())
             .sum()
     }
@@ -841,7 +848,8 @@ impl Renderer {
         let full = crate::renderer::RenderedFrame {
             width: pix.width() as usize,
             height: pix.height() as usize,
-            rgba: pix.data().to_vec(),
+            // `take()` moves the pixmap's buffer out instead of copying it.
+            rgba: pix.take(),
         };
         // Crop to the subtitle's tight bounding box (the text is positioned
         // inside a full page by `subtitle_place_expr`); the stored offset pastes
@@ -857,7 +865,7 @@ impl Renderer {
     pub(crate) fn body_largest_shape(
         &self,
         body: &str,
-    ) -> Result<Option<(Vec<[f64; 2]>, Option<String>, Option<String>)>, CandyError> {
+    ) -> Result<Option<LargestShape>, CandyError> {
         let preamble = imports_preamble(&self.scene);
         let pre = if preamble.is_empty() {
             String::new()

@@ -146,6 +146,10 @@ impl Easing {
     /// Custom modes are parsed here too:
     /// - `"bezier:x1,y1,x2,y2"` → [`Easing::Bezier`].
     /// - `"expr:<math>"` → [`Easing::Expr`].
+    // Not `std::str::FromStr`: this returns `Option` (unknown names fall back to
+    // `Linear` with a warning rather than being a hard error) and is used that
+    // way throughout the parser.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(name: &str) -> Option<Self> {
         let raw = name.trim();
         // Custom modes are detected by an explicit `kind:...` prefix so they

@@ -356,7 +356,7 @@ impl Action {
         match self {
             Action::MoveTo { target, .. }
             | Action::MoveBy { target, .. }
-            |             Action::MoveAlongPath { target, .. }
+            | Action::MoveAlongPath { target, .. }
             | Action::Track { target, .. }
             | Action::Camera { target, .. }
             | Action::Scale { target, .. }
@@ -383,7 +383,7 @@ impl Action {
         match self {
             Action::MoveTo { easing, .. }
             | Action::MoveBy { easing, .. }
-            |             Action::MoveAlongPath { easing, .. }
+            | Action::MoveAlongPath { easing, .. }
             | Action::Track { easing, .. }
             | Action::Camera { easing, .. }
             | Action::Scale { easing, .. }
@@ -487,6 +487,7 @@ pub struct Scene {
     /// * user-defined top-level `#let` helpers (e.g. `#let star(c, s: 0.35cm) = …`)
     ///   so a body like `star(white)` resolves instead of failing with
     ///   "unknown variable: star".
+    ///
     /// Local relative imports are intentionally excluded (they would not
     /// resolve in a detached module).
     #[serde(default)]
@@ -580,10 +581,18 @@ impl Scene {
     /// unknown scene (treated as a top-level alias).
     pub fn scene_depth(&self, id: usize) -> usize {
         let mut depth = 0;
-        let mut cur = self.scenes.iter().find(|s| s.id == id).and_then(|s| s.parent);
+        let mut cur = self
+            .scenes
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.parent);
         while let Some(p) = cur {
             depth += 1;
-            cur = self.scenes.iter().find(|s| s.id == p).and_then(|s| s.parent);
+            cur = self
+                .scenes
+                .iter()
+                .find(|s| s.id == p)
+                .and_then(|s| s.parent);
         }
         depth
     }
@@ -717,8 +726,10 @@ pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 /// corner. `Absolute(x, y)` is in centimeters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum SubPos {
     /// Default anchor when `position:` is omitted.
+    #[default]
     Bottom,
     Top,
     Center,
@@ -728,12 +739,6 @@ pub enum SubPos {
     TopRight,
     /// Absolute position in cm from the top-left of the page.
     Absolute(f64, f64),
-}
-
-impl Default for SubPos {
-    fn default() -> Self {
-        SubPos::Bottom
-    }
 }
 
 /// A subtitle (caption) overlay rendered over the animation.
@@ -1031,15 +1036,14 @@ impl Scene {
         let elapsed = elapsed_raw.saturating_sub(paused);
         let elapsed_f = elapsed as f64;
 
-        let value = match c.duration_ms {
+        match c.duration_ms {
             Some(d) if d > 0 => {
                 let progress = (elapsed_f / d as f64).clamp(0.0, 1.0);
                 let eased = c.easing.resolve()(progress);
                 (c.seed as f64 + c.step as f64 * d as f64 * eased).round() as i64
             }
             _ => c.seed + (c.step as f64 * elapsed_f).round() as i64,
-        };
-        value
+        }
     }
 
     /// The set of **visible** subtitles at `time_ms` (after applying one-per-

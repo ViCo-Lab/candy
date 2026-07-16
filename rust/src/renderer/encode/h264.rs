@@ -60,7 +60,7 @@ impl H264Stream {
         // whole stream from the start; a periodic IDR keeps seeking snappy. The
         // *exact* set of keyframes is reported back via `keyframes` so the
         // MP4/Matroska muxer can build an honest sync-sample table.
-        let gop = (fps as u32).max(1);
+        let gop = fps.max(1);
         let config = openh264::encoder::EncoderConfig::new()
             .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
             .bitrate(openh264::encoder::BitRate::from_bps(target_bps))
@@ -263,13 +263,14 @@ fn nal_payload(nal: &[u8]) -> &[u8] {
 
 /// Build an `avcC` codec configuration record from SPS/PPS.
 fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(1); // configurationVersion
-    v.push(sps[1]); // AVCProfileIndication
-    v.push(sps[2]); // profile_compatibility
-    v.push(sps[3]); // AVCLevelIndication
-    v.push(0xFF); // 6 bits reserved (111111) + 2 bits lengthSizeMinusOne (11 => 3)
-    v.push(0xE1); // 3 bits reserved (111) + 5 bits numOfSPS (00001)
+    let mut v = vec![
+        1,      // configurationVersion
+        sps[1], // AVCProfileIndication
+        sps[2], // profile_compatibility
+        sps[3], // AVCLevelIndication
+        0xFF,   // 6 bits reserved (111111) + 2 bits lengthSizeMinusOne (11 => 3)
+        0xE1,   // 3 bits reserved (111) + 5 bits numOfSPS (00001)
+    ];
     v.extend_from_slice(&(sps.len() as u16).to_be_bytes());
     v.extend_from_slice(sps);
     v.push(1); // numOfPPS

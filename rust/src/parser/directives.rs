@@ -17,8 +17,8 @@ use crate::core::ast::{
     Slide, Subtitle, TrackKey,
 };
 use crate::core::diag::CandyWarn;
-use crate::warn;
 use crate::core::easing::Easing;
+use crate::warn;
 
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
@@ -850,8 +850,8 @@ fn process_track(
     ctx.cursor += duration;
 }
 
-/// `#camera(x:, y:, zoom:, rotate:, duration:, easing:)` — a global pan + zoom
-/// + rotate applied to the whole scene. Implemented via a synthetic
+/// `#camera(x:, y:, zoom:, rotate:, duration:, easing:)` — a global pan, zoom,
+/// and rotate applied to the whole scene. Implemented via a synthetic
 /// `__camera__` mobject so it flows through the normal scheduler / interpolator
 /// pipeline; the renderer reads it once per frame and never draws it.
 fn process_camera(

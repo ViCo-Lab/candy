@@ -837,13 +837,7 @@ impl MorphPlan {
 
     /// Sample the interpolated ring at parameter `t` (clamped to `[0, 1]`).
     pub fn at(&self, t: f64) -> Ring {
-        let t = if t < 0.0 {
-            0.0
-        } else if t > 1.0 {
-            1.0
-        } else {
-            t
-        };
+        let t = t.clamp(0.0, 1.0);
         (self.interp)(t)
     }
 }
@@ -910,7 +904,7 @@ pub fn regular_polygon_points(cx: f64, cy: f64, r: f64, n_sides: usize) -> Ring 
 pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
     use ab_glyph::{Font, FontArc, OutlineCurve};
 
-    let font_data: Vec<u8> = load_system_font().or_else(|| load_embedded_font())?;
+    let font_data: Vec<u8> = load_system_font().or_else(load_embedded_font)?;
     let font = FontArc::try_from_vec(font_data).ok()?;
 
     let glyph_id = font.glyph_id(ch);
@@ -920,7 +914,7 @@ pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
 
     // font.outline() returns the unscaled outline; we scale manually.
     let outline = font.outline(glyph_id)?;
-    let scale_factor = font_size as f64 / font.units_per_em().unwrap_or(1000.0) as f64;
+    let scale_factor = font_size / font.units_per_em().unwrap_or(1000.0) as f64;
 
     // Flatten the Bézier curves into a polygon.
     let mut ring = Ring::new();
@@ -1067,7 +1061,7 @@ pub fn split_shape(ring: &[Point], n_pieces: usize) -> Vec<Ring> {
         parent[x]
     }
 
-    fn union(parent: &mut Vec<usize>, rank: &mut Vec<usize>, a: usize, b: usize) {
+    fn union(parent: &mut Vec<usize>, rank: &mut [usize], a: usize, b: usize) {
         let ra = find(parent, a);
         let rb = find(parent, b);
         if ra == rb {

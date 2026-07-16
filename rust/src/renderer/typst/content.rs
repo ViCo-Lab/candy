@@ -107,7 +107,7 @@ pub(crate) fn substitute_counters(scene: &Scene, body: &str, time_ms: u32) -> St
         return body.to_string();
     }
     // Apply right-to-left so earlier edits don't invalidate later offsets.
-    edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
     let mut out = body.to_string();
     for (range, text) in edits {
         out.replace_range(range, &text);
@@ -151,17 +151,14 @@ fn ecval_counter_name(call: &ast::FuncCall) -> Option<String> {
     }
     // The first positional argument is the counter name. A leading named
     // argument means this isn't the canonical read form → bail.
-    for a in call.args().items() {
-        if let ast::Arg::Pos(p) = a {
-            return match p {
-                Expr::Str(s) => Some(s.get().to_string()),
-                Expr::Ident(i) => Some(i.as_str().to_string()),
-                _ => None,
-            };
-        }
-        break;
+    match call.args().items().next() {
+        Some(ast::Arg::Pos(p)) => match p {
+            Expr::Str(s) => Some(s.get().to_string()),
+            Expr::Ident(i) => Some(i.as_str().to_string()),
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }
 
 /// Inset (in cm) from the page edge for the named subtitle anchors.

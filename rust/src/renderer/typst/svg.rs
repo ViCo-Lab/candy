@@ -45,6 +45,12 @@ impl SvgBBox {
 /// `x' = a*x + c*y + e`, `y' = b*x + d*y + f`.
 type Xf = (f64, f64, f64, f64, f64, f64);
 
+/// Axis-aligned bounding box `(x0, y0, x1, y1)` in SVG user units.
+pub(crate) type BBox = (f64, f64, f64, f64);
+/// One extracted formula leaf: its bounding box plus a signature (the glyph's
+/// path data), used to match identical glyphs across formulas in `#transform`.
+pub(crate) type FormulaLeaf = (BBox, String);
+
 /// Parse an SVG `transform` attribute (`matrix(…)` / `translate(…)`).
 pub(crate) fn parse_transform(s: &str) -> Xf {
     let s = s.trim();
@@ -60,7 +66,7 @@ pub(crate) fn parse_transform(s: &str) -> Xf {
     } else if let Some(rest) = s.strip_prefix("translate(") {
         let inner = &rest[..rest.find(')').unwrap_or(rest.len())];
         let nums: Vec<f64> = inner
-            .split(|c| c == ' ' || c == ',')
+            .split([' ', ','])
             .filter_map(|x| x.parse::<f64>().ok())
             .collect();
         let tx = nums.first().copied().unwrap_or(0.0);
@@ -105,7 +111,7 @@ pub(crate) fn collect_formula_leaves(
     node: &Node,
     acc: Xf,
     symbols: &HashMap<String, String>,
-    out: &mut Vec<((f64, f64, f64, f64), String)>,
+    out: &mut Vec<FormulaLeaf>,
 ) {
     let tag = node.tag_name().name();
     match tag {
@@ -515,16 +521,19 @@ pub(crate) enum PathTok {
 /// (which belong to a later group). Returns `None` at end-of-input or when the
 /// next token is a command (so the caller can stop consuming this group).
 pub(crate) fn next_path_num(toks: &[PathTok], i: &mut usize) -> Option<f64> {
-    while *i < toks.len() {
+    // The loop body always returns on its first iteration (a `Num` yields the
+    // value, a `Cmd` stops the group), so this is just a single guarded peek.
+    if *i < toks.len() {
         match toks[*i] {
             PathTok::Num(v) => {
                 *i += 1;
-                return Some(v);
+                Some(v)
             }
-            PathTok::Cmd(_) => return None,
+            PathTok::Cmd(_) => None,
         }
+    } else {
+        None
     }
-    None
 }
 
 /// Parse an SVG path `d` attribute into the set of points that bound it.
@@ -820,7 +829,7 @@ pub(crate) fn parse_transform_attr(s: &str) -> [f64; 6] {
                 let s = args.first().copied().unwrap_or(1.0);
                 [s, 0.0, 0.0, s, 0.0, 0.0]
             }
-            "rotate" if args.len() >= 1 => {
+            "rotate" if !args.is_empty() => {
                 let r = args[0].to_radians();
                 let (s, c) = (r.sin(), r.cos());
                 [c, s, -s, c, 0.0, 0.0]

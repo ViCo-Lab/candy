@@ -161,9 +161,15 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # `RUSTFLAGS: -D warnings` makes the compiler treat all warnings as errors
+    # for every step below (check, clippy, and test).
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: actions/cache@v4
         with:
           path: |
@@ -172,6 +178,12 @@ jobs:
             rust/target
           key: test-cargo-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: test-cargo-
+      # rustc: ensure the crate compiles (no codegen) before running tests.
+      - run: cargo check --manifest-path rust/Cargo.toml
+        shell: bash
+      # clippy: lint with warnings promoted to errors.
+      - run: cargo clippy --all-targets --manifest-path rust/Cargo.toml
+        shell: bash
       - run: cargo test --manifest-path rust/Cargo.toml
         shell: bash
 

@@ -105,7 +105,7 @@ impl Rav1eStream {
         // Insert a keyframe at least once per second (`gop` frames ≈ 1 s) so
         // seeking stays snappy. The exact keyframe positions are read back from
         // each packet (`FrameType::KEY`) and reported via `EncodedVideo::keyframes`.
-        let gop = (fps as u32).max(1);
+        let gop = fps.max(1);
 
         let mut enc_cfg = EncoderConfig::with_speed_preset(8);
         enc_cfg.width = w;

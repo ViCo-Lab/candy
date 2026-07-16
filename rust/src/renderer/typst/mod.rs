@@ -62,9 +62,9 @@ pub(crate) mod world;
 // this file stays readable: `natural` (layout + per-frame state), `source`
 // (parameterized whole-document source assembly), and `frame` (the actual
 // frame-render pipeline). Each re-uses `mod.rs`'s imports via `use super::*`.
+pub(crate) mod frame;
 pub(crate) mod natural;
 pub(crate) mod source;
-pub(crate) mod frame;
 // Re-export the helper items so the `Renderer` impl below can call them with
 // the same unqualified names as before the split.
 pub(crate) use self::camera::*;
@@ -76,9 +76,9 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
-use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
+use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use crate::parser::expr::strip_string_literal;
@@ -95,12 +95,12 @@ use typst_library::foundations::{Dict, Smart, Value};
 use typst_library::visualize::Paint;
 use typst_render::{RenderOptions, render};
 use typst_svg::SvgOptions;
-use typst_syntax::ast::{self, Expr};
-use typst_syntax::{LinkedNode, parse_code};
 #[cfg(test)]
 use typst_syntax::FileId;
 #[cfg(test)]
 use typst_syntax::Source as TypstSource;
+use typst_syntax::ast::{self, Expr};
+use typst_syntax::{LinkedNode, parse_code};
 #[cfg(test)]
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
 use typst_utils::Scalar;
@@ -291,11 +291,20 @@ pub struct Renderer {
     /// parsed artifacts: every animatable mobject body is wrapped in a
     /// `sys.inputs.at("candy:<label>:…")` reader and every `#scene` call is
     /// gated by `sys.inputs.at("candy:active_scene")`. Because this string
-    /// never changes across frames, the `source_cache` (parse) and
-    /// `body_cache` (compile) hit on every frame — only the per-frame `inputs`
-    /// dictionary varies, and that is supplied to the World without touching
-    /// the source. `String::is_empty()` ⇒ no artifacts ⇒ legacy path.
+    /// never changes across frames, the `source_cache` (parse) hits on every
+    /// frame — only the per-frame `inputs` dictionary varies, and that is
+    /// supplied to the World without touching the source. (The `body_cache`
+    /// (compile) is keyed by `(source, inputs)`; for animated content the
+    /// `inputs` differ every frame, so the compiled document is re-evaluated
+    /// each frame — the AST parse is what stays shared.) `String::is_empty()`
+    /// ⇒ no artifacts ⇒ legacy path.
     param_source: String,
+    /// Precomputed cache-key prefix for [`param_source`]: a 64-bit hash of the
+    /// (stable) whole-document source. [`Renderer::compile_param_source`] builds
+    /// its key by appending the inputs to this prefix, so the potentially large
+    /// source string is never copied into the cache key on every frame (the
+    /// zero-copy companion to [`Renderer::compile_cached`]).
+    param_source_key: String,
 }
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
@@ -317,6 +326,13 @@ impl Renderer {
         } else {
             Self::build_parameterized_source(&scene)
         };
+        // Precompute a 64-bit hash of the (stable) whole-document source so the
+        // per-frame cache key can reference it without copying the source text.
+        let param_source_key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            param_source.hash(&mut h);
+            format!("P{:016x}", std::hash::Hasher::finish(&h))
+        };
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -333,6 +349,7 @@ impl Renderer {
             sprite_cache: Mutex::new(LruCache::with_capacity(SPRITE_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
             param_source,
+            param_source_key,
         })
     }
     /// Compile a Typst source string into a single-page document.
@@ -397,6 +414,30 @@ impl Renderer {
         }
         let doc = Arc::new(self.compile(src, inputs)?);
         self.body_cache.lock().unwrap().insert(key, doc.clone());
+        Ok(doc)
+    }
+    /// Compile the stable whole-document [`param_source`], memoized.
+    ///
+    /// This is the zero-copy twin of [`Renderer::compile_cached`] for the
+    /// native-Typst path: the cache key is built from the precomputed
+    /// [`param_source_key`] (a 64-bit source hash) plus the per-frame `inputs`,
+    /// so the (potentially large) `param_source` string is never copied into the
+    /// key on every frame. The source itself is shared via `source_cache`
+    /// (parse), so the only per-frame cost is the document evaluation, whose key
+    /// stays tiny.
+    fn compile_param_source(&self, inputs: &Dict) -> Result<Arc<PagedDocument>, CandyError> {
+        let mut k = String::with_capacity(self.param_source_key.len() + inputs.len() * 16 + 1);
+        k.push_str(&self.param_source_key);
+        k.push('\0');
+        for (key, val) in inputs.iter() {
+            use std::fmt::Write;
+            let _ = write!(k, "{key}={val:?};");
+        }
+        if let Some(doc) = self.body_cache.lock().unwrap().get(&k) {
+            return Ok(doc.clone());
+        }
+        let doc = Arc::new(self.compile(&self.param_source, inputs)?);
+        self.body_cache.lock().unwrap().insert(k, doc.clone());
         Ok(doc)
     }
     /// Build a stable cache key from a source string and its `inputs` dict.
@@ -636,7 +677,8 @@ fn crop_to_content_shrinks_sparse_frame() {
         "crop offset must be the bbox top-left"
     );
     // The opaque pixel is preserved at the right place in the crop.
-    let o = (0 * sprite.frame.width + 0) * 4;
+    // Pixel (row=0, col=0) → byte index (0 * width + 0) * 4 == 0.
+    let o = 0usize;
     assert_eq!((sprite.frame.rgba[o], sprite.frame.rgba[o + 3]), (255, 255));
     // A fully transparent frame yields a 1×1 transparent sprite at (0,0).
     let empty = crop_to_content(&vec![0u8; w * h * 4], w, h);
@@ -699,8 +741,7 @@ fn substitute_counters_expands_ecval_as_ast_node() {
     use crate::core::easing::Easing;
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
-    let mut counters = Vec::new();
-    counters.push(CounterDef {
+    let counters = vec![CounterDef {
         name: "r".into(),
         scope: "0".into(),
         seed: 10,
@@ -708,7 +749,7 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         duration_ms: None,
         easing: Easing::Linear,
         start_ms: 0,
-    });
+    }];
     let scene = Scene {
         slides: vec![Slide {
             duration_ms: 100,
@@ -760,8 +801,7 @@ fn subtitle_stays_in_viewport() {
     use std::collections::HashMap;
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
-    let mut subtitles = Vec::new();
-    subtitles.push(Subtitle {
+    let mut subtitles = vec![Subtitle {
         id: "__sub_bottom".into(),
         scope: "0".into(),
         body: "[Bottom caption]".into(),
@@ -769,7 +809,7 @@ fn subtitle_stays_in_viewport() {
         end_ms: None,
         position: SubPos::Bottom,
         easing: Easing::Linear,
-    });
+    }];
     subtitles.push(Subtitle {
         id: "__sub_top".into(),
         scope: "0".into(),
@@ -905,6 +945,7 @@ fn morph_renders_interpolated_polygon() {
 ///   2. Multiple并列 mobjects must keep their *declaration* order top-to-bottom.
 ///      The labels below are deliberately declared as `zeta, alpha, mid` (not
 ///      alphabetical) so a stray alphabetical sort would be detected.
+///
 /// Independent ground-truth reference shared by the layout regression tests:
 /// lay the bodies out in plain document flow (each wrapped in a uniquely
 /// coloured block) and read back each block's top-left. This deliberately does

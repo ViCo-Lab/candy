@@ -35,11 +35,16 @@ const SOURCE_CACHE_CAP: usize = 1024;
 /// Capacity of the per-inputs `Library` cache. `sys.inputs` is supplied to
 /// Typst through `Library::with_inputs`, so a distinct `Library` is needed per
 /// distinct inputs set. Rebuilding the whole standard library every frame is
-/// expensive, so we memoize built libraries keyed by their inputs. The cache is
-/// small: static / paused frames share one inputs set, animated frames churn,
-/// and at steady state only a handful of libraries are resident (each is an
-/// `Arc` to the std library, so eviction just drops the reference).
-const LIB_CACHE_CAP: usize = 1;
+/// expensive, so we memoize built libraries keyed by their inputs. Frames that
+/// share an inputs set (static / paused content, or a counter value that
+/// repeats) reuse the same `Library` — and because `Library` is content-hashed,
+/// comemo then also reuses its memoized compiles for those frames. The cache is
+/// bounded: each entry is an `Arc` to the std library plus a small inputs dict,
+/// so even a few dozen resident libraries cost only kilobytes — eviction just
+/// drops the reference. A small cap (not 1) lets short input cycles (e.g. a
+/// paused scene that briefly animates then settles) reuse the library instead
+/// of rebuilding it every frame.
+const LIB_CACHE_CAP: usize = 16;
 
 #[cfg(feature = "system-downloader")]
 use ureq::Agent;
@@ -211,8 +216,8 @@ impl WorldState {
     /// mobject body, the natural-layout probe, a repeated `ecval` value, …)
     /// reuse the already-parsed AST instead of re-parsing — this is what lets
     /// the per-frame recompiler build up a render cache instead of paying the
-    /// full parse cost on every frame. The `WorldState` (fonts + file resolver
-    /// + standard library) is already shared across frames via `Arc`; this
+    /// full parse cost on every frame. The `WorldState` (fonts, file resolver,
+    /// and standard library) is already shared across frames via `Arc`; this
     /// cache additionally shares the *parsed* source.
     pub(crate) fn detached_cached(&self, src: &str) -> TypstSource {
         if let Some(cached) = self.source_cache.lock().unwrap().get(src) {

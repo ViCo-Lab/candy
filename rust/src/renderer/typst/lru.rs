@@ -46,10 +46,10 @@ impl<K: Hash + Eq + Clone, V> LruCache<K, V> {
     /// of the key (e.g. `&str` for a `String` key), mirroring `HashMap::get`.
     /// Returns a borrow of the value (the caller clones it out), or `None` on a
     /// miss.
-    pub(crate) fn get<Q: ?Sized>(&mut self, k: &Q) -> Option<&V>
+    pub(crate) fn get<Q>(&mut self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         if !self.map.contains_key(k) {
             return None;

@@ -101,6 +101,7 @@ pub(crate) fn sample_bilinear(
 /// sampling the source with bilinear filtering. `bg` is the scene background
 /// colour used for samples that fall outside the original canvas (so exposed
 /// margins match native Typst's page fill instead of hardcoded white).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn warp_canvas_with_camera(
     canvas: &mut [u8],
     w: usize,

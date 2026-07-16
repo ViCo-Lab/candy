@@ -174,10 +174,10 @@ pub(crate) fn expr_length_cm(e: &Expr) -> Option<f64> {
     match e {
         Expr::Numeric(n) => {
             let (val, unit) = n.get();
-            return unit_to_cm(val, unit);
+            unit_to_cm(val, unit)
         }
-        Expr::Int(i) => return Some(i.get() as f64),
-        Expr::Float(fl) => return Some(fl.get()),
+        Expr::Int(i) => Some(i.get() as f64),
+        Expr::Float(fl) => Some(fl.get()),
         // Signed lengths like `-4cm` / `+4cm` parse as a *unary operation*
         // wrapping the inner `Numeric`.
         Expr::Unary(u) => {
@@ -186,7 +186,7 @@ pub(crate) fn expr_length_cm(e: &Expr) -> Option<f64> {
                 ast::UnOp::Pos => 1.0,
                 ast::UnOp::Not => return None,
             };
-            return expr_length_cm(&u.expr()).map(|v| sign * v);
+            expr_length_cm(&u.expr()).map(|v| sign * v)
         }
         _ => None,
     }
@@ -224,7 +224,7 @@ pub(crate) fn expr_to_bool(e: &Expr) -> Option<bool> {
 /// Evaluate a unit-less numeric expression to `i64` (for counter seed/step).
 pub(crate) fn expr_to_i64(e: &Expr) -> Option<i64> {
     match e {
-        Expr::Int(i) => Some(i.get() as i64),
+        Expr::Int(i) => Some(i.get()),
         Expr::Float(f) => Some(f.get().round() as i64),
         Expr::Numeric(n) => Some(n.get().0.round() as i64),
         _ => None,
@@ -235,9 +235,9 @@ pub(crate) fn expr_to_i64(e: &Expr) -> Option<i64> {
 /// `Expr::Parenthesized` — return the inner `Array` node.
 pub(crate) fn as_array<'a>(e: &'a Expr<'a>) -> Option<ast::Array<'a>> {
     match e {
-        Expr::Array(a) => Some(a.clone()),
+        Expr::Array(a) => Some(*a),
         Expr::Parenthesized(p) => match p.expr() {
-            Expr::Array(a) => Some(a.clone()),
+            Expr::Array(a) => Some(a),
             _ => None,
         },
         _ => None,
@@ -247,7 +247,7 @@ pub(crate) fn as_array<'a>(e: &'a Expr<'a>) -> Option<ast::Array<'a>> {
 /// Evaluate a `(x, y)` length tuple to centimeters.
 pub(crate) fn tuple_cm(e: &Expr, _raw: &str, _node: &LinkedNode) -> Option<(f64, f64)> {
     let arr: ast::Array = match e {
-        Expr::Array(a) => a.clone(),
+        Expr::Array(a) => *a,
         Expr::Parenthesized(p) => match p.expr() {
             Expr::Array(a) => a,
             _ => return None,
@@ -334,7 +334,7 @@ pub(crate) fn track_key_from_expr(e: &Expr) -> Option<crate::core::ast::TrackKey
         },
         _ => return None,
     };
-    let x = st.get(0).and_then(|it| match it {
+    let x = st.first().and_then(|it| match it {
         ast::ArrayItem::Pos(e) => expr_length_cm(e),
         _ => None,
     });

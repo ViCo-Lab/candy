@@ -49,8 +49,8 @@ use crate::core::scheduler;
 use crate::parser::extract_scene_from_svg;
 use crate::parser::parse_tyx;
 use crate::renderer::RenderedFrame;
-use crate::renderer::audio::AudioData;
 use crate::renderer::Renderer;
+use crate::renderer::audio::AudioData;
 use crate::renderer::encode::{self, Container};
 
 /// Input source for the `build` pipeline.
@@ -129,6 +129,7 @@ pub enum OutputFormat {
 /// Backward-compatible wrapper around [`build_input`]: dispatches on the
 /// file extension (`.svg` → SVG round-trip via `extract_scene_from_svg`;
 /// anything else → `.tyx` parser).
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     input: &Path,
     intermediate_dir: &Path,
@@ -156,6 +157,7 @@ pub fn build(
 /// Like [`build`], but takes an explicit [`Input`] so callers can force the
 /// SVG path even when the file extension is not `.svg` (e.g. an SVG produced
 /// by `@preview/candy` and saved with a `.txt` extension).
+#[allow(clippy::too_many_arguments)]
 pub fn build_input(
     input: Input,
     intermediate_dir: &Path,
@@ -188,6 +190,7 @@ pub fn build_input(
 /// not compiled in, `use_gpu` is silently ignored (CPU path is used). If the
 /// feature is enabled but no GPU adapter is available, candy falls back to
 /// the CPU path automatically and emits a warning.
+#[allow(clippy::too_many_arguments)]
 pub fn build_input_with_gpu(
     input: Input,
     intermediate_dir: &Path,
@@ -237,6 +240,25 @@ pub fn build_input_with_gpu(
 
     // Collect the unique sample times (one per video frame), sorted.
     let mut sample_times: Vec<u32> = frames.iter().map(|f| f.time_ms).collect();
+    sample_times.sort();
+    sample_times.dedup();
+
+    // Force every `#transform` / `#morph` plan's `end_ms` to be a sampled frame.
+    // `end_ms` is 1ms past the scheduler's last keyframe for the target, so it is
+    // usually *not* on the `i * 1000/fps` grid. Without this, the final in-window
+    // frame renders at eased progress < 1 and the animation's last frame is an
+    // intermediate (non-target) morph state instead of the target formula. The
+    // renderer draws the exact target at `end_ms` (see `transform_progress` /
+    // `morph_body_for`), so pinning a frame there fixes the "last frame is not
+    // the target formula" bug.
+    for end_ms in scene
+        .transform_plans
+        .iter()
+        .map(|p| p.end_ms)
+        .chain(scene.morph_pairs.iter().map(|p| p.end_ms))
+    {
+        sample_times.push(end_ms);
+    }
     sample_times.sort();
     sample_times.dedup();
 
@@ -317,9 +339,22 @@ pub fn build_input_with_gpu(
     #[cfg(feature = "gpu")]
     if let Some(g) = gpu_renderer.as_mut() {
         stream_encode_gpu(
-            &mut renderer, &frames, &sample_times, pixel_per_pt, fps, codec,
-            container_for(format), is_gif(format), &meta, tw, th,
-            audio, keep_intermediates, intermediate_dir, output, g,
+            &mut renderer,
+            &frames,
+            &sample_times,
+            pixel_per_pt,
+            fps,
+            codec,
+            container_for(format),
+            is_gif(format),
+            &meta,
+            tw,
+            th,
+            audio,
+            keep_intermediates,
+            intermediate_dir,
+            output,
+            g,
         )?;
         return Ok(());
     }
@@ -330,9 +365,22 @@ pub fn build_input_with_gpu(
     // at once. This is the core OOM fix: the old code collected every frame's
     // RGBA into `probe` before encoding.
     stream_encode_cpu(
-        &renderer, &frames, &sample_times, pixel_per_pt, fps, codec,
-        container_for(format), is_gif(format), meta, tw, th,
-        audio, jobs, keep_intermediates, intermediate_dir, output,
+        &renderer,
+        &frames,
+        &sample_times,
+        pixel_per_pt,
+        fps,
+        codec,
+        container_for(format),
+        is_gif(format),
+        meta,
+        tw,
+        th,
+        audio,
+        jobs,
+        keep_intermediates,
+        intermediate_dir,
+        output,
     )?;
     Ok(())
 }
@@ -358,10 +406,13 @@ fn is_gif(f: OutputFormat) -> bool {
 /// more than one frame's RGBA at once.
 enum StreamEncoder {
     Gif(encode::video::GifStream),
-    Video(encode::video::StreamingVideo),
+    // Boxed: `StreamingVideo` is much larger than `GifStream`, so storing it
+    // inline would bloat every `StreamEncoder` to the video size.
+    Video(Box<encode::video::StreamingVideo>),
 }
 
 impl StreamEncoder {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         is_gif: bool,
         fps: u32,
@@ -378,9 +429,9 @@ impl StreamEncoder {
                 output, fps, meta, tw, th,
             )?))
         } else {
-            Ok(StreamEncoder::Video(encode::video::StreamingVideo::new(
-                fps, codec, container, meta, tw, th, audio,
-            )?))
+            Ok(StreamEncoder::Video(Box::new(
+                encode::video::StreamingVideo::new(fps, codec, container, meta, tw, th, audio)?,
+            )))
         }
     }
 
@@ -408,6 +459,7 @@ impl StreamEncoder {
 /// (which writes it out / drops its RGBA immediately). Runs on its own thread so
 /// the producer (parallel renderer) is never blocked except by the bounded
 /// channel's back-pressure.
+#[allow(clippy::too_many_arguments)]
 fn consume_frames(
     rx: std::sync::mpsc::Receiver<(usize, Result<RenderedFrame, CandyError>)>,
     is_gif: bool,
@@ -423,8 +475,7 @@ fn consume_frames(
     output: PathBuf,
     frame_count: usize,
 ) -> Result<(), CandyError> {
-    let mut enc =
-        StreamEncoder::new(is_gif, fps, codec, container, &meta, tw, th, audio, &output)?;
+    let mut enc = StreamEncoder::new(is_gif, fps, codec, container, &meta, tw, th, audio, &output)?;
     let mut draft = if keep {
         std::fs::create_dir_all(&intermediate_dir)?;
         let mut f = std::fs::File::create(intermediate_dir.join("frames.rgba"))?;
@@ -505,6 +556,7 @@ fn consume_frames(
 /// `jobs` in flight, back-pressured by a bounded channel) and stream them into
 /// the encoder on a dedicated consumer thread. Peak memory ≈ `jobs` frames'
 /// RGBA + the small coded stream — independent of the total frame count `N`.
+#[allow(clippy::too_many_arguments)]
 fn stream_encode_cpu(
     renderer: &Renderer,
     frames: &[FrameData],
@@ -553,8 +605,7 @@ fn stream_encode_cpu(
     };
     let window = (par * 2).max(2);
     let cap = window;
-    let (tx, rx) =
-        std::sync::mpsc::sync_channel::<(usize, Result<RenderedFrame, CandyError>)>(cap);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Result<RenderedFrame, CandyError>)>(cap);
     // Hoist owned/Copy values out of the thread closure so it captures *no*
     // references to this function's locals (the closure must be `'static` for
     // `std::thread::spawn`). `meta` is owned and moved in; the others are
@@ -566,8 +617,19 @@ fn stream_encode_cpu(
         .name("candy-encoder".into())
         .spawn(move || {
             consume_frames(
-                rx, is_gif, fps, codec, container, meta, tw, th,
-                audio, keep, idir, opath, frame_count,
+                rx,
+                is_gif,
+                fps,
+                codec,
+                container,
+                meta,
+                tw,
+                th,
+                audio,
+                keep,
+                idir,
+                opath,
+                frame_count,
             )
         })
         .map_err(|e| CandyError::Encode(format!("spawn encoder thread: {e}")))?;
@@ -607,6 +669,7 @@ fn stream_encode_cpu(
 /// on the GPU and stream it into the encoder immediately. Memory stays bounded
 /// to a single frame's RGBA since there is no parallelism to buffer.
 #[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
 fn stream_encode_gpu(
     renderer: &mut Renderer,
     frames: &[FrameData],
@@ -625,8 +688,7 @@ fn stream_encode_gpu(
     output: &Path,
     gpu: &mut crate::renderer::raster::gpu::GpuRenderer,
 ) -> Result<(), CandyError> {
-    let mut enc =
-        StreamEncoder::new(is_gif, fps, codec, container, meta, tw, th, audio, output)?;
+    let mut enc = StreamEncoder::new(is_gif, fps, codec, container, meta, tw, th, audio, output)?;
     let mut draft = if keep {
         std::fs::create_dir_all(intermediate_dir)?;
         let mut f = std::fs::File::create(intermediate_dir.join("frames.rgba"))?;

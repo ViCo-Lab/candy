@@ -94,8 +94,8 @@ impl Renderer {
         // also snapshots every item — including the synthetic camera — at the
         // document's final frame, which would otherwise pin the camera transform
         // to the very end; keying off the *first* keyframe avoids that trap.)
-        if !self.scene.scenes.is_empty() {
-            if camera.is_some() {
+        if !self.scene.scenes.is_empty()
+            && camera.is_some() {
                 // Home scene = the scene active when the camera *animation*
                 // actually begins. The interpolator expands the sparse camera
                 // keyframes into one dense frame per sample time, and the
@@ -124,7 +124,6 @@ impl Renderer {
                     camera = None;
                 }
             }
-        }
         // Synthetic group parents (empty body) are containers, not drawn.
         let parent_labels: std::collections::HashSet<&Label> = self.scene.groups.values().collect();
         let mut out: HashMap<Label, FrameData> = HashMap::new();
@@ -134,7 +133,7 @@ impl Renderer {
                     .scene
                     .items
                     .get(label)
-                    .map_or(false, |b| b.trim() == "none")
+                    .is_some_and(|b| b.trim() == "none")
             {
                 continue;
             }
@@ -281,14 +280,7 @@ impl Renderer {
                 "{preamble}\n#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
                  {blocks}\n"
             );
-            let doc = match self.compile(&src, &Dict::new()) {
-                Ok(d) => d,
-                // A scene whose blocks fail to compile is a real error — it must
-                // propagate as `E006`, not be silently skipped (which would leave
-                // the scene's `page_of` / page-count entries missing and surface as
-                // a confusing downstream error later).
-                Err(e) => return Err(e),
-            };
+            let doc = self.compile(&src, &Dict::new())?;
             // A scene is laid out in plain Typst document flow, so content that
             // overflows its single page spills onto *subsequent* pages (page 1,
             // page 2, …), each `ph` tall. We treat this as a **cross-page scene**:

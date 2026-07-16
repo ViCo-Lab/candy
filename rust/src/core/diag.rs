@@ -324,13 +324,13 @@ impl fmt::Display for CandyWarn {
 ///   - `2`     clap usage error (argument parsing)
 ///   - `101`   Rust panic — also avoided (not in our range)
 ///   - `64..`  candy fatal errors: `ERROR_EXIT_BASE + number() - 1`
-///            (`E001` → `64` … `E007` → `70`; the `64` prefix is the requested
-///             segment; room up to ~`E014` before 78)
+///     (`E001` → `64` … `E007` → `70`; the `64` prefix is the requested
+///     segment; room up to ~`E014` before 78)
 ///   - `111`   batch failure: `candy build a.tyx b.tyx …` ran every input but at
-///            least one failed midway. Individual failures keep their own `E00x`
-///            code for logging, but the overall process exit code is forced to
-///            `111` so a CI pipeline / shell script can detect "some inputs
-///            failed" without aborting the remaining inputs.
+///     least one failed midway. Individual failures keep their own `E00x`
+///     code for logging, but the overall process exit code is forced to
+///     `111` so a CI pipeline / shell script can detect "some inputs
+///     failed" without aborting the remaining inputs.
 pub const ERROR_EXIT_BASE: i32 = 64;
 
 /// Process exit code used when a **batch** of inputs was attempted but at least

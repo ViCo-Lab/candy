@@ -351,7 +351,6 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         scale: *zoom,
                         rotation: *rotate,
                         opacity: 1.0,
-                        ..s
                     };
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,

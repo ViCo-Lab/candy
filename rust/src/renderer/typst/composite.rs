@@ -93,7 +93,7 @@ pub(crate) fn localize_formula_ids(markup: &str, prefix: &str) -> String {
         }
     }
     // Longest first so an id that is a prefix of another is rewritten after it.
-    ids.sort_by(|a, b| b.len().cmp(&a.len()));
+    ids.sort_by_key(|id| std::cmp::Reverse(id.len()));
     let mut out = markup.to_string();
     for id in &ids {
         out = out.replace(&format!("id=\"{id}\""), &format!("id=\"{prefix}{id}\""));

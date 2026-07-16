@@ -43,7 +43,7 @@ pub fn mux_mp4(
             let durs: Vec<u32> = a
                 .frames
                 .iter()
-                .map(|f| ((f.duration_ms as u64 * a.sample_rate as u64) / 1000) as u32)
+                .map(|f| ((f.duration_ms * a.sample_rate as u64) / 1000) as u32)
                 .collect();
             let total: u64 = durs.iter().map(|d| *d as u64).sum();
             (sizes, durs, total)
@@ -155,7 +155,7 @@ pub(crate) fn mux_mp4_to_file(
             let durs: Vec<u32> = a
                 .frames
                 .iter()
-                .map(|f| ((f.duration_ms as u64 * a.sample_rate as u64) / 1000) as u32)
+                .map(|f| ((f.duration_ms * a.sample_rate as u64) / 1000) as u32)
                 .collect();
             let total: u64 = durs.iter().map(|d| *d as u64).sum();
             (sizes, durs, total)
@@ -260,6 +260,7 @@ fn stream_samples_into(
 /// first sample of each track (0 means "measure pass"). `private_metadata` is
 /// embedded in a `udta` user-data box so the metadata survives in the
 /// container's metadata area.
+#[allow(clippy::too_many_arguments)]
 fn build_moov(
     v: &EncodedVideo,
     nframes: u32,
@@ -369,8 +370,8 @@ fn build_video_trak(
         p.extend_from_slice(&0u16.to_be_bytes()); // volume (0 for video)
         p.extend_from_slice(&0u16.to_be_bytes());
         p.extend_from_slice(&MATRIX);
-        p.extend_from_slice(&((v.width as u32) << 16).to_be_bytes());
-        p.extend_from_slice(&((v.height as u32) << 16).to_be_bytes());
+        p.extend_from_slice(&(v.width << 16).to_be_bytes());
+        p.extend_from_slice(&(v.height << 16).to_be_bytes());
         p
     });
 
@@ -378,7 +379,7 @@ fn build_video_trak(
         let mut p = vec![];
         p.extend_from_slice(&0u32.to_be_bytes());
         p.extend_from_slice(&0u32.to_be_bytes());
-        p.extend_from_slice(&(v.fps as u32).to_be_bytes()); // timescale
+        p.extend_from_slice(&v.fps.to_be_bytes()); // timescale
         p.extend_from_slice(&nframes.to_be_bytes()); // duration
         p.extend_from_slice(&0x55C4u16.to_be_bytes()); // language "und"
         p.extend_from_slice(&0u16.to_be_bytes());
@@ -651,7 +652,7 @@ fn audio_sample_entry_mp4(a: &AudioData) -> Vec<u8> {
     p.extend_from_slice(&16u16.to_be_bytes());
     p.extend_from_slice(&0u16.to_be_bytes());
     p.extend_from_slice(&0u16.to_be_bytes());
-    p.extend_from_slice(&((a.sample_rate as u32) << 16).to_be_bytes());
+    p.extend_from_slice(&(a.sample_rate << 16).to_be_bytes());
     p.extend_from_slice(&b(b"esds", esds(a)));
     b(b"mp4a", p)
 }
@@ -774,7 +775,7 @@ pub fn mux_matroska(
         if let Some(a) = audio {
             for (idx, af) in a.frames.iter().enumerate() {
                 let ms = af.timestamp_ms;
-                if ms >= *c_ms && ms <= last_ms && ms >= *c_ms && *f0 < nframes as usize {
+                if ms >= *c_ms && ms <= last_ms && *f0 < nframes as usize {
                     let in_range = ms >= *c_ms
                         && (*f1 >= nframes as usize || ms < ((*f1 as u64) * 1000 / v.fps as u64));
                     if in_range {
@@ -1124,6 +1125,7 @@ fn simple_block_size(track: u64, data_len: u64) -> u64 {
 
 /// Total byte size of a single `Cluster` (without buffering its data), computed
 /// from the per-sample sizes and the audio frames that fall inside it.
+#[allow(clippy::too_many_arguments)]
 fn cluster_size(
     c_ms: u64,
     f0: usize,
@@ -1136,13 +1138,13 @@ fn cluster_size(
     fps: u32,
 ) -> u64 {
     let mut size = ebml_elem_size(&[0xE7], u64_to_bytes(c_ms).len() as u64);
-    for f in f0..f1 {
-        size += simple_block_size(1, v_sizes[f] as u64);
+    for &vs in &v_sizes[f0..f1] {
+        size += simple_block_size(1, vs as u64);
     }
     if let Some(a) = audio {
         for af in &a.frames {
             let ms = af.timestamp_ms;
-            if ms >= c_ms && ms <= last_ms && ms >= c_ms && f0 < nframes as usize {
+            if ms >= c_ms && ms <= last_ms && f0 < nframes as usize {
                 let in_range =
                     ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
                 if in_range {
@@ -1164,6 +1166,7 @@ fn read_next_sample(sf: &mut File, size: u32) -> Result<Vec<u8>, CandyError> {
 
 /// Build and write one `Cluster` to `out`, streaming its coded video samples
 /// from `sf` (read sequentially) and interleaving any audio blocks in range.
+#[allow(clippy::too_many_arguments)]
 fn write_cluster_to_file(
     out: &mut File,
     c_ms: u64,
@@ -1188,7 +1191,7 @@ fn write_cluster_to_file(
     if let Some(a) = audio {
         for af in &a.frames {
             let ms = af.timestamp_ms;
-            if ms >= c_ms && ms <= last_ms && ms >= c_ms && f0 < nframes as usize {
+            if ms >= c_ms && ms <= last_ms && f0 < nframes as usize {
                 let in_range =
                     ms >= c_ms && (f1 >= nframes as usize || ms < ((f1 as u64) * 1000 / fps as u64));
                 if in_range {
