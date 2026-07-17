@@ -220,7 +220,8 @@ pub(crate) struct StreamingVideo {
     tw: usize,
     th: usize,
     audio: Option<AudioData>,
-    ffmpeg: Option<(Child, ChildStdin, PathBuf)>,
+    ffmpeg: Option<(Child, std::io::BufWriter<ChildStdin>, PathBuf)>,
+    frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
 }
@@ -253,7 +254,12 @@ impl StreamingVideo {
                 tw,
                 th,
                 audio,
-                ffmpeg: Some((child, stdin, tmp)),
+                ffmpeg: Some((
+                    child,
+                    std::io::BufWriter::with_capacity(1 << 20, stdin),
+                    tmp,
+                )),
+                frame_count: 0,
                 rav1e: None,
                 h264: None,
             })
@@ -265,6 +271,7 @@ impl StreamingVideo {
                 th,
                 audio,
                 ffmpeg: None,
+                frame_count: 0,
                 rav1e: None,
                 h264: Some(crate::renderer::encode::h264::H264Stream::new(tw, th, fps)?),
             })
@@ -276,6 +283,7 @@ impl StreamingVideo {
                 th,
                 audio,
                 ffmpeg: None,
+                frame_count: 0,
                 // Streaming AV1 uses all-intra: the streaming pipeline drops each
                 // frame's RGBA after encoding, so it cannot retry a panicked
                 // inter-prediction pass the way the batch `encode` does. all-intra
@@ -304,6 +312,14 @@ impl StreamingVideo {
             stdin
                 .write_all(&composed.rgba)
                 .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
+            // Periodic flush to prevent unbounded buffer growth while keeping
+            // write() syscall count low (1MB buffer batches ~120 frames at 1080p).
+            if self.frame_count % 16 == 0 {
+                stdin
+                    .flush()
+                    .map_err(|e| CandyError::Encode(format!("ffmpeg stdin flush: {e}")))?;
+            }
+            self.frame_count += 1;
             return Ok(());
         }
         if let Some(r) = self.rav1e.as_mut() {
