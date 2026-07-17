@@ -25,6 +25,7 @@
 //! video file is written to `dist/`. On a successful video build the CLI drops
 //! the per-build `.candy/<stem>/` directory automatically (see `--keep-intermediates`).
 
+#![allow(clippy::result_large_err)]
 pub mod core;
 pub mod parser;
 pub mod renderer;

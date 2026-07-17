@@ -77,10 +77,10 @@ fn load_audio_bytes(path: &Path) -> Result<Vec<u8>, CandyError> {
     })?;
     // Memory-map the file (zero-copy, OS-managed paging).
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
-        CandyError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("mmap audio '{}': {e}", path.display()),
-        ))
+        CandyError::Io(std::io::Error::other(format!(
+            "mmap audio '{}': {e}",
+            path.display()
+        )))
     })?;
     // Clone only when needed (demuxers may mutably slice); mmap ensures the
     // underlying pages are already in RAM, so this copy is just pointer arithmetic.

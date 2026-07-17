@@ -381,7 +381,6 @@ impl Renderer {
     /// — previously the isolated `render_frame` path skipped the morph branch.
     fn resolve_body(&self, label: &Label, time_ms: u32) -> (String, Vec<String>) {
         self.morph_body_for(label, time_ms)
-            .map(|(s, v)| (s, v))
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
     /// Resolve a `#scene(bg: …)` color expression to a `#rrggbb(aa)` hex string

@@ -16,6 +16,7 @@
 //! For video builds, the per-build intermediate directory is removed
 //! automatically after a successful run unless `--keep-intermediates` is passed.
 
+#![allow(clippy::result_large_err)]
 use std::io::IsTerminal;
 use std::path::Path;
 
