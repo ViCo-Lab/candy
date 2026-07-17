@@ -95,16 +95,10 @@ pub fn interpolate_with(
 
 /// Linear interpolation between the two keyframes surrounding `frame`.
 fn interp_linear(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
-    let mut a: Option<&FrameData> = None;
-    let mut b: Option<&FrameData> = None;
-    for k in kfs {
-        if k.time_ms <= frame {
-            a = Some(k);
-        } else {
-            b = Some(k);
-            break;
-        }
-    }
+    // Binary search: find the last keyframe with time_ms <= frame.
+    let i = kfs.partition_point(|k| k.time_ms <= frame);
+    let a = if i > 0 { Some(&kfs[i - 1]) } else { None };
+    let b = if i < kfs.len() { Some(&kfs[i]) } else { None };
     match (a, b) {
         (Some(a), None) => Some(a.clone()),
         (None, Some(b)) => Some(b.clone()),
@@ -131,15 +125,12 @@ fn interp_catmull(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
     if kfs.is_empty() {
         return None;
     }
-    // Find the segment [i, i+1] containing `frame`.
-    let mut i = 0;
-    for (idx, k) in kfs.iter().enumerate() {
-        if k.time_ms <= frame {
-            i = idx;
-        } else {
-            break;
-        }
-    }
+    // Binary search: find the segment [i, i+1] containing `frame`.
+    // partition_point returns the first index where time_ms > frame,
+    // so i-1 is the last keyframe with time_ms <= frame.
+    let i = kfs
+        .partition_point(|k| k.time_ms <= frame)
+        .saturating_sub(1);
     // Before the first keyframe: hold the first value.
     if frame < kfs[0].time_ms {
         return Some(kfs[0].clone_with_frame(frame));
