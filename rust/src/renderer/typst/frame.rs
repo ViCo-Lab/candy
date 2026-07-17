@@ -131,7 +131,11 @@ impl Renderer {
                 .visible_subtitle_ids_at(time_ms)
                 .contains(&sub.id)
             {
-                out.push_str(&self.render_subtitle_svg(sub, time_ms)?);
+                let svg = self.render_subtitle_svg(sub, time_ms)?;
+                // The subtitle SVG is a complete <svg>...</svg> document;
+                // extract only the inner content to avoid nested <svg> tags.
+                let inner = extract_svg_inner(&svg);
+                out.push_str(inner);
                 out.push('\n');
             }
         }
@@ -343,7 +347,8 @@ impl Renderer {
                 .contains(&sub.id)
             {
                 let svg = self.render_subtitle_svg(sub, time_ms)?;
-                out.push_str(&svg);
+                let inner = extract_svg_inner(&svg);
+                out.push_str(inner);
                 out.push('\n');
             }
         }
@@ -495,5 +500,29 @@ impl Renderer {
             return Some(polygon_svg(&ring, &plan.fill, &plan.stroke));
         }
         None
+    }
+}
+
+/// Extract the inner content of an `<svg>...</svg>` document, stripping
+/// the outer `<svg ...>` and `</svg>` tags. This is used when embedding
+/// subtitle SVGs (which are complete documents) into the frame's outer SVG.
+fn extract_svg_inner(svg: &str) -> &str {
+    // Find the first `>` after `<svg` (the end of the opening tag).
+    let open = match svg.find("<svg") {
+        Some(i) => match svg[i..].find('>') {
+            Some(j) => i + j + 1,
+            None => return svg,
+        },
+        None => return svg,
+    };
+    // Find the last `</svg>`.
+    let close = match svg.rfind("</svg>") {
+        Some(i) => i,
+        None => return svg,
+    };
+    if close > open {
+        svg[open..close].trim()
+    } else {
+        svg
     }
 }
