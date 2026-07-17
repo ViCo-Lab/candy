@@ -277,7 +277,12 @@ pub fn build_input_with_gpu(
     // call like `#invalid()`) parses into an empty scene, which yields zero
     // sample times. Surface this as a clean error instead of letting the encoder
     // index into an empty frame buffer and panic (index out of bounds).
-    if sample_times.is_empty() {
+    //
+    // Since every scene now gets at least one slide (auto-inserted pause if
+    // needed), the only way to be truly "empty" is if the parser itself failed
+    // or produced zero slides — which should not happen after the ast_walk
+    // auto-insert logic above. We keep the check as a safety net.
+    if scene.slides.is_empty() {
         return Err(CandyError::Encode(
             "no frames to render: the input produced an empty scene \
              (no #candy content or no animatable objects were found)"
@@ -323,6 +328,25 @@ pub fn build_input_with_gpu(
     // frames) so the streaming encoder can size its output without buffering
     // every frame first.
     let (tw, th) = renderer.uniform_canvas(pixel_per_pt);
+    // Handle the case where content exists but the scheduler produced no
+    // keyframes (e.g. a document with only static Typst markup and no
+    // `#mobject` calls, or items with no slides/actions). When this happens,
+    // synthesize sample times from the scene's total duration so the
+    // whole-document renderer emits frames across the full timeline.
+    if sample_times.is_empty() {
+        let total_ms = scene.total_ms();
+        if total_ms > 0 {
+            let fps_f = fps as f64;
+            let num_frames = ((total_ms as f64) * fps_f / 1000.0).ceil().max(1.0) as usize;
+            for i in 0..num_frames {
+                let t = (i as u32 * 1000 / fps).min(total_ms - 1);
+                sample_times.push(t);
+            }
+        } else {
+            // Zero-duration scene: render one frame at t=0.
+            sample_times.push(0);
+        }
+    }
     let meta = scene.private_metadata.clone();
     let audio = encode::collect_audio(&scene.audio, fps);
 

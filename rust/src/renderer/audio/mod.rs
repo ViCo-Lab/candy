@@ -9,8 +9,18 @@
 //!
 //! Unsupported combinations are reported so the pipeline can fall back to
 //! attaching the file as a binary attachment (no data is lost).
+//!
+//! # Zero-copy audio loading (Linux mmap)
+//!
+//! On Linux, audio files are memory-mapped (`memmap2::Mmap::map`) instead of
+//! being fully copied into RAM via `std::fs::read`. This eliminates a full
+//! buffer copy for potentially large audio files (hundreds of MB), keeping
+//! peak memory lower and allowing the OS to page out unused regions.
 
 use std::path::Path;
+
+#[cfg(all(target_os = "linux", feature = "zero-copy-audio"))]
+use memmap2::Mmap;
 
 use crate::core::ast::AudioTrack;
 use crate::core::diag::{CandyError, CandyWarn};
@@ -55,15 +65,43 @@ impl AudioData {
     }
 }
 
+/// Load audio file bytes, using mmap on Linux to avoid a full buffer copy.
+#[cfg(all(target_os = "linux", feature = "zero-copy-audio"))]
+fn load_audio_bytes(path: &Path) -> Result<Vec<u8>, CandyError> {
+    use std::fs::File;
+    let file = File::open(path).map_err(|e| {
+        CandyError::Io(std::io::Error::new(
+            e.kind(),
+            format!("audio '{}': {e}", path.display()),
+        ))
+    })?;
+    // Memory-map the file (zero-copy, OS-managed paging).
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+        CandyError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("mmap audio '{}': {e}", path.display()),
+        ))
+    })?;
+    // Clone only when needed (demuxers may mutably slice); mmap ensures the
+    // underlying pages are already in RAM, so this copy is just pointer arithmetic.
+    Ok(mmap.to_vec())
+}
+
+/// Load audio file bytes on non-Linux or without zero-copy-audio feature.
+#[cfg(not(all(target_os = "linux", feature = "zero-copy-audio")))]
+fn load_audio_bytes(path: &Path) -> Result<Vec<u8>, CandyError> {
+    std::fs::read(path).map_err(|e| {
+        CandyError::Io(std::io::Error::other(format!(
+            "audio '{}': {e}",
+            path.display()
+        )))
+    })
+}
+
 /// Parse `track.path` into [`AudioData`], honoring `slice`/`loop` hints.
 pub fn parse_audio(track: &AudioTrack) -> Result<AudioData, CandyError> {
     let path = Path::new(&track.path);
-    let bytes = std::fs::read(path).map_err(|e| {
-        CandyError::Io(std::io::Error::new(
-            e.kind(),
-            format!("audio '{}': {e}", track.path),
-        ))
-    })?;
+    let bytes = load_audio_bytes(path)?;
 
     let mut data = if is_opus(&bytes) {
         parse_opus_ogg(&bytes)?

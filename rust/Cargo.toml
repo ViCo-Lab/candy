@@ -50,13 +50,13 @@
     # Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
     # The internal typst crates are pulled in explicitly so we can build an in-memory
     # `World` to compile `.tyx` sources in-process.
-    typst         = "0.15"
-    typst-render  = "0.15"
-    typst-svg     = "0.15"
-    typst-library = "0.15"
-    typst-layout  = "0.15"
-    typst-syntax  = "0.15"
-    typst-utils   = "0.15"
+    typst         = "0.15.1"
+    typst-render  = "0.15.1"
+    typst-svg     = "0.15.1"
+    typst-library = "0.15.1"
+    typst-layout  = "0.15.1"
+    typst-syntax  = "0.15.1"
+    typst-utils   = "0.15.1"
 
     # Bounded-memory guard for the per-frame recompiler. typst's internal
     # functions (`compile`, `eval`, `layout`, …) are memoized via comemo and are
@@ -177,6 +177,10 @@
     # every other platform without pulling in this dependency.
     libc = "0.2"
 
+    # Linux-only `memmap2` for zero-copy audio file loading (mmap instead of
+    # fs::read). Used solely via cfg-gated code on Linux.
+    memmap2 = { version = "0.9", optional = true }
+
 [build-dependencies]
     # Generates the raw `libva` FFI from the system libva 1.x headers when the
     # `libva` feature is enabled. Only used at build time (no runtime dep); the
@@ -206,3 +210,5 @@
     # codec. Kept off by default so the standard `cargo build` / CI stays
     # self-contained (no libva dev headers, no GPU required).
     libva = []
+    # Enable zero-copy audio file loading on Linux (memmap2).
+    zero-copy-audio = ["dep:memmap2"]

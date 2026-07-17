@@ -243,7 +243,7 @@ impl Renderer {
                 // them from the flow. Pure containers whose base body is empty /
                 // `none` *and* which never render any content own no box and are
                 // still skipped.
-                let frame0 = content_for(&self.scene, label, 0);
+                let (frame0, _unknown) = content_for(&self.scene, label, 0);
                 let frame0_t = frame0.trim();
                 if (natural.is_empty() || natural == "none")
                     && (frame0_t.is_empty() || frame0_t == "none")
@@ -253,7 +253,7 @@ impl Renderer {
                 // Distinct, safe 24-bit colour (skips black/white corners).
                 let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
                 palette.push((label.clone(), color.clone()));
-                let natural_sub = substitute_counters(&self.scene, natural, 0);
+                let (natural_sub, _unknown) = substitute_counters(&self.scene, natural, 0);
                 let body = if frame0_t.is_empty() || frame0_t == "none" {
                     // Temporarily not rendered: keep the box, hide the ink.
                     // Note: this is interpolated inside `#{{ … }}` (Typst *code*

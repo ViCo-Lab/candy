@@ -167,6 +167,16 @@ pub(crate) fn target_arg(
     }
 }
 
+/// Evaluate an expression to a key name (string).
+/// Accepts string literals and bare identifiers (treated as literal key names).
+pub(crate) fn expr_to_key(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Str(s) => Some(s.get().to_string()),
+        Expr::Ident(i) => Some(i.as_str().to_string()),
+        _ => None,
+    }
+}
+
 /// Try to evaluate an expression as a length in cm. Handles `4cm`, `3in`,
 /// `5pt`, bare numbers (treated as cm), and **signed** lengths like `-4cm`
 /// (which Typst parses as `Expr::Unary`, not `Expr::Numeric`).

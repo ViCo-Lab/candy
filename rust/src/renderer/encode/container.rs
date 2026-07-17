@@ -238,8 +238,56 @@ pub(crate) fn mux_mp4_to_file(
 }
 
 /// Copy each coded sample (sized by `sizes`) from `path` into `out`, in order.
-/// Uses a fixed 1 MiB copy buffer so peak memory stays tiny regardless of how
-/// many / how large the samples are.
+///
+/// On Linux with the `zero-copy-audio` feature, uses `sendfile` for true
+/// kernel-space zero-copy transfer (no user-space buffer, no syscall overhead).
+/// Otherwise falls back to a 1 MiB buffered copy.
+#[cfg(target_os = "linux")]
+fn stream_samples_into(
+    path: &Path,
+    sizes: &[u32],
+    out: &mut std::fs::File,
+) -> Result<(), CandyError> {
+    use std::os::fd::AsRawFd;
+
+    let src =
+        std::fs::File::open(path).map_err(|e| CandyError::Encode(format!("sample read: {e}")))?;
+
+    let src_fd = src.as_raw_fd();
+    let out_fd = out.as_raw_fd();
+
+    // Use sendfile for zero-copy kernel-space transfer.
+    // sendfile copies data directly between file descriptors in the kernel,
+    // eliminating user-space buffer copies and context switches.
+    let mut offset: libc::off_t = 0;
+    let total_size: libc::off_t = sizes.iter().map(|s| *s as libc::off_t).sum();
+
+    while offset < total_size {
+        let result = unsafe {
+            libc::sendfile(
+                out_fd,
+                src_fd,
+                &mut offset,
+                (total_size - offset) as libc::size_t,
+            )
+        };
+        if result < 0 {
+            let err = std::io::Error::last_os_error();
+            // sendfile may return EINTR due to signals; retry.
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(CandyError::Encode(format!("sendfile: {err}")));
+            }
+        } else if result == 0 {
+            // Unexpected EOF
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Fallback buffered copy for non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
 fn stream_samples_into(
     path: &Path,
     sizes: &[u32],

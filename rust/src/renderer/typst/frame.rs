@@ -243,7 +243,8 @@ impl Renderer {
             ));
         }
         self.ensure_natural()?;
-        let doc = self.compile_cached(&self.object_source(frame, frame.time_ms), &Dict::new())?;
+        let source = self.object_source(frame, frame.time_ms)?;
+        let doc = self.compile_cached(&source, &Dict::new())?;
         let page = doc
             .pages()
             .first()
@@ -252,15 +253,25 @@ impl Renderer {
         Ok(svg.into_bytes())
     }
     /// Build the isolated per-object source for a single target.
-    fn object_source(&self, st: &FrameData, time_ms: u32) -> String {
+    fn object_source(&self, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {
         let nat = self.nat.get(&st.target).cloned().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let body = self.resolve_body(&st.target, time_ms);
+        let (body, unknown_counters) = self.resolve_body(&st.target, time_ms);
+
+        // Report E010 errors for any unknown counters found during rendering.
+        if let Some(counter_name) = unknown_counters.first() {
+            return Err(CandyError::UnknownKey(
+                "ecounter".to_string(),
+                counter_name.clone(),
+                None,
+            ));
+        }
+
         let preamble = imports_preamble(&self.scene);
-        place_source(
+        Ok(place_source(
             self.page_w,
             self.page_h,
             abs_x_cm,
@@ -269,7 +280,7 @@ impl Renderer {
             st.rotation,
             &body,
             &preamble,
-        )
+        ))
     }
     /// Render a subtitle to an SVG string using the scene's page size.
     fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
@@ -328,7 +339,11 @@ impl Renderer {
     /// window `None` is returned so the object renders its normal body (this
     /// also makes the hand-off at `end_ms` seamless: at `t = end_ms` the morphed
     /// polygon equals the `to` body's own outline).
-    pub(crate) fn morph_body_for(&self, label: &Label, time_ms: u32) -> Option<String> {
+    pub(crate) fn morph_body_for(
+        &self,
+        label: &Label,
+        time_ms: u32,
+    ) -> Option<(String, Vec<String>)> {
         for pair in &self.scene.morph_pairs {
             if &pair.to != label {
                 continue;
@@ -344,7 +359,7 @@ impl Renderer {
             if ring.is_empty() {
                 return None;
             }
-            return Some(polygon_svg(&ring, &plan.fill, &plan.stroke));
+            return Some((polygon_svg(&ring, &plan.fill, &plan.stroke), Vec::new()));
         }
         None
     }

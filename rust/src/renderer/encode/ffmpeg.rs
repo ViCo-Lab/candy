@@ -367,6 +367,110 @@ pub(crate) fn spawn_ffmpeg(
     Ok((child, stdin, mux, err_log))
 }
 
+/// Spawn an ffmpeg child on Linux that reads raw RGBA frames from a memfd.
+///
+/// This is the Linux-optimized variant of [`spawn_ffmpeg`]: instead of piping
+/// frames through a bounded OS pipe (~64 KiB), we create an anonymous memfd
+/// for each frame, write the frame pixels into it, and tell ffmpeg to read
+/// from `/proc/self/fd/N`. The memfd lives in tmpfs (RAM-backed, unbounded),
+/// so there is **zero copy** overhead beyond the single write into the memfd.
+///
+/// Returns `(Child, File, MuxSink, ErrLog)` where the `File` is the writable
+/// handle to the memfd (caller writes one frame then drops it).
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_ffmpeg_with_memfd(
+    codec: Codec,
+    container: Container,
+    w: u32,
+    h: u32,
+    fps: u32,
+    private_metadata: &PrivateMeta,
+) -> Result<(Child, std::fs::File, MuxSink, ErrLog), CandyError> {
+    let ffmpeg = find_ffmpeg()
+        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E007)".into()))?;
+
+    let (encoder, _default_ext) = ffmpeg_args(codec)
+        .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
+    let format = container_format(container);
+
+    // Create the seekable sink for ffmpeg's output.
+    let mux = make_mux_sink(container)?;
+
+    // Create stderr redirection.
+    let (err_for_ffmpeg, err_log) = make_err_log()?;
+
+    // Create a memfd for frame input.
+    let frame_fd = memfd_create_named("candy-ffmpeg-frame")
+        .map_err(|e| CandyError::Encode(format!("create frame memfd: {e}")))?;
+    let frame_file = std::fs::File::from(frame_fd);
+    let frame_path = format!("/proc/self/fd/{}", frame_file.as_raw_fd());
+
+    let mut cmd = Command::new(&ffmpeg);
+    if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi) {
+        cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
+    }
+
+    cmd.stdin(Stdio::null()) // no stdin needed
+        .stdout(Stdio::null())
+        .stderr(err_for_ffmpeg)
+        .args(["-f", "rawvideo"])
+        .args(["-pix_fmt", "rgba"])
+        .args(["-s", &format!("{w}x{h}")])
+        .args(["-r", &fps.to_string()])
+        .args(["-i", &frame_path]) // read from memfd
+        .args(["-c:v", encoder]);
+
+    match codec {
+        Codec::X264 | Codec::X265 | Codec::H265 | Codec::Vp9 | Codec::Vp8 => {
+            cmd.args(["-preset", "medium"]);
+            cmd.args(["-crf", "23"]);
+            cmd.args(["-vf", "format=yuv420p"]);
+            cmd.args(["-threads", "0"]);
+        }
+        Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi => {
+            cmd.args(["-vf", "format=nv12,hwupload"]);
+            cmd.args(["-low_power", "1"]);
+            cmd.args(["-qp", "24"]);
+        }
+        #[cfg(target_os = "macos")]
+        Codec::H264VideoToolbox | Codec::H265VideoToolbox => {
+            let bitrate = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000);
+            cmd.args(["-b:v", &bitrate.to_string()]);
+        }
+        #[cfg(target_os = "windows")]
+        Codec::H264Qsv | Codec::H265Qsv => {
+            let bitrate = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000);
+            cmd.args(["-init_hw_device", "qsv=qsv:/dev/dri/renderD128"])
+                .args(["-vf", "format=nv12,hwupload=extra_hw_frames=64"])
+                .args(["-b:v", &bitrate.to_string()]);
+        }
+        _ => {}
+    }
+
+    cmd.arg("-metadata")
+        .arg(format!("candy-meta={}", private_metadata.to_json()));
+
+    cmd.args(["-f", format])
+        .args(["-y", mux.path.to_str().unwrap_or("/dev/null")]);
+
+    if matches!(container, Container::Mp4) {
+        cmd.args(["-movflags", "+faststart"]);
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| CandyError::Encode(format!("failed to spawn ffmpeg: {e}")))?;
+
+    // Re-open the memfd for writing (ffmpeg already has it open via /proc path).
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&frame_path)
+        .map_err(|e| CandyError::Encode(format!("open frame memfd for write: {e}")))?;
+
+    info!("spawned ffmpeg -c:v {encoder} -f {format} (memfd input)");
+    Ok((child, writer, mux, err_log))
+}
+
 /// Read the last ~20 lines of ffmpeg's stderr log for error reporting. On
 /// Linux the log is a memfd (read back via a cloned handle); elsewhere a temp
 /// file. Reading only the tail keeps error messages bounded and avoids

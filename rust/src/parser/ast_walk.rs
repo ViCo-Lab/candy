@@ -147,6 +147,24 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         ));
     }
 
+    // Every scene must have at least one slide so the renderer can emit frames.
+    // Candy DSL directives (`mobject`, `animate`, `pause`, `play`, `subtitle`,
+    // `ecounter`, `scene`, …) all advance the parse cursor and produce slides.
+    // If no candy directives were used, `ctx.slides` stays empty — inject a
+    // single `pause(duration: 500)` so the whole-document recompiler still
+    // produces one frame and renders the static Typst content.
+    //
+    // Cross-page scenes are handled by the page scheduler (`pages.rs`): when a
+    // scene's content overflows multiple pages, each page gets its own timeline
+    // entry. The parser only needs to guarantee at least one slide exists; the
+    // page scheduler splits it into per-page slides automatically.
+    if ctx.slides.is_empty() {
+        ctx.slides.push(Slide {
+            duration_ms: 500,
+            actions: Vec::new(),
+        });
+    }
+
     let private = PrivateMeta::default();
     let scene = Scene {
         slides: ctx.slides,
@@ -1106,8 +1124,12 @@ mod tests {
         let tmp = std::env::temp_dir().join("candy_test_field_false.tyx");
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp).unwrap();
-        // No slides or items should be produced by the false-positive calls.
-        assert_eq!(scene.slides.len(), 0, "slides: {:?}", scene.slides);
+        // No items should be produced by the false-positive calls.
+        // The parser auto-inserts a single pause slide for any scene that
+        // has content (even if it's just the candy import), so we expect
+        // exactly one empty slide.
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].actions.len(), 0);
         assert!(!scene.items.contains_key(&Label("x".into())));
         std::fs::remove_file(&tmp).ok();
     }
@@ -1130,7 +1152,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("candy_test_shadow.tyx");
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp).unwrap();
-        assert_eq!(scene.slides.len(), 0, "slides: {:?}", scene.slides);
+        // No slides should be produced by the shadowed call.
+        // The parser auto-inserts a single pause slide for any scene.
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].actions.len(), 0);
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -1314,5 +1339,108 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         let same: Vec<&crate::core::ast::CounterDef> =
             scene.counters.iter().filter(|c| c.name == "k").collect();
         assert_eq!(same.len(), 2, "nested ecounter redefinitions both survive");
+    }
+
+    /// A document with mobject items but no candy animation directives should
+    /// auto-insert a single `pause(duration: 500)` slide so the static content
+    /// is still rendered.
+    #[test]
+    fn mobject_without_animation_auto_inserts_pause() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm))
+#mobject("b", rect(width: 2cm))
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_static_mobjects.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        // Should have exactly one auto-inserted pause slide.
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].duration_ms, 500);
+        assert_eq!(scene.slides[0].actions.len(), 0);
+        // Items should be present.
+        assert_eq!(scene.items.len(), 2);
+    }
+
+    /// A document with only static Typst markup and no candy directives should
+    /// also auto-insert pause (the parser guarantees at least one slide per scene).
+    #[test]
+    fn pure_typst_markup_auto_inserts_pause() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+= Hello World
+This is plain Typst content with an equation $E = mc^2$.
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_pure_typst.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        // Even pure Typst content gets a slide so it can be rendered.
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].duration_ms, 500);
+    }
+
+    /// A document with subtitles but no animation should also auto-insert pause.
+    #[test]
+    fn subtitles_without_animation_auto_inserts_pause() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#subtitle("caption", body: [Hello world], start: 0)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_static_subtitle.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].duration_ms, 500);
+        assert!(!scene.subtitles.is_empty());
+    }
+
+    /// A document with counters but no animation should auto-insert pause.
+    #[test]
+    fn counters_without_animation_auto_inserts_pause() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#ecounter("k", seed: 0, step: 1)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_static_counter.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.slides[0].duration_ms, 500);
+        assert!(!scene.counters.is_empty());
+    }
+
+    /// A document with explicit child scenes that own labels but no slides
+    /// should auto-insert pause.
+    #[test]
+    fn nested_scene_with_labels_no_slides_auto_inserts_pause() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#scene(width: 16cm, height: 9cm)[
+  #mobject("a", circle(radius: 1cm))
+]
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_scene_no_slides.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
+        assert_eq!(scene.scenes.len(), 2, "root + 1 child scene");
+        // The child scene should own label "a".
+        let child = scene.scenes.iter().find(|s| s.id == 1).unwrap();
+        assert!(!child.owns_labels.is_empty());
     }
 }

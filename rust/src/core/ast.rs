@@ -662,6 +662,31 @@ impl Scene {
                 return Err(format!("slide {i}: duration_ms must be >= 1"));
             }
         }
+        // Validate counter lifecycle events reference declared counters.
+        let counter_names: std::collections::HashSet<&str> =
+            self.counters.iter().map(|c| c.name.as_str()).collect();
+        for ev in &self.counter_events {
+            if !counter_names.contains(ev.name.as_str()) {
+                return Err(format!(
+                    "E010: counter \"{name}\" does not exist (never declared or already destroyed)",
+                    name = ev.name
+                ));
+            }
+        }
+        // Validate slide actions reference declared mobjects.
+        let mobject_names: std::collections::HashSet<&str> =
+            self.items.keys().map(|l| l.0.as_str()).collect();
+        for s in self.slides.iter() {
+            for action in &s.actions {
+                let target = action.target();
+                if !mobject_names.contains(target.0.as_str()) {
+                    return Err(format!(
+                        "E010: mobject \"@{label}\" not found in Typst layout",
+                        label = target.0
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

@@ -22,8 +22,9 @@ use crate::warn;
 
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
-    call_symbol, current_scope, expr_src, expr_to_bool, expr_to_f64, expr_to_i64, parse_sub_pos,
-    range_of, resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
+    call_symbol, current_scope, expr_src, expr_to_bool, expr_to_f64, expr_to_i64, expr_to_key,
+    parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg,
+    track_key_from_expr, tuple_cm,
 };
 
 /// Register `label` as owned by `scene`, recording its first-seen (declaration)
@@ -107,10 +108,7 @@ fn process_mobject(
     let label_expr = pos
         .first()
         .or_else(|| named.get("label"))
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(s.get().to_string()),
-            _ => None,
-        });
+        .and_then(|e| expr_to_key(e));
     let Some(label_str) = label_expr else { return };
     let body_expr = pos.get(1).or_else(|| named.get("body"));
     let Some(body_expr) = body_expr else { return };
@@ -1393,10 +1391,7 @@ fn process_ecounter(
     let name = pos
         .first()
         .or_else(|| named.get("name"))
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(s.get().to_string()),
-            _ => None,
-        });
+        .and_then(|e| expr_to_key(e));
     let Some(name) = name else { return };
     let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
     let step = named.get("step").and_then(expr_to_i64).unwrap_or(1);
@@ -1463,10 +1458,7 @@ fn process_counter_event(
     let name = pos
         .first()
         .or_else(|| named.get("name"))
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(s.get().to_string()),
-            _ => None,
-        });
+        .and_then(|e| expr_to_key(e));
     let Some(name) = name else { return };
     ctx.counter_events.push(CounterEvent {
         name,

@@ -11,8 +11,8 @@ candy build examples/dot_move.tyx
 # AV1 in WebM (Matroska with webm doctype)
 candy build examples/dot_move.tyx --format webm --codec av1
 
-# H.264 in MP4 (default self-contained codec; opt into AV1 with --codec av1)
-candy build examples/dot_move.tyx --format mp4 --codec h264
+# H.264 in MP4 (default via system ffmpeg + libx264)
+candy build examples/dot_move.tyx --format mp4
 
 # SVG draft (one file per frame, written to .candy/<stem>/)
 candy build examples/dot_move.tyx --format svg
@@ -45,15 +45,22 @@ produce output. A single failed input keeps its specific `E00x` code.
 | `png` | static RGBA bitmap of the **final** frame (poster) — no codec needed; `--codec` ignored. |
 | `svg` | SVG draft, one file per frame under `.candy/<stem>/`. |
 
-## Codec matrix
+## Self-contained codecs (no system dependencies)
 
 Candy ships two **self-contained** video encoders (no system dependencies):
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `h264` (default) | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; falls back to AV1 if openh264 fails. |
+| `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; used when ffmpeg is unavailable. |
 | `av1` | rav1e (pure Rust) | MP4/MKV/WebM | Tries full-quality AV1 (inter-prediction); if rav1e 0.8.1 panics on the frame geometry it automatically retries in all-intra mode, then falls back to H.264. |
-| `h265` | — | — | Self-contained build returns E007; with system ffmpeg, uses x265. |
+
+## Default codec (requires ffmpeg)
+
+The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to the self-contained `h264` (openh264) encoder.
+
+| `--codec` | Encoder | Container | Notes |
+|---|---|---|---|
+| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 (`h264`) if ffmpeg unavailable. |
 
 When the system has **`ffmpeg`** on `$PATH`, Candy can shell out to it for additional
 codecs — no cargo dependency, runtime-detected. This enables hardware-accelerated
@@ -120,7 +127,7 @@ found, Candy falls back to the self-contained codecs (av1/h264) or returns E007
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `gif` / `png` / `svg`. The `--codec` flag is ignored for `gif` / `png`. |
-| `--codec` | `h264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv` / `h264-libva` / `h265-libva` / `av1-libva`. The hardware `*-vaapi` / `*-videotoolbox` / `*-qsv` / `*-libva` variants are conditionally compiled and appear in `--help` only on their native platform (VAAPI/libva → Linux, VideoToolbox → macOS, QSV → Windows). |
+| `--codec` | `x264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv` / `h264-libva` / `h265-libva` / `av1-libva`. The first two (`h264`, `av1`) are self-contained (openh264/rav1e); `x264` is the default but requires system ffmpeg; the `*-libva` variants are Linux-only direct VAAPI (no ffmpeg subprocess). See [Codecs](codecs.md). The hardware `*-vaapi` / `*-videotoolbox` / `*-qsv` / `*-libva` variants are conditionally compiled and appear in `--help` only on their native platform (VAAPI/libva → Linux, VideoToolbox → macOS, QSV → Windows). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
 | `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |

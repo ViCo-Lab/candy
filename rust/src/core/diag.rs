@@ -174,6 +174,15 @@ pub enum CandyError {
     /// support, or the ffmpeg subprocess fails mid-encode. Distinct from the
     /// generic `Encode` (E007) so libva-specific failures are diagnosable.
     Libva(String),
+    /// E010 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
+    /// points to a mobject that was never registered via `#mobject`. Also used
+    /// when `ecval(...)` or lifecycle events (`counter_pause`, `counter_destroy`,
+    /// …) reference an unknown counter name. The first field is the kind
+    /// (`"mobject"` / `"ecounter"`) and the second is the offending key name.
+    UnknownKey(String, String, Option<SourceLoc>),
+    /// E011 — A key parameter evaluated to a non-string type (e.g., number,
+    /// boolean, array). Keys must always resolve to strings.
+    InvalidKey(String, Option<SourceLoc>),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
@@ -184,7 +193,7 @@ pub enum CandyError {
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E009).
+    /// Mandatory error code (E001–E011).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
@@ -197,11 +206,13 @@ impl CandyError {
             CandyError::Encode(_) => "E007",
             CandyError::NoCandyImport(_, _) => "E008",
             CandyError::Libva(_) => "E009",
+            CandyError::UnknownKey(_, _, _) => "E010",
+            CandyError::InvalidKey(_, _) => "E011",
         }
     }
 
     /// Numeric part of the code (1–9), used to build the process exit code for
-    /// the E001–E007 family. `EYEE` is excluded here on purpose — it carries no
+    /// the E001–E011 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
         match self {
@@ -215,6 +226,8 @@ impl CandyError {
             CandyError::Encode(_) => 7,
             CandyError::NoCandyImport(_, _) => 8,
             CandyError::Libva(_) => 9,
+            CandyError::UnknownKey(_, _, _) => 10,
+            CandyError::InvalidKey(_, _) => 11,
         }
     }
 
@@ -248,6 +261,12 @@ impl CandyError {
             CandyError::Encode(e) => format!("encode failure: {e}"),
             CandyError::NoCandyImport(e, _) => format!("candy package not imported: {e}"),
             CandyError::Libva(e) => format!("libva encode failure: {e}"),
+            CandyError::UnknownKey(kind, key, _) => {
+                format!("{kind} \"{key}\" does not exist (never declared or already destroyed)")
+            }
+            CandyError::InvalidKey(val_type, _) => {
+                format!("key must be a string, got {val_type}")
+            }
             CandyError::Yee(e) => e.to_string(),
         }
     }
@@ -259,6 +278,8 @@ impl CandyError {
             CandyError::LabelNotFound(_, l) => l.as_ref(),
             CandyError::Parse(_, l) => l.as_ref(),
             CandyError::NoCandyImport(_, l) => l.as_ref(),
+            CandyError::UnknownKey(_, _, l) => l.as_ref(),
+            CandyError::InvalidKey(_, l) => l.as_ref(),
             _ => None,
         }
     }

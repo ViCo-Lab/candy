@@ -379,8 +379,9 @@ impl Renderer {
     /// (possibly `transform`-swapped, `ecval`-substituted) body is used. This
     /// is the single source of truth that keeps the three render modes unified
     /// — previously the isolated `render_frame` path skipped the morph branch.
-    fn resolve_body(&self, label: &Label, time_ms: u32) -> String {
+    fn resolve_body(&self, label: &Label, time_ms: u32) -> (String, Vec<String>) {
         self.morph_body_for(label, time_ms)
+            .map(|(s, v)| (s, v))
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
     /// Resolve a `#scene(bg: …)` color expression to a `#rrggbb(aa)` hex string
@@ -560,23 +561,23 @@ fn substitute_counters_expands_ecval_as_ast_node() {
     };
     // The canonical `ecval("name")` form: a real AST call expanded to an integer.
     assert_eq!(
-        substitute_counters(&scene, "circle(radius: ecval(\"r\") * 1pt + 1cm)", 0),
+        substitute_counters(&scene, "circle(radius: ecval(\"r\") * 1pt + 1cm)", 0).0,
         "circle(radius: 10 * 1pt + 1cm)"
     );
     // A long-lived counter steps once per ms: at t=5 → seed + step·5 = 15.
-    assert_eq!(substitute_counters(&scene, "ecval(\"r\")", 5), "15");
+    assert_eq!(substitute_counters(&scene, "ecval(\"r\")", 5).0, "15");
     // The integer substitution yields valid Typst inside markup too.
     assert_eq!(
-        substitute_counters(&scene, "text([Count: #ecval(\"r\")])", 5),
+        substitute_counters(&scene, "text([Count: #ecval(\"r\")])", 5).0,
         "text([Count: #15])"
     );
     // An undeclared counter is left untouched (matches prior registry behaviour).
     assert_eq!(
-        substitute_counters(&scene, "ecval(\"missing\")", 0),
+        substitute_counters(&scene, "ecval(\"missing\")", 0).0,
         "ecval(\"missing\")"
     );
     // The bare-ident form stays accepted for backwards compatibility.
-    assert_eq!(substitute_counters(&scene, "ecval(r)", 0), "10");
+    assert_eq!(substitute_counters(&scene, "ecval(r)", 0).0, "10");
 }
 #[test]
 fn subtitle_stays_in_viewport() {
@@ -704,13 +705,14 @@ fn morph_renders_interpolated_polygon() {
         .morph_body_for(&Label("b".into()), 0)
         .expect("expected a morphed polygon at t=0");
     assert!(
-        body0.starts_with("polygon("),
+        body0.0.starts_with("polygon("),
         "morph body must be a polygon"
     );
     // Mid-window: still a polygon (interpolated shape).
     assert!(
         r.morph_body_for(&Label("b".into()), 50)
             .unwrap()
+            .0
             .starts_with("polygon(")
     );
     // At the end of the window: polygon shaped like the *target* (square) — and
@@ -718,7 +720,7 @@ fn morph_renders_interpolated_polygon() {
     let body_end = r
         .morph_body_for(&Label("b".into()), 100)
         .expect("expected a morphed polygon at t=end");
-    assert!(body_end.starts_with("polygon("));
+    assert!(body_end.0.starts_with("polygon("));
     // The plan was actually precomputed (not empty).
     assert!(!r.morph_cache.is_empty(), "morph plan should be cached");
 }
@@ -1044,6 +1046,8 @@ fn transform_target_renders_after_window() {
 /// vanished the instant its overlay stopped drawing.
 #[test]
 fn chained_transform_persists_intermediate() {
+    let v = crate::typst_package_version().expect("typst/typst.toml must declare a `version`");
+    let pkg = format!("@preview/candy:{v}");
     let src = "#import \"candy\": *\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
@@ -1051,7 +1055,8 @@ fn chained_transform_persists_intermediate() {
                #pause(duration: 60)\n\
                #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
                #pause(duration: 60)\n\
-               ]\n";
+               ]\n"
+    .replace("#import \"candy\":", &format!("#import \"{pkg}\":"));
     let tmp = std::env::temp_dir().join("candy_test_xf_chain.tyx");
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();

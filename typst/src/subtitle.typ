@@ -41,6 +41,9 @@
 ///   `"linear"`). Custom modes `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are
 ///   accepted.
 ///
+/// Subtitles use a fixed style: white text with black stroke for maximum
+/// readability on any background.
+///
 /// Only one subtitle may be visible per Typst scope at a time; a later one
 /// replaces an earlier one. A subtitle in a parent scope is temporarily hidden
 /// while a child scope shows its own (shadowing). Under standard Typst the
@@ -58,5 +61,10 @@
   easing: "linear",
 ) = {
   let (align, dx, dy) = _subtitle_anchor(position)
-  place(align, dx: dx, dy: dy)[#body]
+
+  // Fixed style: white text with black stroke for maximum contrast on any background
+  [
+    #set text(fill: white, stroke: black + 0.025em)
+    #place(align, dx: dx, dy: dy)[#body]
+  ]
 }

@@ -194,17 +194,17 @@ enum CodecArg {
     #[value(name = "vp8")]
     Vp8,
     /// H.264 via direct libva (Linux hardware). Falls back to openh264 if the
-    /// VAAPI device or ffmpeg is unavailable (W015).
+    /// VAAPI device or ffmpeg is unavailable (W014).
     #[cfg(target_os = "linux")]
     #[value(name = "h264-libva")]
     H264Libva,
     /// H.265 via direct libva (Linux hardware). Falls back to AV1 (rav1e) if the
-    /// VAAPI device or ffmpeg is unavailable (W015).
+    /// VAAPI device or ffmpeg is unavailable (W014).
     #[cfg(target_os = "linux")]
     #[value(name = "h265-libva")]
     H265Libva,
     /// AV1 via direct libva (Linux hardware). Falls back to rav1e if the VAAPI
-    /// device or ffmpeg is unavailable (W015).
+    /// device or ffmpeg is unavailable (W014).
     #[cfg(target_os = "linux")]
     #[value(name = "av1-libva")]
     Av1Libva,

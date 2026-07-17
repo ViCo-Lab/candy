@@ -1,0 +1,19 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #subtitle with fixed style — white text, black stroke
+// Demonstrates maximum contrast subtitle on any background.
+
+#scene(width: 16cm, height: 9cm, bg: yellow)[
+  #subtitle([Fixed style: white text + black stroke], position: "bottom")
+  #pause(duration: 500)
+]
+#scene(width: 16cm, height: 9cm, bg: navy)[
+
+  #subtitle([Fixed style works on dark backgrounds], position: "bottom")
+  #pause(duration: 500)
+]
+
+#scene(width: 16cm, height: 9cm, bg: gradient.linear(..color.map.turbo))[
+  #subtitle([Consistent style on colorful backgrounds], position: "bottom")
+  #pause(duration: 500)
+]

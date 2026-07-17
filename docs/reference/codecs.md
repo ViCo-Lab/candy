@@ -8,10 +8,16 @@ unavailable, Candy transparently falls back to openh264 (`h264`).
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 if ffmpeg unavailable. |
 | `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; used as fallback when x264 unavailable. |
 | `av1` | rav1e (pure Rust) | MP4/MKV/WebM | Full-quality AV1, then all-intra retry, then H.264 fallback. |
-| `h265` | — | — | Self-contained build returns E007; with system ffmpeg uses x265. |
+
+## Default codec (requires ffmpeg)
+
+The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to openh264 (`h264`).
+
+| `--codec` | Encoder | Container | Notes |
+|---|---|---|---|
+| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 if ffmpeg unavailable. |
 
 ## FFmpeg-backed (runtime-detected, no cargo dep)
 
@@ -22,12 +28,6 @@ unavailable, Candy transparently falls back to openh264 (`h264`).
 | `h264-vaapi` / `h265-vaapi` | h264_vaapi / hevc_vaapi | Linux Intel/AMD GPU. |
 | `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware. |
 | `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video (**Windows**). |
-
-> **Platform availability.** The hardware encoders above are conditionally compiled
-> (`#[cfg(target_os = "...")]`): `h264-vaapi` / `h265-vaapi` / `av1-vaapi` appear
-> only on **Linux**, `h264-videotoolbox` / `h265-videotoolbox` only on **macOS**,
-> and `h264-qsv` / `h265-qsv` only on **Windows**. On other platforms they are
-> absent from `--help` and the `--codec` selection interface.
 
 ## VAAPI / libva (Linux-only, independent group)
 
@@ -73,9 +73,3 @@ frame geometries. Candy first tries full-quality AV1, and on that panic automati
 retries in all-intra mode (valid AV1, no temporal compression); only if that also fails does
 it fall back to H.264. The panic is caught (`catch_unwind`) so the command never aborts — if
 every encoder fails, Candy writes an SVG draft to `.candy/` and surfaces E007.
-
-## Audio muxing
-
-- Opus (`.opus`/`.ogg`) → MKV/WebM.
-- AAC (`.aac`) → MP4. MP4 only muxes AAC; a non-AAC track is ignored (W008).
-- An audio track with an unsupported format or codec mismatch is dropped (W006).

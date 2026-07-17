@@ -37,13 +37,15 @@ use std::fs;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin};
+use std::process::Child;
 
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
 use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
+#[cfg(target_os = "linux")]
+use crate::renderer::encode::ffmpeg::spawn_ffmpeg_with_memfd;
 use crate::renderer::encode::ffmpeg::{ErrLog, MuxSink};
 use crate::warn;
 
@@ -260,27 +262,22 @@ impl Codec {
     }
 }
 
-/// A streaming video encoder: frames are pushed one at a time and the muxed
-/// container bytes are produced only at [`finish`](Self::finish).
-///
-/// This is the memory-bounded replacement for the batch [`encode_frames`]: the
-/// caller never has to hold every RGBA frame at once. For the ffmpeg-backed
-/// codecs the frames are piped to ffmpeg's stdin as they arrive (ffmpeg buffers
-/// only its own working set); for the self-contained AV1/H.264 codecs each frame
-/// is encoded to a small coded sample immediately and its RGBA is dropped, so
-/// peak memory is the (bounded) coded stream plus at most a few in-flight frames
-/// from the parallel renderer. `audio` (if any) is muxed in at `finish`.
+/// On Linux, ffmpeg frame input uses an anonymous `memfd` per frame (zero-copy,
+/// tmpfs-resident) instead of a bounded OS pipe — see [`ffmpeg::spawn_ffmpeg_with_memfd`].
 pub(crate) struct StreamingVideo {
     container: Container,
     meta: PrivateMeta,
     tw: usize,
     th: usize,
     audio: Option<AudioData>,
+    #[cfg(target_os = "linux")]
+    ffmpeg: Option<(Child, std::fs::File, MuxSink, ErrLog)>,
+    #[cfg(not(target_os = "linux"))]
     ffmpeg: Option<(Child, std::io::BufWriter<ChildStdin>, MuxSink, ErrLog)>,
     frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "libva"))]
     libva: Option<crate::renderer::encode::libva::LibvaStream>,
 }
 
@@ -313,27 +310,49 @@ impl StreamingVideo {
         let uses_ffmpeg = codec.uses_ffmpeg()
             || (codec == Codec::H265 && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some());
         if uses_ffmpeg {
-            let (child, stdin, mux, err_log) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
-                codec, container, tw as u32, th as u32, fps, meta,
-            )?;
-            Ok(Self {
-                container,
-                meta: meta.clone(),
-                tw,
-                th,
-                audio,
-                ffmpeg: Some((
-                    child,
-                    std::io::BufWriter::with_capacity(1 << 20, stdin),
-                    mux,
-                    err_log,
-                )),
-                frame_count: 0,
-                rav1e: None,
-                h264: None,
-                #[cfg(target_os = "linux")]
-                libva: None,
-            })
+            #[cfg(target_os = "linux")]
+            {
+                // On Linux, use memfd-based frame input for zero-copy data sharing
+                let (child, frame_fd, mux, err_log) =
+                    spawn_ffmpeg_with_memfd(codec, container, tw as u32, th as u32, fps, meta)?;
+                Ok(Self {
+                    container,
+                    meta: meta.clone(),
+                    tw,
+                    th,
+                    audio,
+                    ffmpeg: Some((child, frame_fd, mux, err_log)),
+                    frame_count: 0,
+                    rav1e: None,
+                    h264: None,
+                    #[cfg(all(target_os = "linux", feature = "libva"))]
+                    libva: None,
+                })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // On non-Linux, use standard stdin pipe
+                let (child, stdin, mux, err_log) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
+                    codec, container, tw as u32, th as u32, fps, meta,
+                )?;
+                Ok(Self {
+                    container,
+                    meta: meta.clone(),
+                    tw,
+                    th,
+                    audio,
+                    ffmpeg: Some((
+                        child,
+                        std::io::BufWriter::with_capacity(1 << 20, stdin),
+                        mux,
+                        err_log,
+                    )),
+                    frame_count: 0,
+                    rav1e: None,
+                    h264: None,
+                    libva: None,
+                })
+            }
         } else if codec == Codec::H264 {
             Ok(Self {
                 container,
@@ -345,7 +364,7 @@ impl StreamingVideo {
                 frame_count: 0,
                 rav1e: None,
                 h264: Some(crate::renderer::encode::h264::H264Stream::new(tw, th, fps)?),
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", feature = "libva"))]
                 libva: None,
             })
         } else if codec == Codec::Av1 {
@@ -366,14 +385,14 @@ impl StreamingVideo {
                     tw, th, fps, true,
                 )?),
                 h264: None,
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", feature = "libva"))]
                 libva: None,
             })
         } else if codec.uses_libva() {
             // Direct VAAPI (libva) hardware encoder (Linux-only). The libva
             // codecs are only defined on Linux, so `uses_libva()` is always
             // `false` on other platforms and this branch is unreachable there.
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "libva"))]
             {
                 if !crate::renderer::encode::libva::is_available()
                     || crate::renderer::encode::ffmpeg::find_ffmpeg().is_none()
@@ -409,6 +428,11 @@ impl StreamingVideo {
             {
                 unreachable!("libva codecs are only defined on Linux")
             }
+            #[cfg(all(target_os = "linux", not(feature = "libva")))]
+            {
+                // When libva feature is disabled, uses_libva() should return false
+                unreachable!("libva codecs should not reach here without libva feature")
+            }
         } else {
             // H265 without ffmpeg, or any other unsupported codec.
             Err(CandyError::Encode(
@@ -437,7 +461,7 @@ impl StreamingVideo {
             self.frame_count += 1;
             return Ok(());
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "libva"))]
         if let Some(lv) = self.libva.as_mut() {
             lv.push(&composed)?;
             self.frame_count += 1;
@@ -476,7 +500,7 @@ impl StreamingVideo {
                 child, mux, output, err_log,
             );
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "libva"))]
         if let Some(lv) = self.libva {
             // `LibvaStream::finish` muxes the encoded stream directly to `output`
             // (with optional audio), returning `()`; no temp-file copy is needed.
