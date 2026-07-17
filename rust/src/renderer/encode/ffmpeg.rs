@@ -78,6 +78,9 @@ fn ffmpeg_args(codec: Codec) -> Option<(&'static str, &'static str)> {
         // H265 (the "self-contained or ffmpeg" variant) uses x265 when ffmpeg
         // is available.
         Codec::H265 => Some(("libx265", "mp4")),
+        Codec::Av1Vaapi => Some(("av1_vaapi", "mp4")),
+        Codec::Vp9 => Some(("libvpx-vp9", "webm")),
+        Codec::Vp8 => Some(("libvpx", "webm")),
         // Self-contained codecs don't go through ffmpeg.
         Codec::Av1 | Codec::H264 => None,
     }
@@ -136,7 +139,7 @@ pub(crate) fn spawn_ffmpeg(
     let bitrate_str = bitrate.to_string();
 
     let mut cmd = Command::new(&ffmpeg);
-    if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi) {
+    if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi) {
         cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
     }
     cmd.stdin(Stdio::piped())
@@ -150,13 +153,15 @@ pub(crate) fn spawn_ffmpeg(
         .args(["-c:v", encoder]);
 
     match codec {
-        Codec::X264 | Codec::X265 | Codec::H265 => {
+        Codec::X264 | Codec::X265 | Codec::H265 | Codec::Vp9 | Codec::Vp8 => {
             cmd.args(["-preset", "medium"]);
             cmd.args(["-crf", "23"]);
             cmd.args(["-vf", "format=yuv420p"]);
+            cmd.args(["-threads", "0"]);
         }
-        Codec::H264Vaapi | Codec::H265Vaapi => {
+        Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi => {
             cmd.args(["-vf", "format=nv12,hwupload"]);
+            cmd.args(["-low_power", "1"]);
             cmd.args(["-qp", "24"]);
         }
         Codec::H264VideoToolbox | Codec::H265VideoToolbox => {

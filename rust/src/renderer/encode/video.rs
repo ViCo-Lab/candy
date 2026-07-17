@@ -70,6 +70,12 @@ pub enum Codec {
     H264Qsv,
     /// H.265 via Intel QSV.
     H265Qsv,
+    /// AV1 via VAAPI (Linux Intel/AMD GPU hardware encoder).
+    Av1Vaapi,
+    /// VP9 via libvpx (system ffmpeg).
+    Vp9,
+    /// VP8 via libvpx (system ffmpeg).
+    Vp8,
 }
 
 /// An encoded video ready for container muxing.

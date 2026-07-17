@@ -177,6 +177,15 @@ enum CodecArg {
     /// H.265 via Intel QSV.
     #[value(name = "h265-qsv")]
     H265Qsv,
+    /// AV1 via VAAPI (Linux hardware encoder).
+    #[value(name = "av1-vaapi")]
+    Av1Vaapi,
+    /// VP9 via libvpx (system ffmpeg).
+    #[value(name = "vp9")]
+    Vp9,
+    /// VP8 via libvpx (system ffmpeg).
+    #[value(name = "vp8")]
+    Vp8,
 }
 
 fn main() {
@@ -284,6 +293,9 @@ fn run() -> Result<(), CandyError> {
                         CodecArg::H265VideoToolbox => Codec::H265VideoToolbox,
                         CodecArg::H264Qsv => Codec::H264Qsv,
                         CodecArg::H265Qsv => Codec::H265Qsv,
+                        CodecArg::Av1Vaapi => Codec::Av1Vaapi,
+                        CodecArg::Vp9 => Codec::Vp9,
+                        CodecArg::Vp8 => Codec::Vp8,
                     };
 
                     let input_kind = if from_svg {
