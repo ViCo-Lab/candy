@@ -116,7 +116,7 @@ impl Renderer {
         // shrink on zoom-out and leave transparent (uncovered) edges instead of
         // the canvas background color.
         let (bg, content) = split_background(inner);
-        let mut out = String::new();
+        let mut out = String::with_capacity(8192);
         out.push_str(&format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{pw}\" height=\"{ph}\" viewBox=\"0 0 {pw} {ph}\">\n",
             pw = pw, ph = ph,

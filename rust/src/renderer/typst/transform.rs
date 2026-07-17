@@ -235,7 +235,7 @@ impl Renderer {
     /// Sanitize a label into an SVG-id-safe prefix (`[A-Za-z0-9_]`), suffixed
     /// with the plan index so two transforms on the same target never collide.
     fn transform_id_prefix(&self, target: &Label, plan_idx: usize) -> String {
-        let mut base = String::new();
+        let mut base = String::with_capacity(4096);
         for c in target.0.chars() {
             if c.is_alphanumeric() {
                 base.push(c);
@@ -542,7 +542,7 @@ impl Renderer {
         states: &HashMap<Label, FrameData>,
         time_ms: u32,
     ) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(8192);
         // Pass 1: symbol definitions (one <defs> per active plan). Active only
         // during the transform window, inclusive of `end_ms` so the final frame
         // can still draw the exact target formula. Before `start_ms` the defs
@@ -647,7 +647,7 @@ impl Renderer {
         states: &HashMap<Label, FrameData>,
         time_ms: u32,
     ) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(8192);
         for pair in &self.scene.morph_pairs {
             if time_ms < pair.start_ms || time_ms > pair.end_ms {
                 continue;
