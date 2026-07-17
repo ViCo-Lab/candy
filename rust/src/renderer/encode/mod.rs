@@ -5,11 +5,14 @@
 //! * [`rav1e`] — AV1 encoder (pure Rust, self-contained).
 //! * [`h264`] — H.264 encoder (openh264, self-contained).
 //! * [`ffmpeg`] — optional system-FFmpeg encoding path (runtime-detected).
+//! * [`libva`] — direct libva hardware encoding (Linux-only, no ffmpeg).
 //! * [`container`] — self-contained MP4 / Matroska (WebM/MKV) muxers.
 
 pub mod container;
 pub mod ffmpeg;
 pub mod h264;
+#[cfg(target_os = "linux")]
+pub mod libva;
 pub mod rav1e;
 pub mod video;
 
