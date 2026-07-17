@@ -38,7 +38,10 @@
 //! candy's hand-written muxer to handle HEVC, and lets ffmpeg's mature muxer
 //! handle all container/codec combinations.
 
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
