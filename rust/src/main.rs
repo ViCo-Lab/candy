@@ -74,11 +74,11 @@ enum Commands {
         /// frame.
         #[arg(long, value_enum, default_value = "mp4")]
         format: FormatArg,
-        /// Video codec. Default `h264` (self-contained, via openh264). `av1`
-        /// (rav1e) is the fallback/alternative; `hevc`/`x264`/`x265`/hardware
-        /// codecs shell out to system ffmpeg when available. Ignored for
-        /// `--format gif` / `--format png`.
-        #[arg(long, value_enum, default_value = "h264")]
+        /// Video codec. Default `x264` (via system ffmpeg + libx264). Falls back
+        /// to openh264 (`h264`) when ffmpeg is unavailable. `av1` (rav1e) is the
+        /// alternative; `hevc`/`x265`/hardware codecs also shell out to system
+        /// ffmpeg when available. Ignored for `--format gif` / `--format png`.
+        #[arg(long, value_enum, default_value = "x264")]
         codec: CodecArg,
         /// Frames per second (video / GIF path).
         #[arg(short, long, default_value_t = 30)]

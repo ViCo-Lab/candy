@@ -121,6 +121,7 @@ fn video_shim(v: &EncodedVideoFile) -> EncodedVideo {
         height: v.height,
         fps: v.fps,
         is_av1: v.is_av1,
+        is_hevc: v.is_hevc,
         frames: Vec::new(),
         codec_private: v.codec_private.clone(),
         keyframes: v.keyframes.clone(),
@@ -173,7 +174,13 @@ pub(crate) fn mux_mp4_to_file(
         p.extend_from_slice(b"isom");
         p.extend_from_slice(&[0, 0, 0, 0]);
         p.extend_from_slice(b"isom");
-        p.extend_from_slice(if v.is_av1 { b"av01" } else { b"avc1" });
+        if v.is_av1 {
+            p.extend_from_slice(b"av01");
+        } else if v.is_hevc {
+            p.extend_from_slice(b"hvc1");
+        } else {
+            p.extend_from_slice(b"avc1");
+        }
         p.extend_from_slice(b"mp42");
         p.extend_from_slice(b"mmp4");
         p
@@ -370,8 +377,8 @@ fn build_video_trak(
         p.extend_from_slice(&0u16.to_be_bytes()); // volume (0 for video)
         p.extend_from_slice(&0u16.to_be_bytes());
         p.extend_from_slice(&MATRIX);
-        p.extend_from_slice(&(v.width << 16).to_be_bytes());
-        p.extend_from_slice(&(v.height << 16).to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes()); // width
+        p.extend_from_slice(&0u32.to_be_bytes());
         p
     });
 
@@ -508,8 +515,20 @@ fn build_video_trak(
 }
 
 fn video_sample_entry(v: &EncodedVideo) -> Vec<u8> {
-    let name: [u8; 4] = if v.is_av1 { *b"av01" } else { *b"avc1" };
-    let cfg_name: [u8; 4] = if v.is_av1 { *b"av1C" } else { *b"avcC" };
+    let name: [u8; 4] = if v.is_av1 {
+        *b"av01"
+    } else if v.is_hevc {
+        *b"hvc1"
+    } else {
+        *b"avc1"
+    };
+    let cfg_name: [u8; 4] = if v.is_av1 {
+        *b"av1C"
+    } else if v.is_hevc {
+        *b"hvcC"
+    } else {
+        *b"avcC"
+    };
     let mut p = vec![];
     p.extend_from_slice(&[0u8; 6]); // reserved
     p.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
@@ -846,6 +865,8 @@ pub fn mux_matroska(
 fn video_track_entry(v: &EncodedVideo) -> Vec<u8> {
     let codec_id: &[u8] = if v.is_av1 {
         b"V_AV1"
+    } else if v.is_hevc {
+        b"V_MPEG4/ISO/HEVC"
     } else {
         b"V_MPEG4/ISO/AVC"
     };
@@ -1104,6 +1125,8 @@ pub(crate) fn mux_matroska_to_file(
 fn video_track_entry_shim(v: &EncodedVideoFile) -> Vec<u8> {
     let codec_id: &[u8] = if v.is_av1 {
         b"V_AV1"
+    } else if v.is_hevc {
+        b"V_MPEG4/ISO/HEVC"
     } else {
         b"V_MPEG4/ISO/AVC"
     };
@@ -1233,6 +1256,7 @@ mod tests {
             height: 16,
             fps: 10,
             is_av1: false,
+            is_hevc: false,
             frames: vec![vec![0u8; 16], vec![0u8; 16]],
             codec_private: vec![0u8; 4],
             keyframes: vec![true, false],

@@ -8,8 +8,8 @@
 //! specific `main` source over the shared state.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use typst::{Library, LibraryExt, World};
 use typst_kit::datetime::Time;

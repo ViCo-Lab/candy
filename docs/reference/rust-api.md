@@ -72,6 +72,8 @@ rust/src/
     ├── h264.rs        # openh264 H.264 encoder
     ├── ffmpeg.rs      # find_ffmpeg / encode_via_ffmpeg (system ffmpeg shell-out)
     ├── container.rs   # hand-written MP4 / Matroska / WebM muxers
+    ├── libva.rs       # Direct VAAPI hardware encoding (no ffmpeg subprocess, Linux-only)
+    │   └── imp.rs     # Real libva FFI implementation (feature "libva")
     └── audio.rs       # Opus/AAC audio demuxers
 ```
 

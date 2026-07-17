@@ -2,13 +2,13 @@
 //! timeline (`content_for`), AST-driven `ecval(...)` counter substitution, and
 //! subtitle placement / compilation.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use typst::compile;
 use typst_layout::PagedDocument;
 use typst_library::foundations::Dict;
-use typst_svg::{svg, SvgOptions};
+use typst_svg::{SvgOptions, svg};
 use typst_syntax::ast::{self, Expr};
-use typst_syntax::{parse_code, LinkedNode};
+use typst_syntax::{LinkedNode, parse_code};
 
 use crate::core::ast::{Label, Scene, SubPos, Subtitle};
 use crate::core::diag::CandyError;

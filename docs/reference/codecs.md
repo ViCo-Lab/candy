@@ -1,14 +1,15 @@
 # Codec & container matrix
 
-Candy ships two **self-contained** video encoders (no system dependencies). When the system
-has **`ffmpeg`** on `$PATH`, Candy can additionally shell out to it for higher-quality /
-hardware-accelerated codecs — runtime-detected, no cargo dependency.
+Candy ships two **self-contained** video encoders (no system dependencies). The default
+codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding; when `ffmpeg` is
+unavailable, Candy transparently falls back to openh264 (`h264`).
 
 ## Self-contained (default, pure Rust)
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `h264` (default) | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; falls back to AV1 if openh264 fails. |
+| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 if ffmpeg unavailable. |
+| `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; used as fallback when x264 unavailable. |
 | `av1` | rav1e (pure Rust) | MP4/MKV/WebM | Full-quality AV1, then all-intra retry, then H.264 fallback. |
 | `h265` | — | — | Self-contained build returns E007; with system ffmpeg uses x265. |
 
@@ -63,6 +64,9 @@ cargo run -- build anim.tyx --codec h264-videotoolbox
 ```
 
 ## Encoding fallback
+
+When `--codec x264` (the default) and ffmpeg is unavailable or fails to initialise,
+Candy transparently falls back to `h264` (openh264) so a valid video is still produced.
 
 `rav1e` 0.8.1 (the latest published release) can panic during inter-prediction on certain
 frame geometries. Candy first tries full-quality AV1, and on that panic automatically

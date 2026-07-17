@@ -35,16 +35,16 @@
 
 use std::fs;
 use std::io::Write;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin};
 
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
+use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
 use crate::renderer::encode::ffmpeg::{ErrLog, MuxSink};
-use crate::renderer::RenderedFrame;
 use crate::warn;
 
 /// Video codec selector.
@@ -111,12 +111,14 @@ pub struct EncodedVideo {
     pub height: u32,
     /// Frames per second (time base).
     pub fps: u32,
-    /// `true` for AV1, `false` for H.264.
+    /// `true` for AV1, `false` for H.264/H.265.
     pub is_av1: bool,
+    /// `true` for H.265/HEVC, `false` for H.264/AV1.
+    pub is_hevc: bool,
     /// One coded sample per frame (AV1 temporal unit, or length-prefixed NALs
     /// for H.264).
     pub frames: Vec<Vec<u8>>,
-    /// Codec-private config: `av1C` payload (AV1) or `avcC` (H.264).
+    /// Codec-private config: `av1C` payload (AV1), `avcC` (H.264), or `hvcC` (H.265).
     pub codec_private: Vec<u8>,
     /// Per-sample keyframe flags, parallel to `frames`. A keyframe (IDR for
     /// H.264 / AV1 key frame) decodes without referencing earlier samples, so
@@ -143,9 +145,11 @@ pub(crate) struct EncodedVideoFile {
     pub height: u32,
     /// Frames per second (time base).
     pub fps: u32,
-    /// `true` for AV1, `false` for H.264.
+    /// `true` for AV1, `false` for H.264/H.265.
     pub is_av1: bool,
-    /// Codec-private config: `av1C` payload (AV1) or `avcC` (H.264).
+    /// `true` for H.265/HEVC, `false` for H.264/AV1.
+    pub is_hevc: bool,
+    /// Codec-private config: `av1C` payload (AV1), `avcC` (H.264), or `hvcC` (H.265).
     pub codec_private: Vec<u8>,
     /// Coded-sample byte sizes, parallel to `keyframes`.
     pub sample_sizes: Vec<u32>,
@@ -806,7 +810,7 @@ pub fn write_png(
     path: &Path,
     private_metadata: &PrivateMeta,
 ) -> Result<(), CandyError> {
-    use png::{text_metadata::TEXtChunk, BitDepth, ColorType};
+    use png::{BitDepth, ColorType, text_metadata::TEXtChunk};
     let file = fs::File::create(path)?;
     let mut enc = png::Encoder::new(file, frame.width as u32, frame.height as u32);
     enc.set_color(ColorType::Rgba);

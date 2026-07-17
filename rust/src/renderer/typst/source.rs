@@ -418,7 +418,9 @@ impl Renderer {
     /// single whole-document render path as parsed `.tyx` files — they can drive
     /// transform body swaps, reveals, and `ecval` counters through `sys.inputs`
     /// exactly like real documents.
-    pub(crate) fn synthesize_handbuilt_source(scene: &Scene) -> (String, HashMap<Label, (usize, usize)>) {
+    pub(crate) fn synthesize_handbuilt_source(
+        scene: &Scene,
+    ) -> (String, HashMap<Label, (usize, usize)>) {
         let mut src = String::from("#import \"@preview/candy:0.1.0\": *\n\n");
         let mut mobject_body = HashMap::new();
         for (label, body) in &scene.items {

@@ -429,9 +429,37 @@ impl StreamEncoder {
                 output, fps, meta, tw, th,
             )?))
         } else {
-            Ok(StreamEncoder::Video(Box::new(
-                encode::video::StreamingVideo::new(fps, codec, container, meta, tw, th, audio)?,
-            )))
+            // Default codec is x264; if ffmpeg is unavailable or the encoder
+            // fails to initialise, transparently fall back to openh264 so a
+            // valid video is still produced without requiring system deps.
+            let primary = codec;
+            match encode::video::StreamingVideo::new(
+                fps,
+                primary,
+                container,
+                meta,
+                tw,
+                th,
+                audio.clone(),
+            ) {
+                Ok(v) => Ok(StreamEncoder::Video(Box::new(v))),
+                Err(e) if primary == Codec::X264 => {
+                    warn!(CandyWarn::CodecFallback(format!(
+                        "x264 unavailable ({e}); falling back to h264 (openh264)"
+                    )));
+                    let fb = encode::video::StreamingVideo::new(
+                        fps,
+                        Codec::H264,
+                        container,
+                        meta,
+                        tw,
+                        th,
+                        audio,
+                    )?;
+                    Ok(StreamEncoder::Video(Box::new(fb)))
+                }
+                Err(e) => Err(e),
+            }
         }
     }
 

@@ -41,26 +41,25 @@ touches the content of another.
 
 ## Codec Architecture
 
-### Self-contained (no system deps)
+### Default path (requires system ffmpeg)
 | Codec | Encoder | Container |
 |---|---|---|
-| `av1` | rav1e (pure Rust) | MP4/MKV/WebM |
-| `h264` (default) | openh264 | MP4/MKV/WebM |
+| `x264` (default) | libx264 via ffmpeg | MP4/MKV/WebM |
 
-### FFmpeg-backed (runtime-detected)
+### Self-contained (no system deps, fallback when ffmpeg unavailable)
+| Codec | Encoder | Container |
+|---|---|---|
+| `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM |
+| `av1` | rav1e (pure Rust) | MP4/MKV/WebM |
+
+### FFmpeg-backed (runtime-detected, no cargo dep)
 | Codec | ffmpeg encoder | Notes |
 |---|---|---|
-| `x264` | libx264 | Higher quality than openh264 |
-| `x265` | libx265 | HEVC |
-| `h264-vaapi` | h264_vaapi | Linux Intel/AMD GPU |
-| `h265-vaapi` | hevc_vaapi | Linux Intel/AMD GPU |
-| `av1-vaapi` | av1_vaapi | Linux Intel/AMD GPU |
-| `h264-videotoolbox` | h264_videotoolbox | macOS hardware |
-| `h265-videotoolbox` | hevc_videotoolbox | macOS hardware |
-| `h264-qsv` | h264_qsv | Intel Quick Sync (**Windows**) |
-| `h265-qsv` | hevc_qsv | Intel Quick Sync (**Windows**) |
-| `vp9` | libvpx-vp9 | WebM |
-| `vp8` | libvpx | WebM |
+| `x265` | libx265 | HEVC/H.265 |
+| `h264-vaapi` / `h265-vaapi` / `av1-vaapi` | h264_vaapi / hevc_vaapi / av1_vaapi | Linux Intel/AMD GPU |
+| `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware |
+| `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync (**Windows**) |
+| `vp9` / `vp8` | libvpx-vp9 / libvpx | WebM |
 
 > **Platform availability.** The hardware encoders above are conditionally compiled
 > (`#[cfg(target_os = "...")]`): `h264-vaapi` / `h265-vaapi` / `av1-vaapi` appear

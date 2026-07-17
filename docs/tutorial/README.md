@@ -46,9 +46,9 @@ cargo build --release
 - (Optional) [Typst](https://github.com/typst/typst) — only to *preview* the first
   frame of a `.tyx` with `typst compile`. Candy does its own in-process rendering and
   does **not** shell out to the Typst CLI.
-- (Optional) `ffmpeg` on `$PATH` — unlocks higher-quality / hardware-accelerated
-  codecs (`x264`, `x265`, `*-vaapi`, `*-videotoolbox`, `*-qsv`). Without it, Candy
-  uses its self-contained AV1 (rav1e) / H.264 (openh264) encoders.
+- (Optional) `ffmpeg` on `$PATH` — required for the default `x264` codec; unlocks
+  higher-quality codecs (`x265`, `*-vaapi`, `*-videotoolbox`, `*-qsv`). Without it,
+  Candy falls back to self-contained AV1 (rav1e) / H.264 (openh264) encoders.
 
 **Offline builds.** The default `system-downloader` feature fetches `@preview`
 packages from Typst Universe at render time (pure-Rust TLS, no OpenSSL). For a fully

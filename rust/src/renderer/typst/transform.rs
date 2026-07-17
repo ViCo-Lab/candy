@@ -18,7 +18,7 @@ use typst_svg::SvgOptions;
 use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
 use crate::renderer::typst::{
-    collect_formula_leaves, imports_preamble, localize_formula_ids, Renderer, PT_PER_CM,
+    PT_PER_CM, Renderer, collect_formula_leaves, imports_preamble, localize_formula_ids,
 };
 use typst_library::foundations::Dict;
 
@@ -300,10 +300,10 @@ impl Renderer {
             let (tx, ty) = tl(&new_frags[*n].0);
             anims.push(GlyphAnim {
                 src: 0,
-                bx0: old_frags[*o].0 .0,
-                by0: old_frags[*o].0 .1,
-                bx1: old_frags[*o].0 .2,
-                by1: old_frags[*o].0 .3,
+                bx0: old_frags[*o].0.0,
+                by0: old_frags[*o].0.1,
+                bx1: old_frags[*o].0.2,
+                by1: old_frags[*o].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
@@ -313,10 +313,10 @@ impl Renderer {
                 // Matched glyph draws from the new formula after the midpoint, so
                 // it needs the *new* glyph's own clip box (not its old box, which
                 // would land on empty space in the new formula).
-                nbx0: new_frags[*n].0 .0,
-                nby0: new_frags[*n].0 .1,
-                nbx1: new_frags[*n].0 .2,
-                nby1: new_frags[*n].0 .3,
+                nbx0: new_frags[*n].0.0,
+                nby0: new_frags[*n].0.1,
+                nbx1: new_frags[*n].0.2,
+                nby1: new_frags[*n].0.3,
             });
         }
 
@@ -332,20 +332,20 @@ impl Renderer {
                     .unwrap_or((fx, fy));
             anims.push(GlyphAnim {
                 src: 0,
-                bx0: old_frags[o].0 .0,
-                by0: old_frags[o].0 .1,
-                bx1: old_frags[o].0 .2,
-                by1: old_frags[o].0 .3,
+                bx0: old_frags[o].0.0,
+                by0: old_frags[o].0.1,
+                bx1: old_frags[o].0.2,
+                by1: old_frags[o].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
                 to_y: ty,
                 from_op: 1.0,
                 to_op: 0.0,
-                nbx0: old_frags[o].0 .0,
-                nby0: old_frags[o].0 .1,
-                nbx1: old_frags[o].0 .2,
-                nby1: old_frags[o].0 .3,
+                nbx0: old_frags[o].0.0,
+                nby0: old_frags[o].0.1,
+                nbx1: old_frags[o].0.2,
+                nby1: old_frags[o].0.3,
             });
         }
 
@@ -361,20 +361,20 @@ impl Renderer {
                     .unwrap_or((tx, ty));
             anims.push(GlyphAnim {
                 src: 1,
-                bx0: new_frags[n].0 .0,
-                by0: new_frags[n].0 .1,
-                bx1: new_frags[n].0 .2,
-                by1: new_frags[n].0 .3,
+                bx0: new_frags[n].0.0,
+                by0: new_frags[n].0.1,
+                bx1: new_frags[n].0.2,
+                by1: new_frags[n].0.3,
                 from_x: fx,
                 from_y: fy,
                 to_x: tx,
                 to_y: ty,
                 from_op: 0.0,
                 to_op: 1.0,
-                nbx0: new_frags[n].0 .0,
-                nby0: new_frags[n].0 .1,
-                nbx1: new_frags[n].0 .2,
-                nby1: new_frags[n].0 .3,
+                nbx0: new_frags[n].0.0,
+                nby0: new_frags[n].0.1,
+                nbx1: new_frags[n].0.2,
+                nby1: new_frags[n].0.3,
             });
         }
         Some(TransformFragmentPlan {
@@ -701,7 +701,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{match_shapes, ShapeUnit};
+    use super::{ShapeUnit, match_shapes};
 
     fn unit(sig: &str, cx: f64, cy: f64) -> ShapeUnit {
         ShapeUnit {

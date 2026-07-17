@@ -10,7 +10,8 @@ or static PNG posters. Inspired by 3Blue1Brown's
 [kino](https://github.com/aualbert/kino).
 
 The backend is written in Rust and renders **in-process** with the `typst` compiler
-library — no CLI invocation, no FFmpeg required for the default codecs.
+library — no CLI invocation. Default codec (`x264`) requires system `ffmpeg`; falls back
+to self-contained openh264 (`h264`) when unavailable.
 
 ## Where to start
 
