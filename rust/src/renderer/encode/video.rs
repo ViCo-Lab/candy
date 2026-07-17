@@ -20,9 +20,14 @@
 //!   These are runtime-detected; if the hardware encoder is unavailable,
 //!   candy falls back to the software equivalent.
 //!
-//! The FFmpeg path pipes raw RGBA frames to ffmpeg's stdin and reads the
-//! muxed output from stdout — no temp files, no cargo dependency on ffmpeg.
-//! If ffmpeg is not found, candy falls back to the self-contained codecs.
+//! The FFmpeg path pipes raw RGBA frames to ffmpeg's stdin and has ffmpeg
+//! write the muxed container to a seekable sink (stdout pipes can't be seeked
+//! by the MP4/MKV/WebM muxers, and a piped stderr would deadlock on a long
+//! encode). On Linux that sink is an in-RAM `memfd` (no disk temp file, faster,
+//! works on read-only filesystems); elsewhere it falls back to a temp file.
+//! The container is then copied to the final output. No cargo dependency on
+//! ffmpeg. If ffmpeg is not found, candy falls back to the self-contained
+//! codecs.
 //!
 //! Typst auto-sizes each page to its content, so per-frame sizes can vary. We
 //! *compose* every frame onto a uniform opaque-white canvas of the largest size
@@ -30,15 +35,16 @@
 
 use std::fs;
 use std::io::Write;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin};
 
 use crate::core::diag::{CandyError, CandyWarn};
 use crate::core::meta::PrivateMeta;
-use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
+use crate::renderer::encode::ffmpeg::{ErrLog, MuxSink};
+use crate::renderer::RenderedFrame;
 use crate::warn;
 
 /// Video codec selector.
@@ -59,30 +65,40 @@ pub enum Codec {
     X265,
     /// H.264 via VAAPI (Linux Intel/AMD GPU hardware encoder).
     /// Falls back to openh264 if ffmpeg or the VAAPI device is unavailable.
+    #[cfg(target_os = "linux")]
     H264Vaapi,
     /// H.265 via VAAPI.
+    #[cfg(target_os = "linux")]
     H265Vaapi,
     /// H.264 via VideoToolbox (macOS hardware encoder).
+    #[cfg(target_os = "macos")]
     H264VideoToolbox,
     /// H.265 via VideoToolbox.
+    #[cfg(target_os = "macos")]
     H265VideoToolbox,
     /// H.264 via Intel Quick Sync Video (QSV).
+    #[cfg(target_os = "windows")]
     H264Qsv,
     /// H.265 via Intel QSV.
+    #[cfg(target_os = "windows")]
     H265Qsv,
     /// AV1 via VAAPI (Linux Intel/AMD GPU hardware encoder).
+    #[cfg(target_os = "linux")]
     Av1Vaapi,
     /// VP9 via libvpx (system ffmpeg).
     Vp9,
     /// VP8 via libvpx (system ffmpeg).
     Vp8,
-    /// H.264 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// H.264 via direct libva (Linux hardware). Falls back to openh264 if the
+    /// VAAPI device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     H264Libva,
-    /// H.265 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// H.265 via direct libva (Linux hardware). Falls back to AV1 (rav1e) if the
+    /// VAAPI device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     H265Libva,
-    /// AV1 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// AV1 via direct libva (Linux hardware). Falls back to rav1e if the VAAPI
+    /// device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     Av1Libva,
 }
@@ -192,17 +208,16 @@ impl Codec {
     /// Returns `true` if this codec should shell out to system ffmpeg
     /// (rather than using candy's self-contained rav1e/openh264 encoders).
     pub fn uses_ffmpeg(self) -> bool {
-        matches!(
-            self,
-            Codec::X264
-                | Codec::X265
-                | Codec::H264Vaapi
-                | Codec::H265Vaapi
-                | Codec::H264VideoToolbox
-                | Codec::H265VideoToolbox
-                | Codec::H264Qsv
-                | Codec::H265Qsv
-        )
+        match self {
+            Codec::X264 | Codec::X265 => true,
+            #[cfg(target_os = "linux")]
+            Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi => true,
+            #[cfg(target_os = "macos")]
+            Codec::H264VideoToolbox | Codec::H265VideoToolbox => true,
+            #[cfg(target_os = "windows")]
+            Codec::H264Qsv | Codec::H265Qsv => true,
+            _ => false,
+        }
     }
 
     /// Returns `true` if candy has a self-contained encoder for this codec
@@ -223,6 +238,22 @@ impl Codec {
     pub fn uses_libva(self) -> bool {
         false
     }
+
+    /// Map a libva (direct VAAPI) codec to the self-contained software codec
+    /// used when the hardware encoder is unavailable. `H264Libva` → `H264`
+    /// (openh264), `Av1Libva` → `Av1` (rav1e); `H265Libva` has no pure-Rust
+    /// encoder, so it falls back to `Av1` (rav1e, always self-contained) to
+    /// avoid requiring ffmpeg.
+    #[cfg(target_os = "linux")]
+    pub fn libva_fallback(self) -> Codec {
+        match self {
+            Codec::H264Libva => Codec::H264,
+            Codec::H265Libva => Codec::Av1,
+            Codec::Av1Libva => Codec::Av1,
+            // Defensive: any non-libva codec maps to the default software codec.
+            _ => Codec::H264,
+        }
+    }
 }
 
 /// A streaming video encoder: frames are pushed one at a time and the muxed
@@ -241,7 +272,7 @@ pub(crate) struct StreamingVideo {
     tw: usize,
     th: usize,
     audio: Option<AudioData>,
-    ffmpeg: Option<(Child, std::io::BufWriter<ChildStdin>, PathBuf)>,
+    ffmpeg: Option<(Child, std::io::BufWriter<ChildStdin>, MuxSink, ErrLog)>,
     frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
@@ -265,10 +296,20 @@ impl StreamingVideo {
         if fps < 1 {
             return Err(CandyError::Encode("fps must be >= 1".into()));
         }
+        // Every video encoder (libx264/x265, openh264, rav1e, VAAPI, …) requires
+        // even picture dimensions — some need multiples of 16. The batch
+        // `encode_frames` path pads the canvas with `max(16).next_multiple_of(2)`,
+        // but the streaming path used to forward `tw`/`th` verbatim, so an odd
+        // natural page width (e.g. 907px) made ffmpeg abort with "width not
+        // divisible by 2", killing its stdin pipe and surfacing as a misleading
+        // "Broken pipe" error. Pad here so the composed frames, the encoder
+        // setup, and the ffmpeg `-s` argument all agree on an even canvas.
+        let tw = tw.max(16).next_multiple_of(2);
+        let th = th.max(16).next_multiple_of(2);
         let uses_ffmpeg = codec.uses_ffmpeg()
             || (codec == Codec::H265 && crate::renderer::encode::ffmpeg::find_ffmpeg().is_some());
         if uses_ffmpeg {
-            let (child, stdin, tmp) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
+            let (child, stdin, mux, err_log) = crate::renderer::encode::ffmpeg::spawn_ffmpeg(
                 codec, container, tw as u32, th as u32, fps, meta,
             )?;
             Ok(Self {
@@ -280,7 +321,8 @@ impl StreamingVideo {
                 ffmpeg: Some((
                     child,
                     std::io::BufWriter::with_capacity(1 << 20, stdin),
-                    tmp,
+                    mux,
+                    err_log,
                 )),
                 frame_count: 0,
                 rav1e: None,
@@ -323,6 +365,46 @@ impl StreamingVideo {
                 #[cfg(target_os = "linux")]
                 libva: None,
             })
+        } else if codec.uses_libva() {
+            // Direct VAAPI (libva) hardware encoder (Linux-only). The libva
+            // codecs are only defined on Linux, so `uses_libva()` is always
+            // `false` on other platforms and this branch is unreachable there.
+            #[cfg(target_os = "linux")]
+            {
+                if !crate::renderer::encode::libva::is_available()
+                    || crate::renderer::encode::ffmpeg::find_ffmpeg().is_none()
+                {
+                    // Hardware encoder unavailable: warn and transparently fall
+                    // back to the equivalent self-contained software codec so a
+                    // valid video is still produced. Mirrors the documented
+                    // fallback behavior of the sibling `*-vaapi` ffmpeg codecs.
+                    let fb = codec.libva_fallback();
+                    warn!(CandyWarn::LibvaFallback(format!(
+                        "{codec:?} unavailable (no VAAPI device or ffmpeg); \
+                         falling back to {fb:?}"
+                    )));
+                    return Self::new(fps, fb, container, meta, tw, th, audio);
+                }
+                let lv = crate::renderer::encode::libva::LibvaStream::new(
+                    codec, tw, th, fps, container, meta,
+                )?;
+                Ok(Self {
+                    container,
+                    meta: meta.clone(),
+                    tw,
+                    th,
+                    audio,
+                    ffmpeg: None,
+                    frame_count: 0,
+                    rav1e: None,
+                    h264: None,
+                    libva: Some(lv),
+                })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                unreachable!("libva codecs are only defined on Linux")
+            }
         } else {
             // H265 without ffmpeg, or any other unsupported codec.
             Err(CandyError::Encode(
@@ -337,7 +419,7 @@ impl StreamingVideo {
     /// dropped here, so the caller is free to release it immediately.
     pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
         let composed = compose(frame, self.tw, self.th);
-        if let Some((_, stdin, _)) = self.ffmpeg.as_mut() {
+        if let Some((_, stdin, _, _)) = self.ffmpeg.as_mut() {
             stdin
                 .write_all(&composed.rgba)
                 .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
@@ -384,9 +466,17 @@ impl StreamingVideo {
     /// metadata — the whole container is never buffered in RAM (which would OOM
     /// on a long HD/high-FPS render).
     pub(crate) fn finish(self, output: &Path) -> Result<(), CandyError> {
-        if let Some((child, stdin, tmp)) = self.ffmpeg {
+        if let Some((child, stdin, mux, err_log)) = self.ffmpeg {
             drop(stdin);
-            return crate::renderer::encode::ffmpeg::finish_ffmpeg_to_file(child, &tmp, output);
+            return crate::renderer::encode::ffmpeg::finish_ffmpeg_to_file(
+                child, mux, output, err_log,
+            );
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(lv) = self.libva {
+            // `LibvaStream::finish` muxes the encoded stream directly to `output`
+            // (with optional audio), returning `()`; no temp-file copy is needed.
+            return lv.finish(output, self.audio.as_ref());
         }
         let video = if let Some(r) = self.rav1e {
             r.finish_file()?
@@ -625,6 +715,16 @@ impl GifStream {
         if fps < 1 {
             return Err(CandyError::Encode("fps must be >= 1".into()));
         }
+        // Every video encoder (libx264/x265, openh264, rav1e, VAAPI, …) requires
+        // even picture dimensions — some need multiples of 16. The batch
+        // `encode_frames` path pads the canvas with `max(16).next_multiple_of(2)`,
+        // but the streaming path used to forward `tw`/`th` verbatim, so an odd
+        // natural page width (e.g. 907px) made ffmpeg abort with "width not
+        // divisible by 2", killing its stdin pipe and surfacing as a misleading
+        // "Broken pipe" error. Pad here so the composed frames, the encoder
+        // setup, and the ffmpeg `-s` argument all agree on an even canvas.
+        let tw = tw.max(16).next_multiple_of(2);
+        let th = th.max(16).next_multiple_of(2);
         let tw = tw.max(1) as u16;
         let th = th.max(1) as u16;
         let file = fs::File::create(path)?;
@@ -706,7 +806,7 @@ pub fn write_png(
     path: &Path,
     private_metadata: &PrivateMeta,
 ) -> Result<(), CandyError> {
-    use png::{BitDepth, ColorType, text_metadata::TEXtChunk};
+    use png::{text_metadata::TEXtChunk, BitDepth, ColorType};
     let file = fs::File::create(path)?;
     let mut enc = png::Encoder::new(file, frame.width as u32, frame.height as u32);
     enc.set_color(ColorType::Rgba);

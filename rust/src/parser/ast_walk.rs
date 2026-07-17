@@ -26,7 +26,7 @@ use crate::core::ast::{
     AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene, SceneInfo,
     Slide, Subtitle,
 };
-use crate::core::diag::CandyError;
+use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::meta::PrivateMeta;
 
 use crate::parser::directives::process_call;
@@ -54,7 +54,11 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     let root = parse(&raw);
     let node = LinkedNode::new(&root);
 
-    let mut ctx = ParseCtx::default();
+    // Record the source file path so diagnostics can point at the real file.
+    let mut ctx = ParseCtx {
+        file_path: path.to_path_buf(),
+        ..Default::default()
+    };
     // The whole document is the implicit root scope (id 0).
     ctx.scope_stack.push(0);
     ctx.scope_starts.insert(0, 0);
@@ -139,6 +143,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
              documents that import `@preview/candy` (its static content must be \
              owned by the implicit root scene)"
                 .into(),
+            None,
         ));
     }
 
@@ -167,16 +172,20 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
             mobject_body: ctx.mobject_body_ranges.clone(),
             scene_call: ctx.scene_call_ranges.clone(),
             subtitle_call: ctx.subtitle_call_ranges.clone(),
+            label_locs: ctx.label_locs.clone(),
         },
         private_metadata: private,
     };
-    scene.validate().map_err(CandyError::Parse)?; // E002
+    scene.validate().map_err(|m| CandyError::Parse(m, None))?; // E002
     Ok(scene)
 }
 
 /// Accumulated parse state.
 #[derive(Default)]
 pub(crate) struct ParseCtx {
+    /// Absolute path of the `.tyx` being parsed (used to build `SourceLoc`s
+    /// for diagnostics so errors/warnings point at the real file).
+    pub(crate) file_path: std::path::PathBuf,
     /// local name -> original Candy symbol (resolved through imports).
     pub(crate) symbol_map: HashMap<String, String>,
     /// Candy module alias names (`candy`, `c`, ...) bound by a bare
@@ -227,6 +236,18 @@ pub(crate) struct ParseCtx {
     /// Easing counters.
     pub(crate) counters: Vec<CounterDef>,
     pub(crate) counter_events: Vec<CounterEvent>,
+    /// Per-scope registry of declared **mobject labels** (scope id → labels).
+    /// Used to detect a label redefined in the *same* lexical scope (which
+    /// warns + shadows) while a redefinition inside a *nested* scope is
+    /// legitimate Typst shadowing and is left alone.
+    pub(crate) mobject_names: HashMap<String, HashSet<String>>,
+    /// Per-scope registry of declared **ecounter names** (scope id → names),
+    /// mirroring `mobject_names` for the easing-counter namespace.
+    pub(crate) ecounter_names: HashMap<String, HashSet<String>>,
+    /// Source location of every label's declaration (`#mobject` / `#ecounter`),
+    /// keyed by label. Fed into `Scene::artifacts.label_locs` so later
+    /// diagnostics (e.g. `E004` LabelNotFound) can point at the declaration.
+    pub(crate) label_locs: HashMap<Label, SourceLoc>,
     /// Lexical scope intervals (finalized on scope exit / at end of parse).
     pub(crate) scopes: Vec<crate::core::ast::ScopeInfo>,
     /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
@@ -1195,5 +1216,103 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         let scene = parse_tyx(&tmp).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert!(scene.items.contains_key(&Label("dot".into())));
+    }
+
+    /// A mobject label redefined in the *same* scope must warn (W014) and let
+    /// the **later** definition shadow the earlier. We assert the shadowing
+    /// outcome (the surviving body is the later one); the warning itself is
+    /// emitted via `warn!` to stderr.
+    #[test]
+    fn duplicate_mobject_same_scope_shadows_later() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm, fill: red))
+#mobject("a", rect(width: 2cm, height: 2cm, fill: blue))
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_dup_mobject.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        // Later definition wins.
+        assert_eq!(
+            scene.items[&Label("a".into())],
+            "rect(width: 2cm, height: 2cm, fill: blue)"
+        );
+    }
+
+    /// Two mobjects with the same label in *different* (nested) scopes are
+    /// legitimate Typst shadowing and must NOT be flagged as duplicates — the
+    /// parser should still succeed without error.
+    #[test]
+    fn nested_scope_mobject_redefinition_is_not_duplicate() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm, fill: red))
+#{
+  #mobject("a", rect(width: 2cm, height: 2cm, fill: blue))
+}
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_nested_mobject.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        // Both declarations parse; the inner (later) body is the surviving one
+        // in the global `items` map. The point is no error / no duplicate warn.
+        assert_eq!(
+            scene.items[&Label("a".into())],
+            "rect(width: 2cm, height: 2cm, fill: blue)"
+        );
+    }
+
+    /// An ecounter redefined in the *same* scope must warn (W014) and let the
+    /// **later** definition shadow the earlier. We assert the shadowing
+    /// outcome: exactly one `CounterDef` with that name survives, carrying the
+    /// later seed.
+    #[test]
+    fn duplicate_ecounter_same_scope_shadows_later() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#ecounter("k", seed: 1, step: 1)
+#ecounter("k", seed: 99, step: 2)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_dup_ecounter.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        let same: Vec<&crate::core::ast::CounterDef> =
+            scene.counters.iter().filter(|c| c.name == "k").collect();
+        // The duplicate is collapsed: only the later definition survives.
+        assert_eq!(same.len(), 1, "duplicate ecounter should shadow to one def");
+        assert_eq!(same[0].seed, 99, "later ecounter seed should win");
+        assert_eq!(same[0].step, 2);
+    }
+
+    /// Two ecounters with the same name in *different* (nested) scopes are
+    /// legitimate Typst shadowing: both `CounterDef`s survive (resolved at
+    /// runtime by scope depth) and must NOT warn.
+    #[test]
+    fn nested_scope_ecounter_redefinition_is_not_duplicate() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#ecounter("k", seed: 1)
+#{
+  #ecounter("k", seed: 2)
+}
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_nested_ecounter.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        let same: Vec<&crate::core::ast::CounterDef> =
+            scene.counters.iter().filter(|c| c.name == "k").collect();
+        assert_eq!(same.len(), 2, "nested ecounter redefinitions both survive");
     }
 }

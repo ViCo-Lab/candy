@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::diag::SourceLoc;
 use crate::core::easing::Easing;
 use crate::core::meta::PrivateMeta;
 
@@ -574,6 +575,12 @@ pub struct ParseArtifacts {
     /// by the global camera, once as the fixed overlay) — the "基底未过滤字幕"
     /// rendering anomaly.
     pub subtitle_call: HashMap<String, (usize, usize)>,
+    /// Source location of every label's *declaration* (`#mobject("x", …)` /
+    /// `#ecounter("x", …)`), keyed by label. Used to point the user at the
+    /// exact code when a label later causes a diagnostic (e.g. `E004`
+    /// LabelNotFound). Not serialized (it is a re-derivable cache of the
+    /// source), default-empty so synthetic `Scene`s (tests) stay trivial.
+    pub label_locs: HashMap<Label, SourceLoc>,
 }
 
 impl Scene {

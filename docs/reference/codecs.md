@@ -20,7 +20,26 @@ hardware-accelerated codecs — runtime-detected, no cargo dependency.
 | `x265` | libx265 | H.265/HEVC. |
 | `h264-vaapi` / `h265-vaapi` | h264_vaapi / hevc_vaapi | Linux Intel/AMD GPU. |
 | `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware. |
-| `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video. |
+| `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video (**Windows**). |
+
+> **Platform availability.** The hardware encoders above are conditionally compiled
+> (`#[cfg(target_os = "...")]`): `h264-vaapi` / `h265-vaapi` / `av1-vaapi` appear
+> only on **Linux**, `h264-videotoolbox` / `h265-videotoolbox` only on **macOS**,
+> and `h264-qsv` / `h265-qsv` only on **Windows**. On other platforms they are
+> absent from `--help` and the `--codec` selection interface.
+
+## VAAPI / libva (Linux-only, independent group)
+
+| `--codec` | Notes |
+|---|---|
+| `h264-libva` | Direct VAAPI H.264, no ffmpeg subprocess (Linux Intel/AMD GPU). |
+| `h265-libva` | Direct VAAPI HEVC. |
+| `av1-libva` | Direct VAAPI AV1. |
+
+These are `#[cfg(target_os = "linux")]` gated — they only appear in `--help`
+on Linux. They require `/dev/dri/renderD128` (Intel/AMD GPU) and use
+`LibvaStream` with a 1MB BufWriter and `-low_power 1` for minimal latency. If
+VAAPI is unavailable, `LibvaStream::new` returns E007.
 
 If ffmpeg is not found, Candy falls back to the self-contained codecs or returns E007
 (`h265`/`x264`/`x265` without ffmpeg).

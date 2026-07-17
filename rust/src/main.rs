@@ -160,24 +160,31 @@ enum CodecArg {
     /// H.265 via system ffmpeg + libx265.
     X265,
     /// H.264 via VAAPI (Linux Intel/AMD GPU hardware encoder).
+    #[cfg(target_os = "linux")]
     #[value(name = "h264-vaapi")]
     H264Vaapi,
     /// H.265 via VAAPI.
+    #[cfg(target_os = "linux")]
     #[value(name = "h265-vaapi")]
     H265Vaapi,
     /// H.264 via VideoToolbox (macOS hardware encoder).
+    #[cfg(target_os = "macos")]
     #[value(name = "h264-videotoolbox")]
     H264VideoToolbox,
     /// H.265 via VideoToolbox.
+    #[cfg(target_os = "macos")]
     #[value(name = "h265-videotoolbox")]
     H265VideoToolbox,
     /// H.264 via Intel Quick Sync Video (QSV).
+    #[cfg(target_os = "windows")]
     #[value(name = "h264-qsv")]
     H264Qsv,
     /// H.265 via Intel QSV.
+    #[cfg(target_os = "windows")]
     #[value(name = "h265-qsv")]
     H265Qsv,
     /// AV1 via VAAPI (Linux hardware encoder).
+    #[cfg(target_os = "linux")]
     #[value(name = "av1-vaapi")]
     Av1Vaapi,
     /// VP9 via libvpx (system ffmpeg).
@@ -186,15 +193,18 @@ enum CodecArg {
     /// VP8 via libvpx (system ffmpeg).
     #[value(name = "vp8")]
     Vp8,
-    /// H.264 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// H.264 via direct libva (Linux hardware). Falls back to openh264 if the
+    /// VAAPI device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     #[value(name = "h264-libva")]
     H264Libva,
-    /// H.265 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// H.265 via direct libva (Linux hardware). Falls back to AV1 (rav1e) if the
+    /// VAAPI device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     #[value(name = "h265-libva")]
     H265Libva,
-    /// AV1 via direct libva (Linux hardware, no ffmpeg subprocess).
+    /// AV1 via direct libva (Linux hardware). Falls back to rav1e if the VAAPI
+    /// device or ffmpeg is unavailable (W015).
     #[cfg(target_os = "linux")]
     #[value(name = "av1-libva")]
     Av1Libva,
@@ -299,12 +309,19 @@ fn run() -> Result<(), CandyError> {
                         CodecArg::H265 => Codec::H265,
                         CodecArg::X264 => Codec::X264,
                         CodecArg::X265 => Codec::X265,
+                        #[cfg(target_os = "linux")]
                         CodecArg::H264Vaapi => Codec::H264Vaapi,
+                        #[cfg(target_os = "linux")]
                         CodecArg::H265Vaapi => Codec::H265Vaapi,
+                        #[cfg(target_os = "macos")]
                         CodecArg::H264VideoToolbox => Codec::H264VideoToolbox,
+                        #[cfg(target_os = "macos")]
                         CodecArg::H265VideoToolbox => Codec::H265VideoToolbox,
+                        #[cfg(target_os = "windows")]
                         CodecArg::H264Qsv => Codec::H264Qsv,
+                        #[cfg(target_os = "windows")]
                         CodecArg::H265Qsv => Codec::H265Qsv,
+                        #[cfg(target_os = "linux")]
                         CodecArg::Av1Vaapi => Codec::Av1Vaapi,
                         CodecArg::Vp9 => Codec::Vp9,
                         CodecArg::Vp8 => Codec::Vp8,

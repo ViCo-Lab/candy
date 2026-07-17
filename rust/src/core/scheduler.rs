@@ -669,10 +669,13 @@ fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
     for f in frames {
         if let Some((ref lbl, idx)) = last {
             if lbl == &f.target && f.time_ms < idx {
-                return Err(CandyError::Parse(format!(
-                    "scheduler: non-monotonic time_ms for @{} ({} < {})",
-                    f.target.0, f.time_ms, idx
-                )));
+                return Err(CandyError::Parse(
+                    format!(
+                        "scheduler: non-monotonic time_ms for @{} ({} < {})",
+                        f.target.0, f.time_ms, idx
+                    ),
+                    None,
+                ));
             }
         }
         last = Some((f.target.clone(), f.time_ms));

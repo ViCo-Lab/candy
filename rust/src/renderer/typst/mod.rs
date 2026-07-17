@@ -184,7 +184,9 @@ pub struct Renderer {
     /// (compile) is keyed by `(source, inputs)`; for animated content the
     /// `inputs` differ every frame, so the compiled document is re-evaluated
     /// each frame — the AST parse is what stays shared.) `String::is_empty()`
-    /// ⇒ no artifacts ⇒ legacy path.
+    /// ⇒ no artifacts ⇒ the whole-document path compiles an empty `param_source`
+    /// (only used by hand-built test scenes that don't render; real scenes are
+    /// parsed from a `.tyx` and carry a non-empty `artifacts.source`).
     param_source: String,
     /// Precomputed cache-key prefix for [`param_source`]: a 64-bit hash of the
     /// (stable) whole-document source. [`Renderer::compile_param_source`] builds
@@ -204,15 +206,19 @@ impl Renderer {
     }
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
-        scene.validate().map_err(CandyError::Parse)?;
-        // Build the stable parameterized whole-document source once (only when
-        // the parsed `.tyx` carries render artifacts; legacy hand-built scenes
-        // leave it empty and use the per-object path).
-        let param_source = if scene.artifacts.source.is_empty() {
-            String::new()
-        } else {
-            Self::build_parameterized_source(&scene)
-        };
+        scene.validate().map_err(|m| CandyError::Parse(m, None))?;
+        // Hand-built scenes (unit tests, programmatic callers) carry no parsed
+        // `.tyx`, so `artifacts.source` is empty. Synthesize a whole-document
+        // source from `scene.items` so the single whole-doc render path can
+        // still drive per-frame inputs (transform body swaps, reveals, ecval
+        // counters, …) instead of rendering a blank page.
+        let mut scene = scene;
+        if scene.artifacts.source.is_empty() {
+            let (src, mobject_body) = Self::synthesize_handbuilt_source(&scene);
+            scene.artifacts.source = src;
+            scene.artifacts.mobject_body = mobject_body;
+        }
+        let param_source = Self::build_parameterized_source(&scene);
         // Precompute a 64-bit hash of the (stable) whole-document source so the
         // per-frame cache key can reference it without copying the source text.
         let param_source_key = {
@@ -281,7 +287,7 @@ impl Renderer {
     /// Compile a Typst source, memoized by the exact source string.
     ///
     /// This is the unified compile entry point for every object render path
-    /// (`render_object_svg`, `render_frame`). It is
+    /// (`render_frame`, `body_largest_shape`, and the whole-document path). It is
     /// behavior-preserving: identical `(source, inputs)` → identical document.
     /// The win is that frames sharing a source (static / paused objects, or a
     /// counter value that repeats) skip a redundant Typst compile. Bodies that
@@ -493,48 +499,26 @@ fn path_parser_includes_bezier_control_points() {
 /// the switch and the NEW content after, without corrupting earlier frames).
 #[test]
 fn content_timeline_swaps_rendered_body() {
-    use crate::core::ast::{Label, Scene, Slide};
-    use crate::core::meta::PrivateMeta;
-    use std::collections::HashMap;
-    let mut items = HashMap::new();
-    items.insert(Label("box".into()), "rect(width: 2cm, height: 2cm)".into());
-    let mut timeline = HashMap::new();
-    timeline.insert(
-        Label("box".into()),
-        vec![(50u32, "circle(radius: 1cm)".to_string())],
-    );
-    let scene = Scene {
-        slides: vec![Slide {
-            duration_ms: 100,
-            actions: vec![],
-        }],
-        items,
-        content_timeline: timeline,
-        initial: HashMap::new(),
-        audio: Vec::new(),
-        imports: Vec::new(),
-        page_size: None,
-        subtitles: Vec::new(),
-        counters: Vec::new(),
-        counter_events: Vec::new(),
-        scopes: Vec::new(),
-        scenes: Vec::new(),
-        root_scene: None,
-        morph_pairs: Vec::new(),
-        transform_plans: Vec::new(),
-        groups: HashMap::new(),
-        artifacts: ParseArtifacts::default(),
-        private_metadata: PrivateMeta::default(),
-    };
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"box\", rect(width: 2cm, height: 2cm))\n\
+               #transform(\"box\", to: circle(radius: 1cm), duration: 50)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_content_swap.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     // Before the switch (t=0): should render the original `rect`.
     let before = r.render_frame_at(0, &[]).unwrap();
-    // After the switch (t=100): should render the new `circle`.
+    // After the switch (t=100): should render the new `circle` (the `#transform`
+    // records a `content_timeline` swap at `cursor + 1`, so by t=100 the body is
+    // the new `circle`).
     let after = r.render_frame_at(100, &[]).unwrap();
     assert_ne!(
         before, after,
         "content timeline did not change rendered body"
     );
+    std::fs::remove_file(&tmp).ok();
 }
 #[test]
 fn substitute_counters_expands_ecval_as_ast_node() {
@@ -1012,17 +996,170 @@ fn transform_target_renders_after_window() {
     let svg_mid = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
     assert!(svg_mid.contains("<svg"), "mid-window svg empty");
     // After window (past the transform's end_ms, still inside the document): the
-    // target shows its new content — the whole-document render must therefore
-    // emit glyph drawing (`<path`) beyond the background `<rect>`, not just an
-    // empty background. Scenes are mutually exclusive slides, so this also
-    // verifies the scene stays on stage (its interval is extended to the
-    // document end) and the target is not hidden.
+    // target shows its NEW content — the whole-document render must therefore
+    // emit the *transformed* formula, not snap back to the original. We pin
+    // this by comparing the number of distinct glyph `<symbol>`s before vs
+    // after: the original `$a + b = c$` has 5 distinct glyphs, the new
+    // `$a + b + d = c$` has 6. A snap-back to the original would leave
+    // the two counts equal (regression for bug 1).
+    let before = 0u32;
+    let svg_before = String::from_utf8(r.render_frame_at(before, &frames).unwrap()).unwrap();
     let after = 90u32;
     let svg_after = String::from_utf8(r.render_frame_at(after, &frames).unwrap()).unwrap();
-    let glyphs = svg_after.matches("<path").count();
+    // Collect the SET of glyph symbols each frame references (order/content
+    // independent of position). The original `$a + b = c$` is a strict
+    // subset of the new `$a + b + d = c$` (which adds the `d`
+    // glyph). A snap-back to the original would make the two sets
+    // EQUAL, so we assert the after-set is a strict superset.
+    // Only count *formula glyph* references — Typst emits each glyph as a
+    // `<symbol id="g<hex>">` referenced via `<use xlink:href="#g<hex>">`.
+    // The transform overlay embeds its own `<g id="tf_eq_…">` groups and
+    // references them via `<use xlink:href="#tf_eq_…">`, which would otherwise
+    // pollute the set; filter to ids that are a `g` followed by pure hex.
+    let set_of = |svg: &str| -> std::collections::BTreeSet<String> {
+        svg.split("xlink:href=\"#")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap().to_string())
+            .filter(|s| {
+                !s.is_empty() && s.starts_with('g') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            .collect()
+    };
+    let before_set = set_of(&svg_before);
+    let after_set = set_of(&svg_after);
     assert!(
-        glyphs >= 1,
-        "after window target must render its new content (glyph path count={glyphs})"
+        before_set.is_subset(&after_set) && before_set != after_set,
+        "after window target must show the NEW formula (added glyphs); before={:?} after={:?}",
+        before_set,
+        after_set
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression for bug 2: chained `#transform`s must persist each intermediate
+/// result. After the first transform (during the pause, before the second),
+/// the base document must render the *intermediate* formula — not snap back to
+/// the original, and not jump to the final one. With the old code the
+/// whole-document path froze on the original body, so every transform's result
+/// vanished the instant its overlay stopped drawing.
+#[test]
+fn chained_transform_persists_intermediate() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"eq\", [$a + b = c$])\n\
+               #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
+               #pause(duration: 60)\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_xf_chain.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    // Collect the SET of glyph symbols each frame references (order/content
+    // independent of position). Typst dedupes/orders `<symbol>` definitions by
+    // content, so a raw symbol *count* is NOT a reliable content metric (the
+    // original `$a+b=c$` can emit more `<symbol>` defs than a later, longer
+    // formula). The SET of referenced glyph ids, however, is monotonic across
+    // these chained transforms:
+    //   original  `$a + b = c$`       ⊂ intermediate `$a + b + d = c$`
+    //                                    ⊂ final       `$a + b + d + e = c$`
+    // A snap-back to the original (bug 1) or a premature jump to the final
+    // (bug 2) would break one of these strict-subset relations.
+    // Only count *formula glyph* references — Typst emits each glyph as a
+    // `<symbol id="g<hex>">` referenced via `<use xlink:href="#g<hex>">`.
+    // The transform overlay embeds its own `<g id="tf_eq_…">` groups and
+    // references them via `<use xlink:href="#tf_eq_…">`, which would otherwise
+    // pollute the set; filter to ids that are a `g` followed by pure hex.
+    let set_of = |svg: &str| -> std::collections::BTreeSet<String> {
+        svg.split("xlink:href=\"#")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap().to_string())
+            .filter(|s| {
+                !s.is_empty() && s.starts_with('g') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            .collect()
+    };
+    let before = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    let before_set = set_of(&before);
+    // During the pause after the FIRST transform: base must show the
+    // intermediate `$a + b + d = c$` — a strict superset of the original
+    // (adds the `d` glyph, and a second `+`).
+    let mid_pause = 90u32;
+    let svg = String::from_utf8(r.render_frame_at(mid_pause, &frames).unwrap()).unwrap();
+    let mid_set = set_of(&svg);
+    assert!(
+        before_set.is_subset(&mid_set) && before_set != mid_set,
+        "between transforms target must show the intermediate formula (added glyphs); before={:?} mid={:?}",
+        before_set,
+        mid_set
+    );
+    // After BOTH transforms: base must show the final formula `$a + b + d + e = c$`
+    // — a strict superset of the intermediate (adds the `e` glyph).
+    let after_all = 210u32;
+    let svg2 = String::from_utf8(r.render_frame_at(after_all, &frames).unwrap()).unwrap();
+    let after_set = set_of(&svg2);
+    assert!(
+        mid_set.is_subset(&after_set) && mid_set != after_set,
+        "after all transforms target must show the final formula (added glyphs); mid={:?} after={:?}",
+        mid_set,
+        after_set
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: the canvas background must be drawn *outside* the camera group so
+/// it always covers the whole frame, even when the camera zooms/pans/rotates the
+/// mobjects. `typst_svg` emits the page fill as a `<path>` (not a `<rect>`), so
+/// the background must be detected as either tag; otherwise it falls inside the
+/// camera `<g transform>` and shrinks on zoom-out, leaving transparent (uncovered)
+/// edges instead of the canvas background color.
+#[test]
+fn camera_background_stays_fixed_outside_camera_group() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm, bg: rgb(\"#05060f\"))[\n\
+               #mobject(\"a\", circle(radius: 1cm, fill: blue))\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_cam_bg.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    // A zoomed-out camera (scale 0.4) at t=0; with no scene tree it applies
+    // globally. This is the case that exposed the transparent-edge bug.
+    let frames = vec![FrameData {
+        scale: 0.4,
+        ..FrameData::new(0, Label("__camera__".into()))
+    }];
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_natural_public().unwrap();
+    let svg = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    // The canvas background is the *first* shape element in the document
+    // (`<rect>` or `<path>`, as emitted by `typst_svg`).
+    let rect = svg.find("<rect");
+    let path = svg.find("<path");
+    let bg_pos = match (rect, path) {
+        (Some(r), Some(p)) => Some(r.min(p)),
+        (Some(r), None) => Some(r),
+        (None, Some(p)) => Some(p),
+        (None, None) => None,
+    }
+    .expect("canvas background shape must be present in the frame");
+    // The camera group (`<g transform=`) must come AFTER the background, i.e. the
+    // background is fixed outside the camera group and covers the whole canvas
+    // even when the camera zooms out.
+    let cam_pos = svg
+        .find("<g transform=")
+        .expect("camera group must be present in the frame");
+    assert!(
+        bg_pos < cam_pos,
+        "background must be drawn outside (before) the camera group so it covers \
+         the whole canvas even when the camera zooms out (got bg@{bg_pos} cam@{cam_pos})"
+    );
+    // The camera group must actually carry the zoom so the test is meaningful.
+    assert!(
+        svg.contains("scale(0.4)"),
+        "camera group must apply the zoom transform"
     );
     std::fs::remove_file(&tmp).ok();
 }

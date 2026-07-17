@@ -19,25 +19,143 @@
 
 use std::fmt;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 
-use colored::{Color, Colorize};
+/// `Color` is re-exported (pub) so the `error!` / `warn!` macros can refer to
+/// the caret color (`$crate::core::diag::Color::Red` / `::Yellow`) without
+/// naming the `colored` crate directly at every call site.
+pub use colored::{Color, Colorize};
 
 use crate::core::ast::Label;
+
+// ============================== SourceLoc ==============================
+//
+// Every diagnostic that originates from a specific piece of user source
+// (a duplicate name, an unknown label, a syntax problem) carries a `SourceLoc`
+// so the reporter can point the user at the *exact* file:line:col and the
+// offending code — not just a free-text message. This is what turns
+// "mobject name 'a' is redefined…" into something you can actually act on.
+
+/// A source-code location: a file path plus the byte range of the offending
+/// snippet, from which a `path:line:col` header and a caret-annotated source
+/// line are rendered. Optional on a diagnostic (some errors, e.g. an I/O
+/// failure, have no user-source location to point at).
+#[derive(Debug, Clone)]
+pub struct SourceLoc {
+    /// Absolute path of the source file.
+    pub path: PathBuf,
+    /// 1-based line number of `start`.
+    pub line: usize,
+    /// 1-based column (in characters) of `start`.
+    pub col: usize,
+    /// The full text of the line containing `start` (for display).
+    pub line_text: String,
+    /// Byte offset of the start of the offending span.
+    pub start: usize,
+    /// Byte offset of the end of the offending span.
+    pub end: usize,
+}
+
+impl SourceLoc {
+    /// Build a `SourceLoc` from a `path`, the full `raw` source text, and the
+    /// byte `range` of the offending snippet. Computes the 1-based line/column
+    /// and captures the offending line's text so it can be rendered later
+    /// without holding the whole source alive.
+    pub fn at(path: &std::path::Path, raw: &str, range: std::ops::Range<usize>) -> SourceLoc {
+        let mut line = 1usize;
+        let mut col = 1usize;
+        let mut line_start = 0usize;
+        for (i, ch) in raw.char_indices() {
+            if i >= range.start {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+                line_start = i + 1;
+            } else {
+                col += 1;
+            }
+        }
+        let line_text = raw[line_start..].lines().next().unwrap_or("").to_string();
+        SourceLoc {
+            path: path.to_path_buf(),
+            line,
+            col,
+            line_text,
+            start: range.start,
+            end: range.end,
+        }
+    }
+
+    /// Render as:
+    /// ```text
+    /// path:line:col
+    ///   <line_text>
+    ///   <spaces>^^^^^
+    /// ```
+    pub fn render(&self) -> String {
+        let line_len = self.line_text.chars().count();
+        let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
+        let caret_len = (self.end - self.start).clamp(1, avail);
+        let indent = " ".repeat(self.col.saturating_sub(1));
+        let caret = "^".repeat(caret_len);
+        format!(
+            "{}:{}:{}\n  {}\n  {}{}",
+            self.path.display(),
+            self.line,
+            self.col,
+            self.line_text,
+            indent,
+            caret
+        )
+    }
+
+    /// Render with color: the `path:line:col` header in **cyan** and the caret
+    /// in `caret_color` (the level color — red for errors, yellow for warnings).
+    /// Only applies when `is_tty` is true and `NO_COLOR` (https://no-color.org)
+    /// is unset; otherwise falls back to the plain [`SourceLoc::render`] so
+    /// piped / captured output stays ANSI-free (and matches the uncolored
+    /// `error!` / `warn!` behavior on non-terminals).
+    pub fn render_colored(&self, caret_color: Color, is_tty: bool) -> String {
+        if !is_tty || std::env::var_os("NO_COLOR").is_some() {
+            return self.render();
+        }
+        let line_len = self.line_text.chars().count();
+        let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
+        let caret_len = (self.end - self.start).clamp(1, avail);
+        let indent = " ".repeat(self.col.saturating_sub(1));
+        let caret = "^".repeat(caret_len);
+        let header = format!("{}:{}:{}", self.path.display(), self.line, self.col)
+            .color(Color::Cyan)
+            .bold()
+            .to_string();
+        format!(
+            "{}\n  {}\n  {}{}",
+            header,
+            self.line_text,
+            indent,
+            caret.color(caret_color).bold()
+        )
+    }
+}
 
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E007.
+/// variant to the mandatory error codes E001–E009.
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
     Io(std::io::Error),
-    /// E002 — Invalid `.tyx` syntax.
-    Parse(String),
+    /// E002 — Invalid `.tyx` syntax. Carries the offending source location
+    /// when the failure can be tied to a specific span.
+    Parse(String, Option<SourceLoc>),
     /// E003 — `candy-json` missing/invalid (SVG extraction).
     Svg(String),
-    /// E004 — `@label` not found in the Typst layout.
-    LabelNotFound(Label),
+    /// E004 — `@label` not found in the Typst layout. Carries the label's
+    /// declaration location when known (so the user sees where it was defined).
+    LabelNotFound(Label, Option<SourceLoc>),
     /// E005 — Invalid interpolation range (clamped, not fatal).
     Interp(String),
     /// E006 — Typst render failure.
@@ -50,7 +168,12 @@ pub enum CandyError {
     /// (whose root scene then owns all static content). A bare Typst document
     /// run through `candy build` without importing candy is therefore rejected
     /// with this dedicated code rather than producing an empty / garbage output.
-    NoCandyImport(String),
+    NoCandyImport(String, Option<SourceLoc>),
+    /// E009 — libva / VAAPI hardware encoding failure (the direct libva path).
+    /// Returned when `/dev/dri/renderD128` is missing, ffmpeg lacks VAAPI
+    /// support, or the ffmpeg subprocess fails mid-encode. Distinct from the
+    /// generic `Encode` (E007) so libva-specific failures are diagnosable.
+    Libva(String),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
@@ -61,41 +184,43 @@ pub enum CandyError {
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E007).
+    /// Mandatory error code (E001–E009).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
             CandyError::Io(_) => "E001",
-            CandyError::Parse(_) => "E002",
+            CandyError::Parse(_, _) => "E002",
             CandyError::Svg(_) => "E003",
-            CandyError::LabelNotFound(_) => "E004",
+            CandyError::LabelNotFound(_, _) => "E004",
             CandyError::Interp(_) => "E005",
             CandyError::Typst(_) => "E006",
             CandyError::Encode(_) => "E007",
-            CandyError::NoCandyImport(_) => "E008",
+            CandyError::NoCandyImport(_, _) => "E008",
+            CandyError::Libva(_) => "E009",
         }
     }
 
-    /// Numeric part of the code (1–7), used to build the process exit code for
+    /// Numeric part of the code (1–9), used to build the process exit code for
     /// the E001–E007 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
         match self {
             CandyError::Yee(_) => 111,
             CandyError::Io(_) => 1,
-            CandyError::Parse(_) => 2,
+            CandyError::Parse(_, _) => 2,
             CandyError::Svg(_) => 3,
-            CandyError::LabelNotFound(_) => 4,
+            CandyError::LabelNotFound(_, _) => 4,
             CandyError::Interp(_) => 5,
             CandyError::Typst(_) => 6,
             CandyError::Encode(_) => 7,
-            CandyError::NoCandyImport(_) => 8,
+            CandyError::NoCandyImport(_, _) => 8,
+            CandyError::Libva(_) => 9,
         }
     }
 
     /// Process exit code for this error.
     ///
-    /// The E001–E007 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
+    /// The E001–E009 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
     /// `E007` → `70`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
     /// partial-failure marker ("yee~ Batch failed") must not be re-encoded into
@@ -113,16 +238,28 @@ impl CandyError {
     pub fn message(&self) -> String {
         match self {
             CandyError::Io(e) => format!("I/O error: {e}"),
-            CandyError::Parse(e) => format!("Invalid .tyx syntax: {e}"),
+            CandyError::Parse(e, _) => format!("Invalid .tyx syntax: {e}"),
             CandyError::Svg(e) => format!("candy-json missing/invalid: {e}"),
-            CandyError::LabelNotFound(l) => {
+            CandyError::LabelNotFound(l, _) => {
                 format!("label @{} not found in Typst layout", l.0)
             }
             CandyError::Interp(e) => format!("interpolation range: {e}"),
             CandyError::Typst(e) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
-            CandyError::NoCandyImport(e) => format!("candy package not imported: {e}"),
+            CandyError::NoCandyImport(e, _) => format!("candy package not imported: {e}"),
+            CandyError::Libva(e) => format!("libva encode failure: {e}"),
             CandyError::Yee(e) => e.to_string(),
+        }
+    }
+
+    /// The source location tied to this error, if any. Rendered by the `error!`
+    /// reporter after the message so the user is pointed at the offending code.
+    pub fn loc(&self) -> Option<&SourceLoc> {
+        match self {
+            CandyError::LabelNotFound(_, l) => l.as_ref(),
+            CandyError::Parse(_, l) => l.as_ref(),
+            CandyError::NoCandyImport(_, l) => l.as_ref(),
+            _ => None,
         }
     }
 }
@@ -223,10 +360,22 @@ pub enum CandyWarn {
     /// directory path) or is otherwise not a plain file name, so it is ignored
     /// for that input and the default `dist/<stem>.<ext>` name is used instead.
     OutputNameInvalid(String),
+    /// W014 — Hardware VA-API (libva) encoding was requested but unavailable or
+    /// failed; candy transparently fell back to a software codec.
+    LibvaFallback(String),
+    /// W015 — A mobject label or ecounter name was redefined in the *same*
+    /// lexical scope. Candy keeps the later definition (it shadows the earlier
+    /// one) but warns, because an accidental duplicate usually indicates a typo.
+    /// Redefining a name inside a *nested* scope is legitimate Typst shadowing
+    /// and does not warn. The first field is the kind (`"mobject"` /
+    /// `"ecounter"`), the second the offending name, the third the source
+    /// location of the *redefining* (later) declaration so the user is pointed
+    /// at the exact code.
+    DuplicateName(String, String, SourceLoc),
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W011).
+    /// Mandatory warning code (W001–W015).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",
@@ -242,6 +391,8 @@ impl CandyWarn {
             CandyWarn::CleanupFailed(_) => "W011",
             CandyWarn::OutputNameCountMismatch(_) => "W012",
             CandyWarn::OutputNameInvalid(_) => "W013",
+            CandyWarn::LibvaFallback(_) => "W014",
+            CandyWarn::DuplicateName(_, _, _) => "W015",
         }
     }
 
@@ -293,6 +444,25 @@ impl CandyWarn {
                      dist/<stem>.<ext>"
                 )
             }
+            CandyWarn::LibvaFallback(d) => {
+                format!("VA-API (libva) encoding unavailable, falling back: {d}")
+            }
+            CandyWarn::DuplicateName(kind, name, _) => {
+                format!(
+                    "{kind} name '{name}' is redefined in the same lexical scope; the \
+                     later definition shadows the earlier one (redefining inside a \
+                     nested scope is legitimate Typst shadowing and is not warned)"
+                )
+            }
+        }
+    }
+
+    /// The source location tied to this warning, if any. Rendered by the `warn!`
+    /// reporter after the message so the user is pointed at the offending code.
+    pub fn loc(&self) -> Option<&SourceLoc> {
+        match self {
+            CandyWarn::DuplicateName(_, _, l) => Some(l),
+            _ => None,
         }
     }
 }
@@ -389,6 +559,19 @@ pub fn code_warn(code: &str) -> String {
     paint_code(code, Color::Yellow, std::io::stderr().is_terminal())
 }
 
+/// Render an error's source location with a **red** caret (used by `error!`).
+/// TTY + `NO_COLOR` detection happens here (inside this module, where the
+/// `IsTerminal` trait is in scope) so call sites don't need to import it.
+pub fn render_error_loc(loc: &SourceLoc) -> String {
+    loc.render_colored(Color::Red, std::io::stderr().is_terminal())
+}
+
+/// Render a warning's source location with a **yellow** caret (used by `warn!`).
+/// See [`render_error_loc`] for why the TTY check lives here.
+pub fn render_warn_loc(loc: &SourceLoc) -> String {
+    loc.render_colored(Color::Yellow, std::io::stderr().is_terminal())
+}
+
 /// Fatal error — the "panic" path. Prints `error: [Exxx] <message>` to
 /// **stderr** (the `error` prefix and the `[Exxx]` code are both red + bold on a
 /// TTY) and terminates the process with the error's exit code
@@ -398,12 +581,19 @@ pub fn code_warn(code: &str) -> String {
 macro_rules! error {
     ($err:expr $(,)?) => {{
         let __e = &$err;
-        ::std::eprintln!(
+        let mut __line = ::std::format!(
             "{}: {} {}",
             $crate::core::diag::level_error(),
             $crate::core::diag::code_error(__e.code()),
             __e.message()
         );
+        if let Some(__loc) = __e.loc() {
+            __line.push_str(&::std::format!(
+                "\n{}",
+                $crate::core::diag::render_error_loc(__loc)
+            ));
+        }
+        ::std::eprintln!("{}", __line);
         ::std::process::exit($crate::core::diag::CandyError::exit_code(__e));
     }};
 }
@@ -415,12 +605,19 @@ macro_rules! error {
 macro_rules! warn {
     ($w:expr $(,)?) => {{
         let __w: $crate::core::diag::CandyWarn = $w;
-        ::std::eprintln!(
+        let mut __line = ::std::format!(
             "{}: {} {}",
             $crate::core::diag::level_warn(),
             $crate::core::diag::code_warn(__w.code()),
             __w.message()
         );
+        if let Some(__loc) = __w.loc() {
+            __line.push_str(&::std::format!(
+                "\n{}",
+                $crate::core::diag::render_warn_loc(__loc)
+            ));
+        }
+        ::std::eprintln!("{}", __line);
     }};
 }
 

@@ -10,7 +10,7 @@ Lookup-oriented documentation. For a guided introduction, see the
 - [Counters](counters.md) — `#ecounter` / `#ecval` and counter control.
 - [CLI](cli.md) — `candy build` flags, artifacts, and batch behavior.
 - [Codecs](codecs.md) — the codec & container matrix (self-contained + ffmpeg-backed).
-- [Errors](errors.md) — the error model (E001–E008, EYEE) and warnings (W001–W013).
+- [Errors](errors.md) — the error model (E001–E009, EYEE) and warnings (W001–W015).
 - [Rust API](rust-api.md) — the backend pipeline, modules, public API, and architecture.
 
 ## Quick index of directives

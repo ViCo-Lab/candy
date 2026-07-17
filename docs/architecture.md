@@ -57,10 +57,16 @@ touches the content of another.
 | `av1-vaapi` | av1_vaapi | Linux Intel/AMD GPU |
 | `h264-videotoolbox` | h264_videotoolbox | macOS hardware |
 | `h265-videotoolbox` | hevc_videotoolbox | macOS hardware |
-| `h264-qsv` | h264_qsv | Intel Quick Sync |
-| `h265-qsv` | hevc_qsv | Intel Quick Sync |
+| `h264-qsv` | h264_qsv | Intel Quick Sync (**Windows**) |
+| `h265-qsv` | hevc_qsv | Intel Quick Sync (**Windows**) |
 | `vp9` | libvpx-vp9 | WebM |
 | `vp8` | libvpx | WebM |
+
+> **Platform availability.** The hardware encoders above are conditionally compiled
+> (`#[cfg(target_os = "...")]`): `h264-vaapi` / `h265-vaapi` / `av1-vaapi` appear
+> only on **Linux**, `h264-videotoolbox` / `h265-videotoolbox` only on **macOS**,
+> and `h264-qsv` / `h265-qsv` only on **Windows**. On other platforms they are
+> absent from `--help` and the `--codec` selection interface.
 
 ### libva direct (Linux-only, independent codec group)
 | Codec | Notes |

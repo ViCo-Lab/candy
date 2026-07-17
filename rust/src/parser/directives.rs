@@ -16,7 +16,7 @@ use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
     Slide, Subtitle, TrackKey,
 };
-use crate::core::diag::CandyWarn;
+use crate::core::diag::{CandyWarn, SourceLoc};
 use crate::core::easing::Easing;
 use crate::warn;
 
@@ -86,7 +86,7 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "reveal" | "typewriter" => process_reveal(&pos, &named, sym.as_str(), ctx),
         // Subtitle + easing-counter modules.
         "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
-        "ecounter" => process_ecounter(&pos, &named, ctx),
+        "ecounter" => process_ecounter(&pos, &named, node, raw, ctx),
         "ecval" => { /* read; value substituted per-frame by the renderer */ }
         "counter-pause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause),
         "counter-resume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume),
@@ -120,6 +120,33 @@ fn process_mobject(
     let body_range = range_of(node, body_expr.to_untyped()).map(|r| (r.start, r.end));
 
     let label = Label(label_str);
+    // Record the declaration's source location so later diagnostics (e.g.
+    // `E004` LabelNotFound) can point at the exact code.
+    let loc = SourceLoc::at(&ctx.file_path, raw, node.range());
+    ctx.label_locs.insert(label.clone(), loc.clone());
+    // Duplicate-name detection (respecting scope): a label redefined in the
+    // *same* lexical scope is almost certainly a typo, so warn and let the
+    // later definition shadow the earlier (the `insert` below overwrites). A
+    // redefinition inside a *nested* scope is legitimate Typst shadowing and
+    // must NOT warn.
+    let scope = current_scope(ctx);
+    if ctx
+        .mobject_names
+        .entry(scope.clone())
+        .or_default()
+        .contains(&label.0)
+    {
+        warn!(CandyWarn::DuplicateName(
+            "mobject".into(),
+            label.0.clone(),
+            loc
+        ));
+    } else {
+        ctx.mobject_names
+            .get_mut(&scope)
+            .unwrap()
+            .insert(label.0.clone());
+    }
     ctx.items.insert(label.clone(), body);
     if let Some(r) = body_range {
         ctx.mobject_body_ranges.insert(label.clone(), r);
@@ -1359,6 +1386,8 @@ fn process_subtitle(
 fn process_ecounter(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
+    node: &LinkedNode,
+    raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let name = pos
@@ -1376,16 +1405,51 @@ fn process_ecounter(
         .and_then(expr_to_f64)
         .map(|d| d.max(1.0) as u32);
     let easing = resolve_easing(named, &Label(format!("counter:{name}")));
+    let scope = current_scope(ctx);
+    // Record the declaration's source location so later diagnostics can point
+    // at the exact code.
+    let loc = SourceLoc::at(&ctx.file_path, raw, node.range());
+    ctx.label_locs
+        .insert(Label(format!("counter:{name}")), loc.clone());
 
-    ctx.counters.push(CounterDef {
-        name,
-        scope: current_scope(ctx),
+    // Duplicate-name detection (respecting scope): an ecounter redefined in the
+    // *same* lexical scope warns and the later definition shadows the earlier
+    // (we replace the prior same-scope `CounterDef` so the new one wins). A
+    // redefinition inside a *nested* scope is legitimate Typst shadowing and is
+    // resolved at runtime by scope depth, so it must NOT warn.
+    let def = CounterDef {
+        name: name.clone(),
+        scope: scope.clone(),
         seed,
         step,
         duration_ms,
         easing,
         start_ms: ctx.cursor,
-    });
+    };
+    if ctx
+        .ecounter_names
+        .entry(scope.clone())
+        .or_default()
+        .contains(&name)
+    {
+        warn!(CandyWarn::DuplicateName(
+            "ecounter".into(),
+            name.clone(),
+            loc
+        ));
+        if let Some(slot) = ctx
+            .counters
+            .iter()
+            .position(|c| c.name == name && c.scope == scope)
+        {
+            ctx.counters[slot] = def;
+        } else {
+            ctx.counters.push(def);
+        }
+    } else {
+        ctx.ecounter_names.get_mut(&scope).unwrap().insert(name);
+        ctx.counters.push(def);
+    }
 }
 
 /// `counter_pause(name)` / `counter_resume(name)` / `counter_destroy(name)` —

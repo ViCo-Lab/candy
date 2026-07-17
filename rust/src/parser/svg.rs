@@ -41,7 +41,7 @@ pub fn extract_scene_from_svg(svg_path: &Path) -> Result<Scene, CandyError> {
 
     let content = &svg[open_tag_end + 1..close];
     let scene: Scene = serde_json::from_str(content)?; // E003 on invalid JSON
-    scene.validate().map_err(CandyError::Parse)?; // E002
+    scene.validate().map_err(|m| CandyError::Parse(m, None))?; // E002
     Ok(scene)
 }
 

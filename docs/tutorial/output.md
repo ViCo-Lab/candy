@@ -67,8 +67,26 @@ encoding and higher-quality software codecs:
 | `h265-vaapi` | hevc_vaapi | Linux Intel/AMD GPU H.265. |
 | `h264-videotoolbox` | h264_videotoolbox | macOS hardware H.264. |
 | `h265-videotoolbox` | hevc_videotoolbox | macOS hardware H.265. |
-| `h264-qsv` | h264_qsv | Intel Quick Sync Video H.264. |
-| `h265-qsv` | hevc_qsv | Intel Quick Sync Video H.265. |
+| `h264-qsv` | h264_qsv | Intel Quick Sync Video H.264 (**Windows**). |
+| `h265-qsv` | hevc_qsv | Intel Quick Sync Video H.265 (**Windows**). |
+
+> **Platform availability.** The hardware encoders above are conditionally compiled:
+> `h264-vaapi` / `h265-vaapi` / `av1-vaapi` appear only on **Linux**,
+> `h264-videotoolbox` / `h265-videotoolbox` only on **macOS**, and
+> `h264-qsv` / `h265-qsv` only on **Windows**. On other platforms they are
+> absent from `--help` and the `--codec` selection interface.
+
+### VAAPI / libva (Linux-only, no ffmpeg subprocess)
+
+| `--codec` | Notes |
+|---|---|
+| `h264-libva` | Direct VAAPI H.264 (Linux Intel/AMD GPU). |
+| `h265-libva` | Direct VAAPI HEVC. |
+| `av1-libva` | Direct VAAPI AV1. |
+
+These require `/dev/dri/renderD128` and only appear in `--help` on Linux. They
+use `LibvaStream` with a 1MB BufWriter and `-low_power 1`. If VAAPI is
+unavailable, `LibvaStream::new` returns E007.
 
 ```sh
 # Software H.264 via system ffmpeg + libx264
@@ -102,7 +120,7 @@ found, Candy falls back to the self-contained codecs (av1/h264) or returns E007
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
 | `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `gif` / `png` / `svg`. The `--codec` flag is ignored for `gif` / `png`. |
-| `--codec` | `h264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv`. |
+| `--codec` | `h264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv` / `h264-libva` / `h265-libva` / `av1-libva`. The hardware `*-vaapi` / `*-videotoolbox` / `*-qsv` / `*-libva` variants are conditionally compiled and appear in `--help` only on their native platform (VAAPI/libva → Linux, VideoToolbox → macOS, QSV → Windows). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
 | `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |

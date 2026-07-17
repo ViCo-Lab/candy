@@ -3,7 +3,7 @@
 //! When the system has `ffmpeg` on `$PATH`, candy can shell out to it for
 //! codecs that have no pure-Rust encoder (x264, x265, VAAPI, VideoToolbox,
 //! QSV). This module is the bridge: it pipes raw RGBA frames to ffmpeg's
-//! stdin and reads the muxed container (MP4/MKV/WebM) from stdout.
+//! stdin and reads the muxed container (MP4/MKV/WebM) back.
 //!
 //! # No cargo dependency on ffmpeg
 //!
@@ -15,7 +15,7 @@
 //! # Pipeline
 //!
 //! ```text
-//! candy ──RGBA stdin──▶ ffmpeg ──stdout──▶ muxed container bytes
+//! candy ──RGBA stdin──▶ ffmpeg ──seekable sink──▶ muxed container bytes
 //!         (rawvideo,      (-c:v libx264 /
 //!          rgba,            libx265 /
 //!          <w>x<h>)         h264_vaapi /
@@ -24,12 +24,22 @@
 //!                          (-f mp4/mkv/webm)
 //! ```
 //!
+//! ffmpeg's MP4/MKV/WebM muxers require a *seekable* output (MP4's `faststart`
+//! moov rewrite is impossible on a pipe). On Linux we hand ffmpeg an anonymous
+//! `memfd` — a tmpfs-resident, seekable, in-RAM file — so the muxed container
+//! never touches disk: a long HD/high-FPS render avoids round-tripping the
+//! coded stream through disk (faster, and works on read-only / tmpfs-less
+//! filesystems), and ffmpeg's stderr is likewise redirected to a memfd so a
+//! long encode can't deadlock on a full stderr pipe. On other platforms (or if
+//! `memfd_create` is unavailable) we fall back to seekable temp files.
+//!
 //! Audio is muxed in a second ffmpeg pass (candy decodes Opus/AAC itself,
 //! pipes raw PCM to ffmpeg as a second input). This is simpler than teaching
 //! candy's hand-written muxer to handle HEVC, and lets ffmpeg's mature muxer
 //! handle all container/codec combinations.
 
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,12 +47,144 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::core::diag::CandyError;
 use crate::core::meta::PrivateMeta;
 use crate::info;
-use crate::renderer::RenderedFrame;
 use crate::renderer::encode::{Codec, Container};
+use crate::renderer::RenderedFrame;
 
 /// Monotonic counter for unique ffmpeg temp-file names (avoids collisions
 /// when multiple candy processes run concurrently).
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Seekable sink for ffmpeg's muxed container output.
+///
+/// On Linux the sink is an anonymous `memfd` (tmpfs-resident, seekable) rather
+/// than a real temp file: ffmpeg's MP4/MKV/WebM muxers need a seekable output
+/// (for `faststart` moov rewriting) and a memfd satisfies that while keeping
+/// the intermediate entirely in RAM — so a long HD/high-FPS render never
+/// round-trips the coded stream through disk (faster, and works on read-only or
+/// tmpfs-less filesystems). On other platforms, or if `memfd_create` is
+/// unavailable, we fall back to a temp file.
+pub(crate) struct MuxSink {
+    /// Output path handed to ffmpeg (`-y <path>`): a real temp file elsewhere,
+    /// or `/proc/self/fd/N` for a Linux memfd.
+    pub path: PathBuf,
+    /// Linux memfd backing `path`; kept alive (and used to read the result back)
+    /// until the encode finishes. `None` on the temp-file fallback.
+    #[cfg(target_os = "linux")]
+    pub file: Option<std::fs::File>,
+}
+
+impl MuxSink {
+    /// Read the whole muxed container back into memory.
+    pub(crate) fn read_all(&self) -> std::io::Result<Vec<u8>> {
+        #[cfg(target_os = "linux")]
+        if let Some(f) = &self.file {
+            let mut c = f.try_clone()?;
+            c.seek(SeekFrom::Start(0))?;
+            let mut buf = Vec::new();
+            c.read_to_end(&mut buf)?;
+            return Ok(buf);
+        }
+        std::fs::read(&self.path)
+    }
+
+    /// Stream the muxed container to `out` without buffering it all in RAM.
+    pub(crate) fn copy_to(&self, out: &Path) -> std::io::Result<u64> {
+        #[cfg(target_os = "linux")]
+        if let Some(f) = &self.file {
+            let mut c = f.try_clone()?;
+            c.seek(SeekFrom::Start(0))?;
+            let mut outf = std::fs::File::create(out)?;
+            return std::io::copy(&mut c, &mut outf);
+        }
+        std::fs::copy(&self.path, out)
+    }
+
+    /// Remove the on-disk temp file. No-op for a memfd, which is freed when this
+    /// struct is dropped.
+    pub(crate) fn cleanup(&self) {
+        #[cfg(target_os = "linux")]
+        if self.file.is_none() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Where ffmpeg's stderr goes. On Linux a memfd `File` (unbounded, in-RAM, so a
+/// long encode can't deadlock on a full pipe); on other platforms a temp log
+/// file. Only read when ffmpeg reports failure.
+pub(crate) enum ErrLog {
+    #[cfg(target_os = "linux")]
+    Memfd(std::fs::File),
+    File(PathBuf),
+}
+
+/// Create an anonymous `memfd` (Linux only). Returns the owned fd.
+#[cfg(target_os = "linux")]
+fn memfd_create_named(name: &str) -> std::io::Result<OwnedFd> {
+    let cname = std::ffi::CString::new(name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    // NOTE: we pass `0` (no `MFD_CLOEXEC`). ffmpeg reaches the memfd via the
+    // `/proc/self/fd/N` *path* we hand it as the output file. With `MFD_CLOEXEC`
+    // the fd would be closed in the child at `exec` time, making that path
+    // invalid by the time ffmpeg `open()`s it — ffmpeg would then abort and
+    // break the stdin pipe. Without `CLOEXEC` the fd is inherited by the child
+    // (harmless: ffmpeg opens the path itself) and the path resolves correctly.
+    let fd = unsafe { libc::memfd_create(cname.as_ptr(), 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Build the seekable sink ffmpeg writes its muxed container to. Uses a memfd on
+/// Linux, falling back to a temp file if `memfd_create` is unavailable.
+fn make_mux_sink(container: Container) -> Result<MuxSink, CandyError> {
+    #[cfg(target_os = "linux")]
+    if let Ok(fd) = memfd_create_named("candy-ffmpeg-mux") {
+        let file = std::fs::File::from(fd);
+        let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        return Ok(MuxSink {
+            path,
+            file: Some(file),
+        });
+    }
+    let ext = container_format(container);
+    let name = format!(
+        "candy_ff_{}_{}.{ext}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed),
+    );
+    Ok(MuxSink {
+        path: std::env::temp_dir().join(name),
+        #[cfg(target_os = "linux")]
+        file: None,
+    })
+}
+
+/// Build ffmpeg's stderr redirection. On Linux a memfd (unbounded, can't block
+/// a long encode); elsewhere a temp log file. Returns the `Stdio` to attach and
+/// an [`ErrLog`] the caller reads only on failure.
+fn make_err_log() -> Result<(Stdio, ErrLog), CandyError> {
+    #[cfg(target_os = "linux")]
+    if let Ok(fd) = memfd_create_named("candy-ffmpeg-err") {
+        let file = std::fs::File::from(fd);
+        let reader = file
+            .try_clone()
+            .map_err(|e| CandyError::Encode(format!("ffmpeg stderr clone: {e}")))?;
+        return Ok((Stdio::from(file), ErrLog::Memfd(reader)));
+    }
+    let name = format!(
+        "candy_ff_err_{}_{}.log",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed),
+    );
+    let path = std::env::temp_dir().join(name);
+    let file = std::fs::File::create(&path)
+        .map_err(|e| CandyError::Encode(format!("ffmpeg stderr log: {e}")))?;
+    Ok((Stdio::from(file), ErrLog::File(path)))
+}
 
 /// Check whether `ffmpeg` is on `$PATH`. Returns the path if found.
 pub fn find_ffmpeg() -> Option<PathBuf> {
@@ -69,15 +211,22 @@ fn ffmpeg_args(codec: Codec) -> Option<(&'static str, &'static str)> {
     match codec {
         Codec::X264 => Some(("libx264", "mp4")),
         Codec::X265 => Some(("libx265", "mp4")),
+        #[cfg(target_os = "linux")]
         Codec::H264Vaapi => Some(("h264_vaapi", "mp4")),
+        #[cfg(target_os = "linux")]
         Codec::H265Vaapi => Some(("hevc_vaapi", "mp4")),
+        #[cfg(target_os = "macos")]
         Codec::H264VideoToolbox => Some(("h264_videotoolbox", "mp4")),
+        #[cfg(target_os = "macos")]
         Codec::H265VideoToolbox => Some(("hevc_videotoolbox", "mp4")),
+        #[cfg(target_os = "windows")]
         Codec::H264Qsv => Some(("h264_qsv", "mp4")),
+        #[cfg(target_os = "windows")]
         Codec::H265Qsv => Some(("hevc_qsv", "mp4")),
         // H265 (the "self-contained or ffmpeg" variant) uses x265 when ffmpeg
         // is available.
         Codec::H265 => Some(("libx265", "mp4")),
+        #[cfg(target_os = "linux")]
         Codec::Av1Vaapi => Some(("av1_vaapi", "mp4")),
         Codec::Vp9 => Some(("libvpx-vp9", "webm")),
         Codec::Vp8 => Some(("libvpx", "webm")),
@@ -98,9 +247,10 @@ fn container_format(container: Container) -> &'static str {
 }
 
 /// Spawn an ffmpeg child that reads raw RGBA frames of size `w×h` from stdin
-/// and writes a muxed `container` to a temp file. Returns the child process, its
-/// stdin handle (the caller writes frames to it, then drops it), and the temp
-/// file path (passed back to [`finish_ffmpeg`]).
+/// and writes a muxed `container` to a seekable sink. Returns the child
+/// process, its stdin handle (the caller writes frames to it, then drops it),
+/// the [`MuxSink`] ffmpeg writes the container to, and the [`ErrLog`] used for
+/// failure diagnosis.
 ///
 /// This is the streaming primitive behind [`encode_via_ffmpeg`]: the caller can
 /// feed frames one at a time instead of buffering every RGBA frame up front.
@@ -111,7 +261,7 @@ pub(crate) fn spawn_ffmpeg(
     h: u32,
     fps: u32,
     private_metadata: &PrivateMeta,
-) -> Result<(Child, ChildStdin, PathBuf), CandyError> {
+) -> Result<(Child, ChildStdin, MuxSink, ErrLog), CandyError> {
     let ffmpeg = find_ffmpeg()
         .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E007)".into()))?;
 
@@ -119,34 +269,45 @@ pub(crate) fn spawn_ffmpeg(
         .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
     let format = container_format(container);
 
-    // ffmpeg's MP4/MKV/WebM muxers require *seekable* output, and MP4's
-    // `faststart` moov rewrite is impossible on a pipe — so piping ffmpeg's
-    // output to stdout always fails ("muxer does not support non seekable
-    // output"). Instead we write to a unique temp file (seekable) and read the
-    // bytes back, which works for every container and keeps faststart.
-    let tmp_ext = container_format(container);
-    let tmp_name = format!(
-        "candy_ff_{}_{}.{tmp_ext}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed),
-    );
-    let tmp_path = std::env::temp_dir().join(tmp_name);
+    // ffmpeg's MP4/MKV/WebM muxers require a *seekable* output (MP4's
+    // `faststart` moov rewrite is impossible on a pipe), so we hand it a
+    // seekable sink. On Linux that sink is an anonymous `memfd` (tmpfs-resident,
+    // seekable) — the muxed container never touches disk, which is faster and
+    // works on read-only / tmpfs-less filesystems; elsewhere (or if
+    // `memfd_create` is unavailable) we fall back to a unique temp file.
+    let mux = make_mux_sink(container)?;
+
+    // ffmpeg prints encoding progress (and any warnings/errors) to stderr. A
+    // *piped* stderr can fill the OS pipe buffer (~64 KiB) during a long encode
+    // and block ffmpeg while the parent is still feeding frames or waiting on
+    // it — a classic deadlock that hangs the whole encode. On Linux we redirect
+    // stderr to a memfd (unbounded, in-RAM, can't block); elsewhere to a temp
+    // log file. We only read it when ffmpeg reports failure.
+    let (err_for_ffmpeg, err_log) = make_err_log()?;
 
     // Build the ffmpeg command. Order matters for hardware encoders: a render
     // node / device must be declared *before* the input is read, and hardware
     // encoders need the raw RGBA frames uploaded to a hardware surface (not
     // passed straight through). Software lib encoders (x264/x265) instead want
     // `-preset`/`-crf` — options that VAAPI / VideoToolbox / QSV reject.
-    let bitrate = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000);
-    let bitrate_str = bitrate.to_string();
+    // `bitrate_str` is only consumed by the VideoToolbox (macOS) and QSV
+    // (Windows) hardware encoders below; compute it only on those platforms so
+    // it stays unused (and warning-free) on Linux, where those arms are
+    // cfg-gated out.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let bitrate_str = {
+        let bitrate = ((w as u64 * h as u64 * fps as u64) / 20).clamp(120_000, 20_000_000);
+        bitrate.to_string()
+    };
 
     let mut cmd = Command::new(&ffmpeg);
+    #[cfg(target_os = "linux")]
     if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi) {
         cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(err_for_ffmpeg)
         .args(["-f", "rawvideo"])
         .args(["-pix_fmt", "rgba"])
         .args(["-s", &format!("{w}x{h}")])
@@ -161,14 +322,17 @@ pub(crate) fn spawn_ffmpeg(
             cmd.args(["-vf", "format=yuv420p"]);
             cmd.args(["-threads", "0"]);
         }
+        #[cfg(target_os = "linux")]
         Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi => {
             cmd.args(["-vf", "format=nv12,hwupload"]);
             cmd.args(["-low_power", "1"]);
             cmd.args(["-qp", "24"]);
         }
+        #[cfg(target_os = "macos")]
         Codec::H264VideoToolbox | Codec::H265VideoToolbox => {
             cmd.args(["-b:v", &bitrate_str]);
         }
+        #[cfg(target_os = "windows")]
         Codec::H264Qsv | Codec::H265Qsv => {
             cmd.args(["-init_hw_device", "qsv=qsv:/dev/dri/renderD128"]);
             cmd.args(["-vf", "format=nv12,hwupload=extra_hw_frames=64"]);
@@ -181,7 +345,7 @@ pub(crate) fn spawn_ffmpeg(
         .arg(format!("candy-meta={}", private_metadata.to_json()));
 
     cmd.args(["-f", format])
-        .args(["-y", tmp_path.to_str().unwrap_or("/dev/null")]);
+        .args(["-y", mux.path.to_str().unwrap_or("/dev/null")]);
 
     if matches!(container, Container::Mp4) {
         cmd.args(["-movflags", "+faststart"]);
@@ -197,7 +361,42 @@ pub(crate) fn spawn_ffmpeg(
         .ok_or_else(|| CandyError::Encode("ffmpeg stdin not captured".into()))?;
 
     info!("spawned ffmpeg -c:v {encoder} -f {format} (streaming)");
-    Ok((child, stdin, tmp_path))
+    Ok((child, stdin, mux, err_log))
+}
+
+/// Read the last ~20 lines of ffmpeg's stderr log for error reporting. On
+/// Linux the log is a memfd (read back via a cloned handle); elsewhere a temp
+/// file. Reading only the tail keeps error messages bounded and avoids
+/// buffering the whole log in RAM.
+fn read_err_log(err: &ErrLog) -> String {
+    let raw = match err {
+        #[cfg(target_os = "linux")]
+        ErrLog::Memfd(f) => {
+            let mut c = match f.try_clone() {
+                Ok(c) => c,
+                Err(_) => return "(cannot read ffmpeg stderr)".to_string(),
+            };
+            c.seek(SeekFrom::Start(0)).ok();
+            let mut s = String::new();
+            c.read_to_string(&mut s).ok();
+            s
+        }
+        ErrLog::File(p) => match std::fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(_) => return "(no ffmpeg stderr captured)".to_string(),
+        },
+    };
+    if raw.is_empty() {
+        return "(no ffmpeg stderr captured)".to_string();
+    }
+    raw.lines()
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Finish an ffmpeg encode started by [`spawn_ffmpeg`]: the child's stdin must
@@ -205,24 +404,27 @@ pub(crate) fn spawn_ffmpeg(
 /// muxed container bytes. Used by the batch [`encode_via_ffmpeg`] path (which
 /// already holds every frame in RAM); the streaming pipeline uses
 /// [`finish_ffmpeg_to_file`] instead to avoid buffering the container.
-pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, CandyError> {
-    let output = child
-        .wait_with_output()
+pub(crate) fn finish_ffmpeg(
+    mut child: Child,
+    mux: MuxSink,
+    err_log: ErrLog,
+) -> Result<Vec<u8>, CandyError> {
+    let status = child
+        .wait()
         .map_err(|e| CandyError::Encode(format!("ffmpeg wait: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::fs::remove_file(tmp_path);
+    if !status.success() {
+        let stderr = read_err_log(&err_log);
+        mux.cleanup();
         return Err(CandyError::Encode(format!(
-            "ffmpeg exited with {}: {}",
-            output.status,
-            stderr.lines().take(20).collect::<Vec<_>>().join("\n")
+            "ffmpeg exited with {status}: {stderr}"
         )));
     }
 
-    let bytes = std::fs::read(tmp_path)
-        .map_err(|e| CandyError::Encode(format!("ffmpeg temp read: {e}")))?;
-    let _ = std::fs::remove_file(tmp_path);
+    let bytes = mux
+        .read_all()
+        .map_err(|e| CandyError::Encode(format!("ffmpeg output read: {e}")))?;
+    mux.cleanup();
 
     if bytes.is_empty() {
         return Err(CandyError::Encode(
@@ -234,28 +436,30 @@ pub(crate) fn finish_ffmpeg(child: Child, tmp_path: &Path) -> Result<Vec<u8>, Ca
 
 /// Finish an ffmpeg encode started by [`spawn_ffmpeg`]: the child's stdin must
 /// already be dropped/closed so ffmpeg flushes, then we wait and copy the muxed
-/// container (already a seekable temp file) directly to `output`. Copying the
-/// file avoids buffering the entire container in RAM, so a long HD/high-FPS
+/// container (already a seekable sink) directly to `output`. Copying the
+/// container avoids buffering the entire container in RAM, so a long HD/high-FPS
 /// render cannot OOM on the coded stream.
 pub(crate) fn finish_ffmpeg_to_file(
     mut child: Child,
-    tmp_path: &Path,
+    mux: MuxSink,
     output: &Path,
+    err_log: ErrLog,
 ) -> Result<(), CandyError> {
     let status = child
         .wait()
         .map_err(|e| CandyError::Encode(format!("ffmpeg wait: {e}")))?;
 
     if !status.success() {
-        let _ = std::fs::remove_file(tmp_path);
+        let stderr = read_err_log(&err_log);
+        mux.cleanup();
         return Err(CandyError::Encode(format!(
-            "ffmpeg exited with {status} (E007); run with verbose logging for details"
+            "ffmpeg exited with {status} (E007): {stderr}"
         )));
     }
 
-    std::fs::copy(tmp_path, output)
+    mux.copy_to(output)
         .map_err(|e| CandyError::Encode(format!("ffmpeg output copy: {e}")))?;
-    let _ = std::fs::remove_file(tmp_path);
+    mux.cleanup();
     Ok(())
 }
 
@@ -279,7 +483,7 @@ pub fn encode_via_ffmpeg(
     }
     let w = frames[0].width;
     let h = frames[0].height;
-    let (child, mut stdin, tmp_path) =
+    let (child, mut stdin, mux, err_log) =
         spawn_ffmpeg(codec, container, w as u32, h as u32, fps, private_metadata)?;
     for f in frames {
         stdin
@@ -287,5 +491,5 @@ pub fn encode_via_ffmpeg(
             .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
     }
     drop(stdin); // close stdin → ffmpeg finishes encoding
-    finish_ffmpeg(child, &tmp_path)
+    finish_ffmpeg(child, mux, err_log)
 }

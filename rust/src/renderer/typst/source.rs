@@ -43,11 +43,23 @@ impl Renderer {
             // `ecval("name")` → `sys.inputs.at("candy:counter:name", …)` so the
             // live counter value is supplied per frame as an input.
             let mut inner = Self::ecval_to_inputs(body);
-            // A `reveal`/`typewriter` target whose body is a string literal gets
-            // its revealed length driven by an input too.
-            if let Some(full) = scene.items.get(label).and_then(|b| strip_string_literal(b)) {
+            // A target that has a `content_timeline` swaps its body at some
+            // frame(s): a `reveal`/`typewriter` target (string literal) grows a
+            // revealed prefix, while a formula/shape `#transform` swaps the whole
+            // body. Both must be expressed as per-frame inputs so the *single*
+            // parameterized source keeps rendering the right content (otherwise the
+            // base document would freeze on the original body and the formula would
+            // snap back after every transform).
+            let string_full = scene.items.get(label).and_then(|b| strip_string_literal(b));
+            if let Some(full) = string_full {
                 if scene.content_timeline.contains_key(label) {
                     inner = Self::reveal_wrap_body(&label.0, &inner, full.chars().count());
+                }
+            } else if scene.content_timeline.contains_key(label) {
+                // Non-string (formula / shape) `#transform`: select among the
+                // original body and each swapped body via a `…:body_idx` input.
+                if let Some(sel) = Self::content_selection_body(label, body, scene) {
+                    inner = sel;
                 }
             }
             let cs = src[..bs].chars().count();
@@ -233,6 +245,46 @@ impl Renderer {
         )
     }
 
+    /// For a `#transform` target whose body is NOT a string literal (a formula
+    /// or a shape), build a body expression that selects among the original body
+    /// and each `content_timeline` entry, driven by the per-frame
+    /// `sys.inputs.at("candy:<label>:body_idx")` index (0 = original, 1 = first
+    /// swap, …). This is what lets the *single* parameterized whole-document
+    /// source keep rendering the transformed content after a morph — without it
+    /// the base document would freeze on the original body and the formula would
+    /// snap back to its pre-transform state at the end of every `#transform`
+    /// (and, for chained transforms, the intermediate steps would never persist).
+    ///
+    /// The selection mirrors [`crate::renderer::typst::content::content_for`]:
+    /// the latest timeline entry with `t <= frame` wins. Each branch gets the
+    /// `ecval(..)` → input rewrite so counter reads work inside swapped bodies
+    /// too. Returns `None` (leaving `inner` untouched) when the label has no
+    /// timeline entries.
+    fn content_selection_body(label: &Label, original: &str, scene: &Scene) -> Option<String> {
+        let timeline = scene.content_timeline.get(label)?;
+        if timeline.is_empty() {
+            return None;
+        }
+        let mut branches: Vec<String> = Vec::with_capacity(timeline.len() + 1);
+        branches.push(Self::ecval_to_inputs(original));
+        for (_, b) in timeline {
+            branches.push(Self::ecval_to_inputs(b));
+        }
+        let key = format!("candy:{}:body_idx", label.0);
+        let mut s = String::new();
+        s.push_str(&format!(
+            "( if sys.inputs.at(\"{key}\", default: 0) == 0 {{ {} }}",
+            branches[0]
+        ));
+        for (i, b) in branches.iter().enumerate().skip(1) {
+            s.push_str(&format!(
+                " else if sys.inputs.at(\"{key}\", default: 0) == {i} {{ {b} }}"
+            ));
+        }
+        s.push_str(&format!(" else {{ {} }} )", branches.last().unwrap()));
+        Some(s)
+    }
+
     /// Build the per-frame `sys.inputs` dictionary for the whole-document path.
     ///
     /// `hide_fading` controls whether opacity < 1 objects get a `…:hide` flag
@@ -286,23 +338,29 @@ impl Renderer {
             let v = self.scene.counter_value_at(&c.name, time_ms);
             inputs.insert(format!("candy:counter:{}", c.name).into(), Value::Int(v));
         }
-        // `reveal`/`typewriter` revealed-prefix lengths: each string target's
-        // revealed character count at this frame is supplied as
-        // `candy:<label>:reveal:len`, matching `reveal_wrap_body`.
+        // `reveal`/`typewriter` revealed-prefix lengths and non-string `#transform`
+        // body swaps: string targets are driven by `candy:<label>:reveal:len`,
+        // formula/shape targets by `candy:<label>:body_idx`. Both inputs are
+        // consumed by the corresponding wrappers in `build_parameterized_source`.
         for label in self.scene.content_timeline.keys() {
-            let Some(full) = self
+            if let Some(full) = self
                 .scene
                 .items
                 .get(label)
                 .and_then(|b| strip_string_literal(b))
-            else {
-                continue;
-            };
-            let len = Self::reveal_len_at(&self.scene, label, time_ms, full.chars().count());
-            inputs.insert(
-                format!("candy:{}:reveal:len", label.0).into(),
-                Value::Int(len as i64),
-            );
+            {
+                let len = Self::reveal_len_at(&self.scene, label, time_ms, full.chars().count());
+                inputs.insert(
+                    format!("candy:{}:reveal:len", label.0).into(),
+                    Value::Int(len as i64),
+                );
+            } else {
+                let idx = Self::body_idx_at(&self.scene, label, time_ms);
+                inputs.insert(
+                    format!("candy:{}:body_idx", label.0).into(),
+                    Value::Int(idx as i64),
+                );
+            }
         }
         inputs
     }
@@ -333,5 +391,44 @@ impl Renderer {
         strip_string_literal(body)
             .map(|s| s.chars().count())
             .unwrap_or(0)
+    }
+
+    /// The active `content_timeline` index for `label` at `time_ms`: `0` = the
+    /// original body, `1` = the first swap, … (the count of timeline entries
+    /// with `t <= time_ms`). Mirrors the latest-wins selection in
+    /// [`crate::renderer::typst::content::content_for`] so the whole-document
+    /// path and the legacy path agree on which body is current.
+    fn body_idx_at(scene: &Scene, label: &Label, time_ms: u32) -> usize {
+        let mut idx = 0usize;
+        if let Some(timeline) = scene.content_timeline.get(label) {
+            for (t, _) in timeline {
+                if *t <= time_ms {
+                    idx += 1;
+                }
+            }
+        }
+        idx
+    }
+    /// Build a minimal whole-document Typst source for a hand-built `Scene` that
+    /// has no parsed `.tyx` (`artifacts.source` is empty). Each declared mobject
+    /// becomes a `#mobject(label, <body>)` call; the returned `mobject_body` map
+    /// records the byte range of each `<body>` within the source so the
+    /// per-frame whole-document recompiler (`build_parameterized_source`) can
+    /// splice the wrapped body back in. This keeps hand-built scenes on the same
+    /// single whole-document render path as parsed `.tyx` files — they can drive
+    /// transform body swaps, reveals, and `ecval` counters through `sys.inputs`
+    /// exactly like real documents.
+    pub(crate) fn synthesize_handbuilt_source(scene: &Scene) -> (String, HashMap<Label, (usize, usize)>) {
+        let mut src = String::from("#import \"@preview/candy:0.1.0\": *\n\n");
+        let mut mobject_body = HashMap::new();
+        for (label, body) in &scene.items {
+            // `#mobject("label", ` prefix length (bytes) before the body.
+            let prefix_len = "#mobject(\"".len() + label.0.len() + "\", ".len();
+            let body_start = src.len() + prefix_len;
+            let body_end = body_start + body.len();
+            src.push_str(&format!("#mobject(\"{}\", {})\n", label.0, body));
+            mobject_body.insert(label.clone(), (body_start, body_end));
+        }
+        (src, mobject_body)
     }
 }

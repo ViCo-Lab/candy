@@ -55,7 +55,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E008) + CandyWarn (W001–W013) + macros
+│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W015) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
 │   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
@@ -177,16 +177,45 @@ containers (`Webm` = Matroska with the `webm` doctype). `Gif` is an animated GIF
 pub enum Codec {
     Av1, H264, H265,
     X264, X265,
-    H264Vaapi, H265Vaapi,
-    H264VideoToolbox, H265VideoToolbox,
-    H264Qsv, H265Qsv,
+    // VAAPI — Linux only:
+    #[cfg(target_os = "linux")]
+    H264Vaapi,
+    #[cfg(target_os = "linux")]
+    H265Vaapi,
+    #[cfg(target_os = "linux")]
+    Av1Vaapi,
+    // VideoToolbox — macOS only:
+    #[cfg(target_os = "macos")]
+    H264VideoToolbox,
+    #[cfg(target_os = "macos")]
+    H265VideoToolbox,
+    // QSV — Windows only:
+    #[cfg(target_os = "windows")]
+    H264Qsv,
+    #[cfg(target_os = "windows")]
+    H265Qsv,
+    Vp9, Vp8,
+    // Linux-only, direct VAAPI hardware encoders (no ffmpeg subprocess):
+    #[cfg(target_os = "linux")]
+    H264Libva,
+    #[cfg(target_os = "linux")]
+    H265Libva,
+    #[cfg(target_os = "linux")]
+    Av1Libva,
 }
 ```
 
 - `Av1` / `H264` are self-contained (rav1e / openh264). `H265` returns `E007` unless system
   ffmpeg is available (in which case it uses x265).
-- The rest are ffmpeg-backed (runtime-detected). `Codec::uses_ffmpeg()` reports whether a
-  codec shells out to ffmpeg.
+- `X264` / `X265` / `Vp9` / `Vp8` are ffmpeg-backed (runtime-detected) on every platform.
+- The hardware variants `H264Vaapi` / `H265Vaapi` / `Av1Vaapi` (VAAPI, **Linux only**),
+  `H264VideoToolbox` / `H265VideoToolbox` (VideoToolbox, **macOS only**) and
+  `H264Qsv` / `H265Qsv` (QSV, **Windows only**) are `#[cfg(target_os = "...")]` gated: they
+  are only compiled on their native platform, so they are absent from `Codec` — and from the
+  `--codec` CLI selection interface / `--help` — elsewhere. `Codec::uses_ffmpeg()` reports
+  whether a codec shells out to ffmpeg.
+- `H264Libva` / `H265Libva` / `Av1Libva` are Linux-only direct VAAPI encoders with **no**
+  ffmpeg subprocess; `Codec::uses_libva()` is `true` for them (always `false` on non-Linux).
 
 ## Core modules
 

@@ -26,6 +26,65 @@ fn main() {
         // x86-64-v3: AVX2 + BMI1/2 + FMA + MOVBE + F16C
         println!("cargo:rustc-flag=-C target-feature=+avx2,+bmi1,+bmi2,+fma,+movbe,+f16c");
     }
+
+    // Direct VAAPI (libva) bindings: when the `libva` feature is enabled on
+    // Linux, run bindgen against the system libva 1.x headers and link `libva`.
+    // This is a *build-time* binding (no runtime `dlopen`), so the build needs
+    // libva development headers + libclang; the feature is off by default so the
+    // standard build / CI stays self-contained.
+    if std::env::var("CARGO_FEATURE_LIBVA").is_ok() && target.contains("linux") {
+        gen_libva_bindings();
+    }
+}
+
+/// Generate `libva` FFI bindings from the system headers and emit the link
+/// directive for `libva`. Panics with a clear message if the headers are
+/// missing, so a Linux build without `libva-devel` fails fast and explainably.
+fn gen_libva_bindings() {
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let out_path = std::path::Path::new(&out_dir).join("libva_bindings.rs");
+
+    let bindings = bindgen::Builder::default()
+        .header("/usr/include/va/va.h")
+        .header("/usr/include/va/va_drm.h")
+        .header("/usr/include/va/va_enc_h264.h")
+        .header("/usr/include/va/va_enc_hevc.h")
+        .header("/usr/include/va/va_enc_av1.h")
+        .header("/usr/include/va/va_vpp.h")
+        .clang_arg("-I/usr/include")
+        // Keep the generated file focused on the libva API surface.
+        .allowlist_type("VA.*")
+        .allowlist_var("VA_.*")
+        .allowlist_var("VAEnc.*")
+        .allowlist_var("VAProfile.*")
+        .allowlist_var("VAEntrypoint.*")
+        .allowlist_var("VAConfigAttrib.*")
+        .allowlist_var("VARateControl.*")
+        .allowlist_var("VA_RT_FORMAT.*")
+        .allowlist_var("VA_FOURCC.*")
+        .allowlist_var("VA_STATUS_.*")
+        .allowlist_var("VA_INVALID.*")
+        .allowlist_var("VAEncMiscParameterType.*")
+        .allowlist_var("VAEncSliceFlag.*")
+        .allowlist_var("VAH264.*")
+        .allowlist_var("VAHEVC.*")
+        .allowlist_var("VAAV1.*")
+        .allowlist_var("VAEncPictureType.*")
+        .allowlist_function("va.*")
+        .generate()
+        .expect(
+            "failed to generate libva bindings (is libva-devel / libva-dev installed, \
+             and is libclang available for bindgen?)",
+        );
+
+    bindings
+        .write_to_file(&out_path)
+        .expect("failed to write libva bindings");
+
+    // Link the system libva at build time.
+    println!("cargo:rustc-link-lib=va");
+    // Re-run if this build script changes.
+    println!("cargo:rerun-if-changed=build.rs");
 }
 
 fn extract_codename(toml: &str) -> Option<String> {
