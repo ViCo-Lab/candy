@@ -631,7 +631,14 @@ fn stream_encode_cpu(
     } else {
         rayon::current_num_threads().max(1)
     };
-    let window = (par * 2).max(2);
+    // Adaptive window: scale parallelism based on per-frame memory.
+    // Each RGBA frame is tw*th*4 bytes. Cap in-flight RGBA at ~256MB
+    // to prevent OOM on high-resolution renders while keeping parallelism
+    // high for small frames.
+    let frame_bytes = tw * th * 4;
+    let mem_budget = 256 * 1024 * 1024; // 256MB
+    let max_by_mem = (mem_budget / frame_bytes).max(2);
+    let window = (par * 2).min(max_by_mem).max(2);
     let cap = window;
     let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Result<RenderedFrame, CandyError>)>(cap);
     // Hoist owned/Copy values out of the thread closure so it captures *no*
