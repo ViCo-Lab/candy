@@ -632,6 +632,68 @@ impl Renderer {
         }
         out
     }
+
+    /// SVG overlay for active morph pairs. For each `#morph(from, to)` pair
+    /// whose `[start_ms, end_ms]` window contains `time_ms`, the morphed
+    /// polygon is emitted as an SVG `<path>` element at the `to` object's
+    /// natural position (with the `to` object's per-frame transform applied).
+    /// The `from` object is already being faded/shrunk by the scheduler's
+    /// crossfade actions, so only the morphed shape needs to be drawn here.
+    pub(crate) fn morph_overlay_svg(
+        &self,
+        states: &HashMap<Label, FrameData>,
+        time_ms: u32,
+    ) -> String {
+        let mut out = String::new();
+        for pair in &self.scene.morph_pairs {
+            if time_ms < pair.start_ms || time_ms > pair.end_ms {
+                continue;
+            }
+            let key = (pair.from.clone(), pair.to.clone());
+            let Some(plan) = self.morph_cache.get(&key) else {
+                continue;
+            };
+            let denom = (pair.end_ms - pair.start_ms).max(1) as f64;
+            let p = (((time_ms - pair.start_ms) as f64) / denom).clamp(0.0, 1.0);
+            let eased = pair.easing.resolve()(p);
+            let ring = plan.at(eased);
+            if ring.is_empty() {
+                continue;
+            }
+            // Position the morphed polygon at the `to` object's current
+            // transform (natural position + animate offset + scale + rotation).
+            let st = states.get(&pair.to);
+            let (tx, ty, scale, rot) = if let Some(st) = st {
+                let nat = self.nat.get(&pair.to).cloned().unwrap_or((0.0, 0.0));
+                let nat_cm = (nat.0 / super::PT_PER_CM, nat.1 / super::PT_PER_CM);
+                (
+                    (nat_cm.0 + st.x) * super::PT_PER_CM,
+                    (nat_cm.1 + st.y) * super::PT_PER_CM,
+                    st.scale,
+                    st.rotation,
+                )
+            } else {
+                let nat = self.nat.get(&pair.to).cloned().unwrap_or((0.0, 0.0));
+                (nat.0, nat.1, 1.0, 0.0)
+            };
+            let path = super::polygon_svg(&ring, &plan.fill, &plan.stroke);
+            // The morph polygon is always fully visible during the morph window.
+            // The crossfade is handled by the `from` object's FadeOut + ScaleBy
+            // actions, not by the morph polygon's opacity. Using the `to`
+            // object's state opacity would make the morph nearly invisible
+            // (the `to` object is Hidden at morph start and FadeIn's from 0).
+            if rot.abs() < 0.01 {
+                out.push_str(&format!(
+                    "<g transform=\"translate({tx:.4},{ty:.4}) scale({scale:.4})\">\n{path}\n</g>\n",
+                ));
+            } else {
+                out.push_str(&format!(
+                    "<g transform=\"translate({tx:.4},{ty:.4}) rotate({rot:.4}) scale({scale:.4})\">\n{path}\n</g>\n",
+                ));
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]

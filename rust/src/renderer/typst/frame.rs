@@ -120,6 +120,7 @@ impl Renderer {
         }
         out.push_str(content);
         out.push('\n');
+        out.push_str(&self.morph_overlay_svg(states, time_ms));
         out.push_str(&self.transform_overlay_svg(states, time_ms));
         if camera.is_some() {
             out.push_str("</g>\n");
@@ -322,6 +323,7 @@ impl Renderer {
         // (instead of repeating the full markup inside every fragment's clip)
         // is also what prevents neighbouring glyphs from leaking through a
         // slightly-off clip box — the "residual garbage" artefact.
+        out.push_str(&self.morph_overlay_svg(&states, time_ms));
         out.push_str(&self.transform_overlay_svg(&states, time_ms));
         // Close the camera group BEFORE drawing subtitles so the captions are
         // not transformed by the camera — they stay pinned at a fixed page
