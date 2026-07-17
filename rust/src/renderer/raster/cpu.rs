@@ -26,18 +26,17 @@ pub(crate) fn rasterize_svg(
         .map_err(|e| CandyError::Encode(format!("usvg parse: {e}")))?;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)
         .ok_or_else(|| CandyError::Encode("failed to allocate pixmap".into()))?;
-    // Identity root transform: the SVG's own viewBox→viewport scale (applied by
-    // `usvg` during parsing, after `set_svg_viewport_px`) already maps the
-    // document into the pixmap.
     resvg::render(
         &tree,
         tiny_skia::Transform::identity(),
         &mut pixmap.as_mut(),
     );
+    // Zero-copy: consume the pixmap's inner Vec instead of cloning.
+    let rgba = pixmap.take();
     Ok(RenderedFrame {
         width: width as usize,
         height: height as usize,
-        rgba: pixmap.data().to_vec(),
+        rgba,
     })
 }
 
@@ -70,7 +69,7 @@ pub(crate) fn set_svg_viewport_px(svg: &str, w: u32, h: u32) -> String {
 
 /// Replace the first `name="..."` attribute value within `s` with `value`.
 fn replace_attr(s: &str, name: &str, value: u32) -> String {
-    let needle = format!("{}=\"", name);
+    let needle = format!("{name}=\"");
     let start = match s.find(&needle) {
         Some(i) => i,
         None => return s.to_string(),
