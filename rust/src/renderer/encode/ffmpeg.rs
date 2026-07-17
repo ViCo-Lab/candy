@@ -83,6 +83,8 @@ fn ffmpeg_args(codec: Codec) -> Option<(&'static str, &'static str)> {
         Codec::Vp8 => Some(("libvpx", "webm")),
         // Self-contained codecs don't go through ffmpeg.
         Codec::Av1 | Codec::H264 => None,
+        #[cfg(target_os = "linux")]
+        Codec::H264Libva | Codec::H265Libva | Codec::Av1Libva => None,
     }
 }
 

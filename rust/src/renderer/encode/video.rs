@@ -76,6 +76,15 @@ pub enum Codec {
     Vp9,
     /// VP8 via libvpx (system ffmpeg).
     Vp8,
+    /// H.264 via direct libva (Linux hardware, no ffmpeg subprocess).
+    #[cfg(target_os = "linux")]
+    H264Libva,
+    /// H.265 via direct libva (Linux hardware, no ffmpeg subprocess).
+    #[cfg(target_os = "linux")]
+    H265Libva,
+    /// AV1 via direct libva (Linux hardware, no ffmpeg subprocess).
+    #[cfg(target_os = "linux")]
+    Av1Libva,
 }
 
 /// An encoded video ready for container muxing.
@@ -202,6 +211,18 @@ impl Codec {
     pub fn is_self_contained(self) -> bool {
         matches!(self, Codec::Av1 | Codec::H264 | Codec::H265)
     }
+
+    /// Returns `true` if this codec uses the direct libva path (Linux only,
+    /// no ffmpeg subprocess).
+    #[cfg(target_os = "linux")]
+    pub fn uses_libva(self) -> bool {
+        matches!(self, Codec::H264Libva | Codec::H265Libva | Codec::Av1Libva)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn uses_libva(self) -> bool {
+        false
+    }
 }
 
 /// A streaming video encoder: frames are pushed one at a time and the muxed
@@ -224,6 +245,8 @@ pub(crate) struct StreamingVideo {
     frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
+    #[cfg(target_os = "linux")]
+    libva: Option<crate::renderer::encode::libva::LibvaStream>,
 }
 
 impl StreamingVideo {
@@ -262,6 +285,8 @@ impl StreamingVideo {
                 frame_count: 0,
                 rav1e: None,
                 h264: None,
+                #[cfg(target_os = "linux")]
+                libva: None,
             })
         } else if codec == Codec::H264 {
             Ok(Self {
@@ -274,6 +299,8 @@ impl StreamingVideo {
                 frame_count: 0,
                 rav1e: None,
                 h264: Some(crate::renderer::encode::h264::H264Stream::new(tw, th, fps)?),
+                #[cfg(target_os = "linux")]
+                libva: None,
             })
         } else if codec == Codec::Av1 {
             Ok(Self {
@@ -293,6 +320,8 @@ impl StreamingVideo {
                     tw, th, fps, true,
                 )?),
                 h264: None,
+                #[cfg(target_os = "linux")]
+                libva: None,
             })
         } else {
             // H265 without ffmpeg, or any other unsupported codec.
@@ -319,6 +348,12 @@ impl StreamingVideo {
                     .flush()
                     .map_err(|e| CandyError::Encode(format!("ffmpeg stdin flush: {e}")))?;
             }
+            self.frame_count += 1;
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(lv) = self.libva.as_mut() {
+            lv.push(&composed)?;
             self.frame_count += 1;
             return Ok(());
         }
