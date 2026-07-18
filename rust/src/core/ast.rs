@@ -89,6 +89,26 @@ pub enum PathMode {
     Bezier,
 }
 
+/// Sequencing of an object animation relative to the previous one on the
+/// timeline. Mirrors the PowerPoint animation-pane "Start" options:
+///
+/// - [`Timing::After`] (default): begin once the previous animation finishes
+///   (PPT "Start: After Previous").
+/// - [`Timing::With`]: begin at the same time as the previous animation, i.e.
+///   run in parallel with it (PPT "Start: With Previous").
+///
+/// The Rust parser resolves `timing` + `delay` into each [`Slide`]'s absolute
+/// `start_ms`; the scheduler consumes `start_ms` directly, so this enum is not
+/// serialized (it lives only in the parse step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Timing {
+    /// Start after the previous animation ends.
+    #[default]
+    After,
+    /// Start together with the previous animation (parallel).
+    With,
+}
+
 /// A single keyframe inside a [`Action::Track`]. Every transform field is
 /// optional; omitted fields carry their *previous* value forward (the object's
 /// current state at the start of the slide is the baseline).
@@ -440,6 +460,14 @@ impl Action {
 /// One slide (a "shot") of the animation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Slide {
+    /// Absolute start time of this slide on the timeline, in **milliseconds**.
+    ///
+    /// Resolved by the parser from the directive's `timing` (`after`/`with`)
+    /// and `delay` parameters. The scheduler places the slide's keyframes at
+    /// `[start_ms, start_ms + duration_ms)`. Defaults to `0` for hand-built
+    /// (test) scenes that don't set it.
+    #[serde(default)]
+    pub start_ms: u32,
     /// Duration of this slide in **milliseconds**. Must be ≥ 1.
     ///
     /// Internally candy works in milliseconds everywhere; the `--fps` CLI
@@ -1270,6 +1298,7 @@ mod tests {
         Scene {
             slides: vec![
                 Slide {
+                    start_ms: 0,
                     duration_ms: 10000,
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
@@ -1278,6 +1307,7 @@ mod tests {
                     }],
                 },
                 Slide {
+                    start_ms: 0,
                     duration_ms: 5000,
                     actions: vec![Action::Scale {
                         target: Label("a".into()),

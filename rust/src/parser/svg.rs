@@ -57,6 +57,7 @@ mod tests {
     fn round_trips_through_json() {
         let scene = Scene {
             slides: vec![Slide {
+                start_ms: 0,
                 duration_ms: 12,
                 actions: vec![Action::MoveTo {
                     target: Label("x".into()),

@@ -231,7 +231,7 @@ pub(crate) fn subtitle_doc(
         pw = page_w,
         ph = page_h,
     );
-    let source = state.main_source(&src, std::path::Path::new(""));
+    let source = state.main_source(&src);
     let world = CandyWorld::new(state, source, Dict::new());
     // Mirror `Renderer::compile`: a malformed body can make typst panic rather
     // than return a diagnostic — catch it so the error is always reported as
@@ -252,7 +252,9 @@ pub(crate) fn subtitle_doc(
     match warned.output {
         Ok(doc) => Ok(doc),
         Err(errs) => {
-            let loc = errs.first().and_then(|d| super::typst_diag_loc(&world, d));
+            let loc = errs
+                .first()
+                .and_then(|d| super::typst_diag_loc(&world, d, std::path::Path::new("")));
             Err(CandyError::Typst(
                 crate::core::diag::format_typst_errors(&errs),
                 loc,

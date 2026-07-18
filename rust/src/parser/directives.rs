@@ -14,7 +14,7 @@ use typst_syntax::ast::{self, AstNode, Expr};
 
 use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
-    Slide, Subtitle, TrackKey,
+    Slide, Subtitle, Timing, TrackKey,
 };
 use crate::core::diag::{CandyWarn, SourceLoc};
 use crate::core::easing::Easing;
@@ -26,6 +26,48 @@ use crate::parser::expr::{
     expr_to_ratio, parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg,
     track_key_from_expr, tuple_cm,
 };
+
+/// Parse the `timing` named argument. Returns `None` when absent (the caller
+/// treats `None` as the sequential `After` default); `"with"` maps to
+/// [`Timing::With`], anything else (incl. `"after"`) to [`Timing::After`].
+fn parse_timing(named: &std::collections::HashMap<String, Expr>) -> Option<Timing> {
+    match named.get("timing") {
+        Some(Expr::Str(s)) => match s.get().as_str() {
+            "with" => Some(Timing::With),
+            _ => Some(Timing::After),
+        },
+        _ => None,
+    }
+}
+
+/// Parse the `delay` named argument (milliseconds; defaults to `0`).
+fn parse_delay(named: &std::collections::HashMap<String, Expr>) -> u32 {
+    named
+        .get("delay")
+        .and_then(expr_to_f64)
+        .unwrap_or(0.0)
+        .max(0.0) as u32
+}
+
+/// Emit a single-slide directive entry at its resolved absolute start time,
+/// then close the entry. This is the common case for object animations that
+/// produce exactly one slide.
+fn emit_slide(
+    ctx: &mut ParseCtx,
+    timing: Option<Timing>,
+    delay: u32,
+    duration: u32,
+    actions: Vec<Action>,
+) {
+    let start = ctx.entry_start(timing, delay);
+    ctx.slides.push(Slide {
+        start_ms: start,
+        duration_ms: duration,
+        actions,
+    });
+    ctx.entry_advance(duration);
+    ctx.entry_close();
+}
 
 /// Register `label` as owned by `scene`, recording its first-seen (declaration)
 /// position in `label_order` so mobjects can later be laid out / painted in
@@ -70,8 +112,8 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "indicate" => process_indicate(&pos, &named, ctx),
         "flash" => process_flash(&pos, &named, ctx),
         "wiggle" => process_wiggle(&pos, &named, ctx),
-        "appear" => process_appear_disappear(&pos, true, ctx),
-        "disappear" => process_appear_disappear(&pos, false, ctx),
+        "appear" => process_appear_disappear(&pos, true, &named, ctx),
+        "disappear" => process_appear_disappear(&pos, false, &named, ctx),
         "set-color" => process_set_color(&pos, &named, node, raw, ctx),
         // Manim-inspired composite animations.
         "blink" => process_blink(&pos, &named, ctx),
@@ -275,11 +317,7 @@ fn process_animate(
             easing: easing.clone(),
         });
     }
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions,
-    });
-    ctx.cursor += duration;
+    emit_slide(ctx, parse_timing(named), parse_delay(named), duration, actions);
 }
 
 /// `pause(duration:)` — a no-op hold in standard Typst; a blank slide here.
@@ -289,11 +327,7 @@ fn process_pause(named: &std::collections::HashMap<String, Expr>, ctx: &mut Pars
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: Vec::new(),
-    });
-    ctx.cursor += duration;
+    emit_slide(ctx, None, 0, duration, Vec::new());
 }
 
 /// `audio(path, blocking:, loop:, volume:, slice:)`.
@@ -317,7 +351,7 @@ fn process_audio(
     let slice = named.get("slice").and_then(|e| tuple_cm(e, raw, node));
     ctx.audio.push(AudioTrack {
         path,
-        start_ms: ctx.cursor,
+        start_ms: ctx.audio_start(parse_timing(named), parse_delay(named)),
         blocking,
         loop_track,
         volume,
@@ -368,14 +402,16 @@ fn process_play(
             easing: Easing::Linear,
         },
     );
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::FadeIn {
+    emit_slide(
+        ctx,
+        None,
+        0,
+        duration,
+        vec![Action::FadeIn {
             target: label.clone(),
             easing: Easing::Linear,
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `save_state(target, slot: "name")` — snapshot the target's current state.
@@ -398,14 +434,16 @@ fn process_save_state(
         .unwrap_or_else(|| "default".to_string());
     // SaveState is instantaneous — emit a 1 ms slide so the scheduler
     // processes the action at the current cursor position.
-    ctx.slides.push(Slide {
-        duration_ms: 1,
-        actions: vec![Action::SaveState {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        1,
+        vec![Action::SaveState {
             target: label,
             slot,
         }],
-    });
-    ctx.cursor += 1;
+    );
 }
 
 /// `restore(target, slot: "name", duration: 500, easing: "smooth")` —
@@ -431,15 +469,17 @@ fn process_restore(
         .unwrap_or(500.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label, Easing::Smooth);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Restore {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::Restore {
             target: label,
             slot,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 300, easing: "smooth")`
@@ -461,17 +501,19 @@ fn process_indicate(
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
     let easing = resolve_easing(named, &label, Easing::Smooth);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Indicate {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::Indicate {
             target: label,
             factor,
             dx,
             dy,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `flash(target, factor: 2.0, duration: 200, easing: "smooth")` —
@@ -491,15 +533,17 @@ fn process_flash(
         .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
     let easing = resolve_easing(named, &label, Easing::Smooth);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Flash {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::Flash {
             target: label,
             factor,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `wiggle(target, degrees: 15, duration: 500, easing: "wiggle")` —
@@ -519,20 +563,27 @@ fn process_wiggle(
         .max(1.0) as u32;
     let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(15.0);
     let easing = resolve_easing(named, &label, Easing::Wiggle);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Wiggle {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::Wiggle {
             target: label,
             degrees,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `appear(target)` / `disappear(target)` — instantaneous visibility toggle.
 /// Emits a 1 ms slide. (`show`/`hide` would conflict with Typst keywords.)
-fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
+fn process_appear_disappear(
+    pos: &[Expr],
+    appear: bool,
+    named: &std::collections::HashMap<String, Expr>,
+    ctx: &mut ParseCtx,
+) {
     let Some(label) = target_arg(pos, &std::collections::HashMap::new()) else {
         return;
     };
@@ -541,11 +592,7 @@ fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
     } else {
         Action::Hide { target: label }
     };
-    ctx.slides.push(Slide {
-        duration_ms: 1,
-        actions: vec![action],
-    });
-    ctx.cursor += 1;
+    emit_slide(ctx, parse_timing(named), parse_delay(named), 1, vec![action]);
 }
 
 /// `set_color(target, color: black, duration: 1, easing: "linear")` —
@@ -578,15 +625,17 @@ fn process_set_color(
         .unwrap_or(1.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label, Easing::Linear);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::SetColor {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::SetColor {
             target: label,
             color,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `blink(target, blinks: 3, duration: 500, easing: "linear")` — alternate
@@ -612,8 +661,10 @@ fn process_blink(
     let per_blink = (duration / (blinks * 2)).max(1);
     let easing = resolve_easing(named, &label, Easing::Smooth);
     // Each blink = FadeTo(0) + FadeTo(1).
+    let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     for _ in 0..blinks {
         ctx.slides.push(Slide {
+            start_ms: ctx.entry_end,
             duration_ms: per_blink,
             actions: vec![Action::FadeTo {
                 target: label.clone(),
@@ -621,7 +672,9 @@ fn process_blink(
                 easing: easing.clone(),
             }],
         });
+        ctx.entry_advance(per_blink);
         ctx.slides.push(Slide {
+            start_ms: ctx.entry_end,
             duration_ms: per_blink,
             actions: vec![Action::FadeTo {
                 target: label.clone(),
@@ -629,8 +682,9 @@ fn process_blink(
                 easing: easing.clone(),
             }],
         });
+        ctx.entry_advance(per_blink);
     }
-    ctx.cursor += per_blink * blinks * 2;
+    ctx.entry_close();
 }
 
 /// `spiral_in(target, scale: 3.0, rotate: 360, duration: 300, easing: "smooth")`
@@ -652,8 +706,10 @@ fn process_spiral_in(
         .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label, Easing::Smooth);
+    let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     // Set initial state: scaled up, rotated, invisible.
     ctx.slides.push(Slide {
+        start_ms: ctx.entry_end,
         duration_ms: 1,
         actions: vec![
             Action::ScaleBy {
@@ -671,8 +727,10 @@ fn process_spiral_in(
             },
         ],
     });
+    ctx.entry_advance(1);
     // Animate to natural state: scale 1, rotate 0, visible.
     ctx.slides.push(Slide {
+        start_ms: ctx.entry_end,
         duration_ms: duration,
         actions: vec![
             Action::Scale {
@@ -691,7 +749,8 @@ fn process_spiral_in(
             },
         ],
     });
-    ctx.cursor += duration;
+    ctx.entry_advance(duration);
+    ctx.entry_close();
 }
 
 /// `focus_on(target, factor: 0.5, duration: 300, easing: "smooth")` —
@@ -712,9 +771,12 @@ fn process_focus_on(
         .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &label, Easing::Smooth);
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![
             Action::ScaleBy {
                 target: label.clone(),
                 factor,
@@ -726,8 +788,7 @@ fn process_focus_on(
                 easing: easing.clone(),
             },
         ],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `fade_transform(from: "old", to: "new", duration: 300, easing: "smooth")`
@@ -756,17 +817,19 @@ fn process_fade_transform(
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from, Easing::Smooth);
     // Fade out `from` and fade in `to` in the same slide (parallel).
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![
             Action::FadeOut {
                 target: from,
                 easing: easing.clone(),
             },
             Action::FadeIn { target: to, easing },
         ],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `move_along_path(target, path, duration: 500, easing: "linear", mode: "polyline", orient: false)`
@@ -826,17 +889,19 @@ fn process_move_along_path(
         })
         .unwrap_or(false);
 
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::MoveAlongPath {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::MoveAlongPath {
             target: label,
             points,
             mode,
             orient,
             easing: easing.clone(),
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `#track(target, ((t, (x, y, scale, opacity, rotation)), ...), duration:,
@@ -874,15 +939,17 @@ fn process_track(
     if keyframes.is_empty() {
         return;
     }
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Track {
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        vec![Action::Track {
             target: label,
             keyframes,
             easing,
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `#camera(x:, y:, zoom:, rotate:, duration:, easing:)` — a global pan, zoom,
@@ -914,9 +981,12 @@ fn process_camera(
 
     let cam = Label("__camera__".into());
     register_synthetic_mobject(ctx, &cam, "none");
-    ctx.slides.push(Slide {
-        duration_ms: duration,
-        actions: vec![Action::Camera {
+    emit_slide(
+        ctx,
+        None,
+        0,
+        duration,
+        vec![Action::Camera {
             target: cam,
             x,
             y,
@@ -924,8 +994,7 @@ fn process_camera(
             rotate,
             easing,
         }],
-    });
-    ctx.cursor += duration;
+    );
 }
 
 /// `#group(name, ("child1", "child2", ...))` — declare `name` as a synthetic
@@ -1008,14 +1077,16 @@ fn process_reveal(
     };
     let Some(inner) = strip_string_literal(body) else {
         warn!(CandyWarn::RevealFallback(format!("@{0}", label.0)));
-        ctx.slides.push(Slide {
-            duration_ms: duration,
-            actions: vec![Action::FadeIn {
+        emit_slide(
+            ctx,
+            parse_timing(named),
+            parse_delay(named),
+            duration,
+            vec![Action::FadeIn {
                 target: label,
                 easing: Easing::Linear,
             }],
-        });
-        ctx.cursor += duration;
+        );
         return;
     };
 
@@ -1026,7 +1097,7 @@ fn process_reveal(
     };
     let n = chunks.len().max(1);
     let step = (duration as f64 / n as f64).ceil().max(1.0) as u32;
-    let start = ctx.cursor;
+    let start = ctx.entry_start(parse_timing(named), parse_delay(named));
 
     let tl = ctx.content_timeline.entry(label.clone()).or_default();
     // Hide at the reveal start (use `none` so the body compiles to nothing).
@@ -1060,10 +1131,12 @@ fn process_reveal(
     }
 
     ctx.slides.push(Slide {
+        start_ms: start,
         duration_ms: duration,
         actions: vec![],
     });
-    ctx.cursor += duration;
+    ctx.entry_advance(duration);
+    ctx.entry_close();
 }
 
 /// Register a synthetic mobject (e.g. the camera or a group parent) with an
@@ -1115,18 +1188,22 @@ fn process_morph(
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from, Easing::Smooth);
 
+    let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     // Hide the `to` object initially (it will fade in as the shape morphs in).
     ctx.slides.push(Slide {
+        start_ms: ctx.entry_end,
         duration_ms: 1,
         actions: vec![Action::Hide { target: to.clone() }],
     });
+    ctx.entry_advance(1);
 
     // The shape morph itself is rendered by the renderer (a `MorphPlan`
     // precomputed from the two bodies' outlines). Here we only drive the
     // *opacity* crossfade so `from` fades/shrinks out while `to` fades in.
-    let start_ms = ctx.cursor + 1;
+    let start_ms = ctx.entry_end;
     let end_ms = start_ms + duration;
     ctx.slides.push(Slide {
+        start_ms,
         duration_ms: duration,
         actions: vec![
             Action::ScaleBy {
@@ -1152,7 +1229,8 @@ fn process_morph(
         end_ms,
         easing,
     });
-    ctx.cursor += duration;
+    ctx.entry_advance(duration);
+    ctx.entry_close();
 }
 
 /// Whether a mobject body is *inline content* (a formula or plain text) that
@@ -1251,14 +1329,17 @@ fn process_transform(
             },
         );
         ctx.items.insert(label.clone(), new_body);
+        let start = ctx.entry_start(parse_timing(named), parse_delay(named));
         ctx.slides.push(Slide {
+            start_ms: start,
             duration_ms: duration,
             actions: vec![Action::FadeIn {
                 target: label,
                 easing: easing.clone(),
             }],
         });
-        ctx.cursor += duration;
+        ctx.entry_advance(duration);
+        ctx.entry_close();
         return;
     }
 
@@ -1294,7 +1375,8 @@ fn process_transform(
     // IMPORTANT: do NOT overwrite `items[label]`. The original body must stay
     // in `items` so every frame *before* this transform still renders the old
     // content. Instead we record a *content switch* on the timeline.
-    let switch_at = ctx.cursor + 1;
+    let start = ctx.entry_start(parse_timing(named), parse_delay(named));
+    let switch_at = start + 1;
     ctx.content_timeline
         .entry(label.clone())
         .or_default()
@@ -1336,6 +1418,7 @@ fn process_transform(
     // Single morph slide: the scheduler's native `Transform` action crossfades
     // `old` out while `target` (now showing `new_body`) fades in.
     ctx.slides.push(Slide {
+        start_ms: switch_at,
         duration_ms: duration,
         actions: vec![Action::Transform {
             target: label.clone(),
@@ -1343,7 +1426,8 @@ fn process_transform(
             easing: easing.clone(),
         }],
     });
-    ctx.cursor += duration;
+    ctx.entry_advance(duration);
+    ctx.entry_close();
 }
 
 /// `subtitle(body, duration:, position:, easing:)` — register a caption overlay.
@@ -1521,13 +1605,15 @@ fn process_scene_switch(
 
     // SceneSwitch is instantaneous by default (0 duration). Emit a 1 ms slide
     // so the scheduler sees the action.
-    ctx.slides.push(Slide {
-        duration_ms: duration.max(1),
-        actions: vec![Action::SceneSwitch {
+    emit_slide(
+        ctx,
+        None,
+        0,
+        duration.max(1),
+        vec![Action::SceneSwitch {
             target,
             duration_ms: duration,
             easing,
         }],
-    });
-    ctx.cursor += duration.max(1);
+    );
 }

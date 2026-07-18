@@ -24,7 +24,7 @@ use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene,
-    SceneInfo, Slide, Subtitle,
+    SceneInfo, Slide, Subtitle, Timing,
 };
 use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::meta::PrivateMeta;
@@ -161,6 +161,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     // page scheduler splits it into per-page slides automatically.
     if ctx.slides.is_empty() {
         ctx.slides.push(Slide {
+            start_ms: 0,
             duration_ms: 500,
             actions: Vec::new(),
         });
@@ -235,7 +236,18 @@ pub(crate) struct ParseCtx {
     pub(crate) initial: HashMap<Label, FrameData>,
     pub(crate) slides: Vec<Slide>,
     pub(crate) audio: Vec<AudioTrack>,
+    /// Sequential ("after") boundary: the end time of the most recently closed
+    /// directive entry. The next `after` animation begins here. Also the
+    /// reference point for `subtitle` / `ecnew` / counter-event markers (which
+    /// are not slide-emitting and never advance it).
     pub(crate) cursor: u32,
+    /// Start time of the most recently closed directive entry. Used as the
+    /// start point for the next `with` animation (PPT "Start: With Previous").
+    pub(crate) timeline_start: u32,
+    /// Running end time within the currently-open directive entry. Used to
+    /// place continuation slides of a multi-slide directive (e.g. `blink`,
+    /// `morph`) sequentially after the entry's first slide.
+    pub(crate) entry_end: u32,
     pub(crate) block_counter: usize,
     /// Page size in cm, detected from `#set page(width:.., height:..)`.
     pub(crate) page_size_cm: Option<(f64, f64)>,
@@ -321,6 +333,51 @@ pub(crate) struct ParseCtx {
     /// whole-document recompiler can blank the caption out of the base document
     /// (it is drawn as a separate, camera-independent overlay).
     pub(crate) subtitle_call_ranges: HashMap<String, (usize, usize)>,
+}
+
+impl ParseCtx {
+    /// Begin a new directive entry and return its absolute start time on the
+    /// timeline, resolving `timing` + `delay`:
+    ///
+    /// - `Some(Timing::With)` → start at the previous entry's start (`delay` added).
+    /// - `None` / `Some(Timing::After)` → start at the sequential boundary `cursor`
+    ///   (`delay` added).
+    ///
+    /// Records the entry's start as `timeline_start` (so the next `with` entry
+    /// lines up) and seeds `entry_end` for any continuation slides.
+    pub(crate) fn entry_start(&mut self, timing: Option<Timing>, delay: u32) -> u32 {
+        let start = match timing {
+            Some(Timing::With) => self.timeline_start.saturating_add(delay),
+            _ => self.cursor.saturating_add(delay),
+        };
+        self.timeline_start = start;
+        self.entry_end = start;
+        start
+    }
+
+    /// Advance the running end of the current entry by `duration`. Call once
+    /// after emitting each slide (the first slide uses the value returned by
+    /// [`Self::entry_start`]; continuation slides read `entry_end` directly).
+    pub(crate) fn entry_advance(&mut self, duration: u32) {
+        self.entry_end += duration;
+    }
+
+    /// Close the current entry, advancing the sequential boundary `cursor` to
+    /// the furthest end seen so far (a `with` entry may finish before the
+    /// previous `after` entry, but the timeline must extend to the last
+    /// finishing animation).
+    pub(crate) fn entry_close(&mut self) {
+        self.cursor = self.cursor.max(self.entry_end);
+    }
+
+    /// Resolve an `#audio` track's start time without advancing the timeline
+    /// (audio plays concurrently and must not block subsequent animations).
+    pub(crate) fn audio_start(&self, timing: Option<Timing>, delay: u32) -> u32 {
+        match timing {
+            Some(Timing::With) => self.timeline_start.saturating_add(delay),
+            _ => self.cursor.saturating_add(delay),
+        }
+    }
 }
 
 /// Recursively walk the syntax tree.
@@ -733,6 +790,14 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
         order.push(i);
         let dur = ctx.slides[i].duration_ms;
         let end = ptr + dur;
+        // Remap this slide's absolute `start_ms` to the switched (remapped)
+        // timeline. `slide_start[i]` is the *sequential* cursor (computed above
+        // by cumulative duration, ignoring `with`/`delay`), so `ptr -
+        // slide_start[i]` is the scene-switch jump delta (0 until the first
+        // forward jump). Adding it to the parser's timing-aware `start_ms`
+        // preserves each slide's `with`/`delay` offset relative to its new
+        // position, while collapsing the gap the switch would otherwise leave.
+        ctx.slides[i].start_ms += ptr - slide_start[i];
         let sid = active_at(slide_start[i] + dur / 2);
         segments.entry(sid).or_default().push((ptr, end));
 
@@ -847,6 +912,35 @@ mod tests {
         assert_eq!(scene.audio.len(), 1);
         assert_eq!(scene.audio[0].path, "voice.opus");
         assert_eq!(scene.audio[0].start_ms, 65); // 30 + 20 + 15 (pause)
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// `timing: "with"` begins at the previous animation's start (parallel);
+    /// `timing: "after"` begins at the latest end so far; `delay:` shifts both.
+    #[test]
+    fn timing_with_and_delay_resolve_start_ms() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("a", circle(radius: 1cm))
+#mobject("b", rect(width: 1cm, height: 1cm))
+#mobject("c", text(size: 12pt)[hi])
+#animate("a", to: (4cm, 0pt), duration: 1000)
+#animate("b", to: (0cm, 4cm), duration: 1000, timing: "with")
+#animate("c", to: (1cm, 1cm), duration: 500, timing: "after", delay: 250)
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_timing_with.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp).unwrap();
+        assert_eq!(scene.slides.len(), 3);
+        // a: default `after` → sequential boundary 0.
+        assert_eq!(scene.slides[0].start_ms, 0);
+        assert_eq!(scene.slides[0].duration_ms, 1000);
+        // b: `with` a, no delay → starts at a's start (0), overlapping it.
+        assert_eq!(scene.slides[1].start_ms, 0);
+        // c: `after` + delay 250 → starts at the latest end (a ends 1000) + 250.
+        assert_eq!(scene.slides[2].start_ms, 1250);
         std::fs::remove_file(&tmp).ok();
     }
 

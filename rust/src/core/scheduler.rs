@@ -90,10 +90,15 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
         })
         .collect();
 
-    let mut ptr: u32 = 0;
+    let mut last_end: u32 = 0;
     for slide in &scene.slides {
-        let start = ptr;
-        let end = ptr + slide.duration_ms;
+        // Slides carry their absolute start time on the timeline, resolved by
+        // the parser from each directive's `timing`/`delay` and remapped for
+        // scene-switch jumps by `finalize_scene_switching`. We consume it
+        // directly instead of maintaining a running cursor.
+        let start = slide.start_ms;
+        let end = slide.start_ms + slide.duration_ms;
+        last_end = last_end.max(end);
 
         for action in &slide.actions {
             let Some(target) = action.target() else {
@@ -163,7 +168,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         easing: easing.clone(),
                     });
                     // Mid keyframe (halfway) = scaled + shifted.
-                    let mid = ptr + slide.duration_ms / 2;
+                    let mid = start + slide.duration_ms / 2;
                     let peak = State {
                         scale: s.scale * factor,
                         x: s.x + dx,
@@ -206,7 +211,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         rotation: s.rotation,
                         easing: easing.clone(),
                     });
-                    let mid = ptr + slide.duration_ms / 2;
+                    let mid = start + slide.duration_ms / 2;
                     let peak = State {
                         scale: s.scale * factor,
                         opacity: s.opacity * 0.5,
@@ -249,7 +254,7 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         rotation: s.rotation,
                         easing: Easing::Wiggle,
                     });
-                    let mid = ptr + slide.duration_ms / 2;
+                    let mid = start + slide.duration_ms / 2;
                     let peak = State {
                         rotation: s.rotation + degrees,
                         ..s
@@ -583,30 +588,14 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             }
         }
 
-        // Scene switching: a `SceneSwitch` action jumps the cursor to the target
-        // scene's `start_ms` (its interval was remapped by `finalize_scene_switching`
-        // at parse time so the renderer's `active_scene_at` gating shows the target
-        // scene's content). Only forward jumps are taken — a backward target would
-        // replay earlier frames and is out of scope for the v1 switch model. The
-        // switch slide itself emits no keyframes (its action has no mobject target,
-        // so the inner loop `continue`s past it).
-        let mut next_ptr = end;
-        for a in &slide.actions {
-            if let Action::SceneSwitch { target, .. } = a {
-                if let Some(tid) = scene.resolve_scene_id(target) {
-                    if let Some(s) = scene.scenes.get(tid) {
-                        if s.start_ms > next_ptr {
-                            next_ptr = s.start_ms;
-                        }
-                    }
-                }
-            }
-        }
-        ptr = next_ptr;
+        // Scene switching no longer needs a cursor jump here: `finalize_scene_switching`
+        // remaps every slide's `start_ms` so the switched playback order is already
+        // encoded in the absolute times. The `SceneSwitch` action itself emits no
+        // keyframes (its `target()` is `None`, so the inner loop `continue`s past it).
     }
 
     // Ensure every item has a keyframe at the final frame.
-    let last = ptr.saturating_sub(1);
+    let last = last_end.saturating_sub(1);
     for (l, st) in &state {
         per_item.entry(l.clone()).or_default().push(FrameData {
             time_ms: last,
@@ -754,6 +743,7 @@ mod tests {
         Scene {
             slides: vec![
                 Slide {
+                    start_ms: 0,
                     duration_ms: 10000,
                     actions: vec![Action::MoveTo {
                         target: Label("a".into()),
@@ -762,6 +752,7 @@ mod tests {
                     }],
                 },
                 Slide {
+                    start_ms: 10000,
                     duration_ms: 5000,
                     actions: vec![Action::FadeOut {
                         target: Label("a".into()),

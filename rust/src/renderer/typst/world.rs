@@ -7,7 +7,7 @@
 //! across every frame compile. `CandyWorld` is a per-compile view that fixes a
 //! specific `main` source over the shared state.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,7 +21,7 @@ use typst_kit::packages::SystemPackages;
 use typst_library::diag::FileError;
 use typst_library::foundations::{Bytes, Datetime, Dict, Duration};
 use typst_library::text::Font;
-use typst_syntax::{FileId, RootedPath, Source as TypstSource, VirtualPath, VirtualRoot};
+use typst_syntax::{FileId, Source as TypstSource, VirtualRoot};
 use typst_utils::LazyHash;
 
 use crate::renderer::typst::lru::LruCache;
@@ -147,10 +147,6 @@ pub(crate) struct WorldState {
     /// The LRU evicts that churn while keeping static bodies resident — see
     /// [`LruCache`].
     source_cache: Mutex<LruCache<String, TypstSource>>,
-    /// The project root (parent of the `.tyx` source), retained so the main
-    /// compiled source can be given a `FileId` rooted at the real file path
-    /// (when known) — this lets `E006` diagnostics point at the user's file.
-    project_root: PathBuf,
     /// Per-inputs `Library` cache. `sys.inputs` is threaded into Typst via
     /// `Library::with_inputs`, so each distinct inputs dictionary needs its own
     /// `Library`. We memoize the built `Library` (an `Arc` to the std library)
@@ -211,7 +207,6 @@ impl WorldState {
             time_warned: AtomicBool::new(false),
             source_cache: Mutex::new(LruCache::with_capacity(SOURCE_CACHE_CAP)),
             library_cache: Mutex::new(LruCache::with_capacity(LIB_CACHE_CAP)),
-            project_root,
         }
     }
 
@@ -225,25 +220,16 @@ impl WorldState {
     /// and standard library) is already shared across frames via `Arc`; this
     /// cache additionally shares the *parsed* source.
     ///
-    /// When `file` is non-empty it is used as the source's `FileId` (rooted at
-    /// the project) so that an `E006` Typst failure points at the real `.tyx`
-    /// file; otherwise a detached `main.typ` source is used (e.g. for
-    /// hand-built / programmatic scenes).
-    pub(crate) fn main_source(&self, src: &str, file: &Path) -> TypstSource {
+    /// The source is always *detached* (Typst's synthetic `main.typ` id), so two
+    /// documents compiled in parallel never collide on a `FileId` (which would
+    /// corrupt Typst's global comemo memoization). The real `.tyx` path is still
+    /// surfaced on an `E006` via [`crate::renderer::typst::typst_diag_loc`], which
+    /// rewrites the detached `main.typ` id back to the user's file.
+    pub(crate) fn main_source(&self, src: &str) -> TypstSource {
         if let Some(cached) = self.source_cache.lock().unwrap().get(src) {
             return cached.clone();
         }
-        let parsed = if file.as_os_str().is_empty() {
-            TypstSource::detached(src.to_string())
-        } else {
-            let vpath = VirtualPath::virtualize(&self.project_root, file).unwrap_or_else(|_| {
-                VirtualPath::new("main.typ").expect("main.typ is a valid virtual path")
-            });
-            TypstSource::new(
-                FileId::new(RootedPath::new(VirtualRoot::Project, vpath)),
-                src.to_string(),
-            )
-        };
+        let parsed = TypstSource::detached(src.to_string());
         self.source_cache
             .lock()
             .unwrap()

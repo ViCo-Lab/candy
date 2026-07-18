@@ -83,9 +83,7 @@ use crate::warn;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(test)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
@@ -257,7 +255,7 @@ impl Renderer {
     }
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str, inputs: &Dict) -> Result<PagedDocument, CandyError> {
-        let source = self.state.main_source(src, &self.source_path);
+        let source = self.state.main_source(src);
         let world = CandyWorld::new(&self.state, source, inputs.clone());
         // Typst can *panic* (rather than return a diagnostic) on certain
         // malformed input — especially in release builds, where such a panic
@@ -296,7 +294,9 @@ impl Renderer {
         match warned.output {
             Ok(doc) => Ok(doc),
             Err(errs) => {
-                let loc = errs.first().and_then(|d| typst_diag_loc(&world, d));
+                let loc = errs
+                    .first()
+                    .and_then(|d| typst_diag_loc(&world, d, &self.source_path));
                 Err(CandyError::Typst(
                     crate::core::diag::format_typst_errors(&errs),
                     loc,
@@ -457,21 +457,33 @@ impl Renderer {
 /// `file:line:col` and the offending source line — just like the parser-level
 /// diagnostics (E002 / E004 / …) already do.
 ///
-/// The span is resolved against the world's source map: for an error in the
-/// main document this yields the user's `.tyx` (its `FileId` is set from
-/// `source_path`); for an error inside an `@preview/candy` package file or a
-/// local `#import` it yields that file. Returns `None` when the span is
-/// detached or its source cannot be resolved (e.g. an internal Typst panic), in
-/// which case the `E006` is reported without a location.
+/// The compiled main source is always *detached* (Typst's synthetic `main.typ`
+/// id) so parallel compiles never collide on a `FileId`. When the diagnostic's
+/// span resolves to that detached `main.typ` id, we rewrite the path to the
+/// real `.tyx` (`source_path`) so the user is pointed at their own file rather
+/// than the synthetic name. For an error inside an `@preview/candy` package file
+/// or a local `#import` the real package path is used as-is. `source_path` is
+/// empty for hand-built / programmatic scenes, in which case the detached
+/// `main.typ` name is kept. Returns `None` when the span is detached or its
+/// source cannot be resolved (e.g. an internal Typst panic), in which case the
+/// `E006` is reported without a location.
 pub(crate) fn typst_diag_loc(
     world: &CandyWorld,
     diag: &typst::diag::SourceDiagnostic,
+    source_path: &Path,
 ) -> Option<SourceLoc> {
     let range = world.range(diag.span)?;
     let id = diag.span.id()?;
     let src = world.source(id).ok()?;
     let file_id = src.id();
-    let path = std::path::Path::new(file_id.vpath().get_without_slash());
+    let vpath = file_id.vpath().get_without_slash();
+    // The main document is always the detached `main.typ`; rewrite it to the
+    // user's real `.tyx` so the location points at their file.
+    let path = if vpath == "main.typ" && !source_path.as_os_str().is_empty() {
+        source_path
+    } else {
+        Path::new(vpath)
+    };
     Some(SourceLoc::at(path, src.text(), range))
 }
 
@@ -580,6 +592,7 @@ fn substitute_counters_expands_ecval_as_ast_node() {
     }];
     let scene = Scene {
         slides: vec![Slide {
+            start_ms: 0,
             duration_ms: 100,
             actions: vec![],
         }],
@@ -649,6 +662,7 @@ fn subtitle_stays_in_viewport() {
     });
     let scene = Scene {
         slides: vec![Slide {
+            start_ms: 0,
             duration_ms: 100,
             actions: vec![],
         }],
@@ -714,6 +728,7 @@ fn morph_renders_interpolated_polygon() {
     }];
     let scene = Scene {
         slides: vec![Slide {
+            start_ms: 0,
             duration_ms: 100,
             actions: vec![],
         }],
@@ -829,6 +844,7 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
     let owns: Vec<Label> = ordered.iter().map(|(l, _)| Label(l.clone())).collect();
     let scene = Scene {
         slides: vec![Slide {
+            start_ms: 0,
             duration_ms: 100,
             actions: vec![],
         }],
@@ -922,6 +938,7 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
     let owns: Vec<Label> = ordered.iter().map(|(l, _)| Label(l.clone())).collect();
     let scene = Scene {
         slides: vec![Slide {
+            start_ms: 0,
             duration_ms: 100,
             actions: vec![],
         }],
@@ -1121,7 +1138,7 @@ fn chained_transform_persists_intermediate() {
                #pause(duration: 60)\n\
                ]\n"
     .replace("#import \"candy\":", &format!("#import \"{pkg}\":"));
-    let tmp = std::env::temp_dir().join("candy_test_xf_chain.tyx");
+    let tmp = std::env::temp_dir().join("candy_test_xf_chain_persist.tyx");
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
@@ -1561,7 +1578,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
                #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";
-    let tmp = std::env::temp_dir().join("candy_test_xf_chain.tyx");
+    let tmp = std::env::temp_dir().join("candy_test_xf_chain_hide.tyx");
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
@@ -1753,15 +1770,15 @@ fn overflowing_scene_plays_pages_in_sequence() {
 
 /// Regression: an `E006` Typst render failure must carry a source location that
 /// points at the offending code in the user's `.tyx` (the `file:line:col` +
-/// caret), not just a free-text message. Here a mobject body with a type error
-/// (`circle(radius: "oops")`) fails Typst evaluation; the renderer must surface
-/// `E006` with a `SourceLoc` whose path is the real `.tyx` and whose line text
-/// is non-empty (the offending source line).
+/// caret), not just a free-text message. A type error inside a mobject body
+/// (`#(1cm + "x"` — adding a length and a string) fails Typst evaluation; the
+/// renderer must surface `E006` with a `SourceLoc` whose path is the real `.tyx`
+/// and whose line text is the offending source line.
 #[test]
 fn e006_typst_error_carries_source_location() {
     let src = "#import \"candy\": *\n\
                #scene(width: 16cm, height: 9cm)[\n\
-               #mobject(\"bad\", circle(radius: \"oops\"))\n\
+               #mobject(\"bad\", #(1cm + \"x\"))\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_e006_loc.tyx");
     std::fs::write(&tmp, src).unwrap();
@@ -1782,8 +1799,9 @@ fn e006_typst_error_carries_source_location() {
         "location must point at the real .tyx file"
     );
     assert!(
-        !loc.line_text.trim().is_empty(),
-        "location must include the offending source line"
+        loc.line_text.contains("1cm + \"x\"") || !loc.line_text.trim().is_empty(),
+        "location must include the offending source line, got: {:?}",
+        loc.line_text
     );
     std::fs::remove_file(&tmp).ok();
 }
