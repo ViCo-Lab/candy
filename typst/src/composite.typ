@@ -3,6 +3,7 @@
 // These directives compose existing candy primitives into higher-level
 // effects. Inert under standard Typst.
 
+#import "validation.typ": *
 
 /// Drive a single target through several keyframes, each controlling a subset
 /// of its properties. Mirrors a timeline track and removes the need for many
@@ -16,11 +17,18 @@
 ///   also be written as `(t, x, y, scale, opacity, rotation)` (flat) — Candy
 ///   reads the state from the second element when present, else the tail.
 /// - `duration`: how long the track lasts, in **milliseconds** (default `1000`).
-/// - `easing`: rate curve for every segment (default `"linear"`).
-#let track(target, keys: (), duration: 1000, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `easing`: rate curve for every segment (default `"smooth"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let track(target, keys: (), duration: 1000, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_array(keys, "track `keys`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -31,8 +39,18 @@
 /// - `zoom`: zoom factor (default `1.0`; `> 1` zooms in).
 /// - `rotate`: camera tilt in degrees clockwise (default `0`).
 /// - `duration`: milliseconds (default `1000`).
-///  `easing`: rate curve (default `"linear"`).
-#let camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "smooth") = none
+/// - `easing`: rate curve (default `"smooth"`).
+///
+/// This is a scene/camera animation, so it does **not** accept `timing`.
+#let camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "smooth") = {
+  _assert_scalar(x, "camera x")
+  _assert_scalar(y, "camera y")
+  _assert_number(zoom, "camera zoom")
+  _assert_number(rotate, "camera rotate")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  none
+}
 
 /// Group several objects under a synthetic parent so they move/scale/rotate
 /// together. Animate the `name` afterwards (e.g. `#animate("g", to: (...))`)
@@ -41,9 +59,8 @@
 /// - `name`: the label of the group (becomes a synthetic parent mobject).
 /// - `members`: an array of member `label` strings.
 #let group(name, members: ()) = {
-  if type(name) != str {
-    panic("Group name must be a string!")
-  }
+  _assert_str(name, "Group name")
+  _assert_array(members, "group `members`")
   none
 }
 
@@ -54,18 +71,34 @@
 /// - `target`: the `name` of the (string) object to reveal.
 /// - `by`: `"char"` or `"word"` (default).
 /// - `duration`, `easing`: as usual.
-#let reveal(target, by: "word", duration: 1000, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let reveal(target, by: "word", duration: 1000, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_enum(by, ("char", "word"), "reveal `by`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
 /// Typewriter reveal — a convenience alias for `#reveal(.., by: "char")`.
-#let typewriter(target, duration: 1000, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+///
+/// - `target`: the `name` of the (string) object to reveal.
+/// - `duration`, `easing`: as usual.
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let typewriter(target, duration: 1000, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -82,10 +115,17 @@
 /// - `to`: the `name` of the target object.
 /// - `duration`: milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`).
-#let morph(from, to, duration: 500, easing: "smooth") = {
-  if type(from) != str or type(to) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let morph(from, to, duration: 500, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(from, "morph `from`")
+  _assert_str(to, "morph `to`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -103,11 +143,20 @@
 ///   `circle(radius: 2cm)` or `[$a + b + d = c$]`.
 /// - `duration`: milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Inert under standard Typst (returns `none`).
-#let transform(target, to: none, duration: 500, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
+#let transform(target, to: none, duration: 500, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  if to != none and type(to) != content {
+    panic("transform `to` must be Typst content or none")
   }
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }

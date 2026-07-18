@@ -78,6 +78,9 @@ impl Renderer {
         //    condition yields `none` (no page), so the compile emits exactly one
         //    page (the active scene).
         for (&sid, &(cs_b, ce_b)) in &scene.artifacts.scene_call {
+            if std::env::var("CANDY_NO_GATE").is_ok() {
+                continue;
+            }
             let cs = src[..cs_b].chars().count();
             let ce = src[..ce_b].chars().count();
             let open = format!(
@@ -238,6 +241,9 @@ impl Renderer {
     /// and break parsing ("`#` is not valid in code"); a bare `{ … }` is a valid
     /// code-mode block.
     fn wrap_mobject_inputs(label: &str, inner: &str) -> String {
+        if std::env::var("CANDY_RAW_MBODY").is_ok() {
+            return inner.to_string();
+        }
         format!(
             "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__b) }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
             inner = inner,

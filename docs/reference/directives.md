@@ -4,7 +4,68 @@ Every directive is *valid, standard Typst* — under `typst compile` it either r
 `body` or `none`, so a `.tyx` is simultaneously a normal Typst document and a Candy
 animation script. Argument tables list the directive's parameters and meaning.
 
-## Core directives
+All directives validate their argument types and enum values at compile time (via
+`panic`); misuse fails loudly instead of producing an AST the Rust parser cannot
+interpret.
+
+## Timing & sequencing
+
+Object animations accept two extra timing parameters that control how the animation is
+sequenced relative to the *previous* animation on the timeline (mirroring the **Start**
+options in the PowerPoint animation pane):
+
+- `timing:` — `"after"` (default) starts this animation once the previous one finishes;
+  `"with"` starts it at the same time as the previous one (parallel).
+- `delay:` — an extra wait in **milliseconds** before this animation begins, on top of
+  `timing` (default `0`).
+
+Scene animations (`scene` / `scene-switch` / `transition` / `camera` / `zoom-to`) and the
+mask (`subtitle`) do **not** accept `timing` / `delay`.
+
+## Scene & camera
+
+These are scene animations: no `timing` / `delay`.
+
+### `#scene(name: none, width: 16cm, height: 9cm, bg: white, body)`
+
+Define a scene (a "slide"). See the Tutorial for full semantics. Under standard Typst
+this sets the page and renders `body`.
+
+### `#scene-switch(target, duration: 0, easing: "smooth")`
+
+Jump the timeline cursor to a named scene (`target` is the scene's `name:` or its
+auto-assigned UUID-like name). `duration: 0` is an instant jump. Inert under standard
+Typst.
+
+### `#transition(kind: "cut", duration: 100)`
+
+Mark a slide transition. `kind`: `"cut"` (instant, default), `"fade"` (crossfade),
+`"slide"` (push). Only `"cut"` is fully implemented. Inert under standard Typst.
+
+### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "smooth")`
+
+A global camera move (pan + zoom + rotate) applied to the whole scene. `x` / `y` are a
+pan offset in cm from the page center; `zoom > 1` magnifies; `rotate` tilts clockwise in
+degrees. Scene-scoped. Inert under standard Typst.
+
+```typst
+#camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+#camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+```
+
+### `#zoom-to(rect, duration: 500, easing: "smooth")`
+
+Zoom-to-region: enlarge a rectangle of the canvas to fill the frame over `duration`
+milliseconds. `rect` is `(x, y, w, h)` in cm, relative to the page origin. Implemented as
+a scale + translate on all mobjects. Inert under standard Typst.
+
+```typst
+#zoom-to((4, 3, 6, 4), duration: 1000, easing: "smooth")
+```
+
+## Mobjects & definitions
+
+These register or group animatable content; they are not animations.
 
 ### `#mobject(label, body)`
 
@@ -15,6 +76,35 @@ position.
 ```typst
 #mobject("dot", circle(radius: 1cm, fill: blue))
 ```
+
+### `#group(name, members: ())`
+
+Group several mobjects under a synthetic parent so they move / scale / rotate together.
+Animate the `name` afterwards (e.g. `#animate("g", rotate: 360)`) to transform every
+member at once. Groups may be nested.
+
+```typst
+#group("wheel", members: ("spoke1", "spoke2", "hub"))
+#animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+```
+
+### `#video(path, width: 8cm, height: 5cm)`
+
+Insert a **video reference** as a placeholder mobject. Typst cannot embed video, so
+Candy renders a labeled placeholder box (rounded rect + ▶ icon + filename). The
+placeholder behaves like any other mobject body (can be animated). To show the real first
+frame, extract it with ffmpeg and use `#mobject("vid", image(...))` instead.
+
+```typst
+#mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
+#animate("clip", scale: 1.2, duration: 500, easing: "smooth")
+```
+
+## Object animations
+
+These target a mobject (or, for `#audio`, a media track) and **accept `timing:` and
+`delay:`** (see [Timing & sequencing](#timing--sequencing)). Under standard Typst they
+are inert (return `none`), except where noted.
 
 ### `#animate(target, ..)`
 
@@ -31,66 +121,28 @@ transforms in any combination; each produces a parallel action.
 | `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
 | `opacity:` | target opacity in `[0, 1]` |
 | `duration:` | length of the animation in **milliseconds** (default `500`) |
-| `easing:` | rate curve (default `"linear"`; see [Easing](easing.md)) |
+| `easing:` | rate curve (default `"smooth"`; see [Easing](easing.md)) |
+| `timing:` | `"after"` (default) or `"with"` — sequencing vs the previous animation |
+| `delay:` | extra wait in **milliseconds** before start (default `0`) |
 
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #animate("box", scale: 1.5, duration: 800, easing: "smooth")
-#animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600)
+#animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600, timing: "with")
 ```
 
-### `#pause(duration: 500)`
+### `#appear(target, timing: "after", delay: 0)` / `#disappear(target, timing: "after", delay: 0)`
 
-Hold the current frame for `duration` milliseconds. Inert under standard Typst.
+Make a mobject visible instantly (`opacity: 1.0`) or invisible instantly (`opacity:
+0.0`), with no interpolation. Useful for appear/disappear-without-fading effects. Inert
+under standard Typst.
 
-### `#play(body, duration: 500)`
-
-Show `body` for `duration` milliseconds as its own animation unit (block-level, controllable
-like a mobject). Under standard Typst the body is shown in the first frame.
-
-```typst
-#play([#text(28pt, weight: "bold")[Step 1 of 3]], duration: 1000)
-#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 1000)
-```
-
-### `#audio(path, blocking: false, loop: false, volume: 1.0, slice: none)`
-
-Insert a voice / audio track. Inert under standard Typst.
-
-| Argument | Meaning |
-|---|---|
-| `path` | audio file (`.opus`/`.ogg` for WebM/MKV, `.aac` for MP4) |
-| `blocking:` | if `true`, the timeline waits for the clip to finish |
-| `loop:` | repeat the clip |
-| `volume:` | gain in `[0, 1]` |
-| `slice:` | optional `(start, end)` seconds sub-range of the clip |
-
-```typst
-#audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
-```
-
-### `#video(path, width: 8cm, height: 5cm)`
-
-Insert a **video reference** as a placeholder mobject. Typst cannot embed video, so
-Candy renders a labeled placeholder box (rounded rect + ▶ icon + filename). The
-placeholder behaves like any other mobject body (can be animated). To show the real first
-frame, extract it with ffmpeg and use `#mobject("vid", image(...))` instead.
-
-```typst
-#mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
-#animate("clip", scale: 1.2, duration: 500, easing: "smooth")
-```
-
-## Manim-inspired directives
-
-These port concepts from Manim Community Edition. Each is inert under standard Typst.
-
-### `#save_state(target, slot: "default")`
+### `#save_state(target, slot: "default", timing: "after", delay: 0)`
 
 Snapshot a mobject's current transform (x / y / scale / rotation / opacity) into a named
 slot. Mirrors `mobject.save_state()`.
 
-### `#restore(target, slot: "default", duration: 500, easing: "linear")`
+### `#restore(target, slot: "default", duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 
@@ -100,26 +152,21 @@ Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 ```
 
-### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth")`
+### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Briefly scale + shift a mobject, then return — a transient "look here" effect. Mirrors
 `Indicate`.
 
-### `#flash(target, factor: 2.0, duration: 200, easing: "smooth")`
+### `#flash(target, factor: 2.0, duration: 200, easing: "smooth", timing: "after", delay: 0)`
 
 Briefly scale up and fade toward transparent, then restore — a "flash" attention effect.
 Mirrors `Flash`.
 
-### `#wiggle(target, degrees: 15.0, duration: 500, easing: "wiggle")`
+### `#wiggle(target, degrees: 15.0, duration: 500, easing: "wiggle", timing: "after", delay: 0)`
 
 Oscillate rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
 
-### `#appear(target)` / `#disappear(target)`
-
-Make a mobject visible instantly (`opacity: 1.0`) or invisible instantly (`opacity:
-0.0`), with no interpolation. Useful for appear/disappear-without-fading effects.
-
-### `#set_color(target, color: "black", duration: 1, easing: "linear")`
+### `#set_color(target, color: "black", duration: 1, easing: "linear", timing: "after", delay: 0)`
 
 Record a color change for a mobject. The color is tracked in the timeline, but the current
 renderer treats it as a no-op (Typst bodies are opaque strings). Future versions with
@@ -129,43 +176,25 @@ structured mobjects will apply it. Mirrors `set_color`.
 #set_color("dot", color: "red", duration: 300, easing: "smooth")
 ```
 
-### `#transition(kind: "cut", duration: 100)`
-
-Mark a slide transition ("cut" between scenes). `kind`: `"cut"` (instant, default),
-`"fade"` (crossfade), `"slide"` (push). Only `"cut"` is fully implemented; the others are
-recorded for future versions. Inert under standard Typst.
-
-### `#zoom-to(rect, duration: 500, easing: "smooth")`
-
-Zoom-to-region: enlarge a rectangle of the canvas to fill the frame over `duration`
-milliseconds, producing a "camera zoom". `rect` is `(x, y, w, h)` in cm, relative to the page
-origin. Implemented as a scale + translate on all mobjects.
-
-```typst
-#zoom-to((4, 3, 6, 4), duration: 1000, easing: "smooth")
-```
-
-## Composite animations
-
-### `#blink(target, blinks: 3, duration: 500, easing: "linear")`
+### `#blink(target, blinks: 3, duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
 
-### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth")`
+### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
 `SpiralIn`.
 
-### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")`
+### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Shrink a "spotlight" onto the target (scale down + dim). Mirrors `FocusOn`.
 
-### `#fade-transform(from, to, duration: 300, easing: "smooth")`
+### `#fade-transform(from, to, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Crossfade two pre-registered mobjects: fade out `from` while fading in `to`. Mirrors
 `FadeTransform` (simple crossfade variant).
 
-### `#move-along-path(target, path, duration: 500, easing: "linear")`
+### `#move-along-path(target, path, duration: 500, easing: "smooth", mode: "polyline", orient: false, timing: "after", delay: 0)`
 
 Move `target` along a polyline through `path` (array of `(x, y)` points in cm, absolute).
 The scheduler generates a keyframe at each point, distributed across `duration`. Mirrors
@@ -175,14 +204,14 @@ The scheduler generates a keyframe at each point, distributed across `duration`.
 #move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 2000, easing: "smooth")
 ```
 
-### `#morph(from, to, duration: 24, easing: "smooth")`
+### `#morph(from, to, duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Morph one mobject into another by crossfading + scaling. Both must be registered via
 `mobject`. This is the **simplified** Morph — true point-by-point morphing (Manim's
 `Transform`) requires structured mobjects, which Candy's opaque-content model does not
 support; the crossfade + scale variant is a reasonable approximation.
 
-### `#transform(target, to: none, duration: 24, easing: "smooth")`
+### `#transform(target, to: none, duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Morph a **single** mobject's content into new inline content — Candy's Manim-style
 `Transform` / `ReplacementTransform`. `target`'s current body is smoothly replaced by
@@ -209,7 +238,7 @@ content) the transform falls back to a crossfade + scale morph.
 #transform("eq", to: [$a + b + d = c$], duration: 1000, easing: "smooth")
 ```
 
-### `#reveal(target, by: "word", duration: 1000, easing: "linear")`
+### `#reveal(target, by: "word", duration: 1000, easing: "smooth", timing: "after", delay: 0)`
 
 Progressively reveal a *string* mobject by swapping its body to longer and longer prefixes
 over `duration`. `by: "word"` reveals word-by-word; `by: "char"` reveals
@@ -219,7 +248,7 @@ body must be a string literal (`#mobject("cap", "Hello")`), not a content block.
 [Tutorial · first clip](../tutorial/first-clip.md#mobjects--actions--the-core-idea)), so
 later content does not jump as it types in.
 
-### `#typewriter(target, duration: 1000, easing: "linear")`
+### `#typewriter(target, duration: 1000, easing: "smooth", timing: "after", delay: 0)`
 
 Convenience alias for `#reveal(.., by: "char")` — a classic typewriter reveal.
 
@@ -228,7 +257,7 @@ Convenience alias for `#reveal(.., by: "char")` — a classic typewriter reveal.
 #typewriter("cap", duration: 1500, easing: "linear")
 ```
 
-### `#track(target, keys: (), duration: 1000, easing: "linear")`
+### `#track(target, keys: (), duration: 1000, easing: "smooth", timing: "after", delay: 0)`
 
 Drive a single target through several keyframes, each controlling a subset of its
 properties — a timeline track that removes the need for many sequential `#animate`s.
@@ -248,37 +277,48 @@ also be written flat as `(t, x, y, scale, opacity, rotation)`.
   duration: 2000, easing: "smooth")
 ```
 
-## Camera & groups
+### `#audio(path, blocking: false, loop: false, volume: 1.0, slice: none, timing: "after", delay: 0)`
 
-### `#group(name, members: ())`
+Insert a voice / audio track. Audio is an **object animation**, so it accepts `timing`
+and `delay`. Inert under standard Typst.
 
-Group several mobjects under a synthetic parent so they move / scale / rotate together.
-Animate the `name` afterwards (e.g. `#animate("g", rotate: 360)`) to transform every
-member at once. Groups may be nested. The group's rotation pivots about the figure's
-centroid, so a ring of objects placed around a center spins in place.
-
-```typst
-#group("wheel", members: ("spoke1", "spoke2", "hub"))
-#animate("wheel", rotate: 360, duration: 3000, easing: "linear")
-```
-
-### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "linear")`
-
-A global camera move applied to the whole scene (pan + zoom + rotate), mirroring Manim's
-camera frame transforms. `x` / `y` are a pan offset in cm from the page center; `zoom > 1`
-magnifies; `rotate` tilts clockwise in degrees. The camera is scene-scoped: it only
-transforms the scene active when the `#camera` directive runs.
+| Argument | Meaning |
+|---|---|
+| `path` | audio file (`.opus`/`.ogg` for WebM/MKV, `.aac` for MP4) |
+| `blocking:` | if `true`, the timeline waits for the clip to finish |
+| `loop:` | repeat the clip |
+| `volume:` | gain in `[0, 1]` |
+| `slice:` | optional `(start, end)` seconds sub-range of the clip |
+| `timing:` | `"after"` (default) or `"with"` — sequencing vs the previous animation |
+| `delay:` | extra wait in **milliseconds** before start (default `0`) |
 
 ```typst
-#camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-#camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+#audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
 ```
 
-## Subtitles
+## Content blocks
+
+### `#play(body, duration: 500)`
+
+Show `body` for `duration` milliseconds as its own animation unit (block-level, controllable
+like a mobject). `play` is a self-contained content block and does **not** accept `timing`
+/ `delay`. Under standard Typst the body is shown in the first frame.
+
+```typst
+#play([#text(28pt, weight: "bold")[Step 1 of 3]], duration: 1000)
+#play([#text(28pt, weight: "bold")[Step 2 of 3]], duration: 1000)
+```
+
+### `#pause(duration: 500)`
+
+Hold the current frame for `duration` milliseconds. Inert under standard Typst.
+
+## Subtitles (masks)
 
 ### `#subtitle(body, duration: none, position: "bottom", easing: "linear")`
 
-Overlay `body` (any Typst block content) on top of the animation.
+Overlay `body` (any Typst block content) on top of the animation. A subtitle is a
+**mask/overlay** and does **not** accept `timing` / `delay`.
 
 - `duration:` lifetime in **milliseconds**. `none` (default) means *persist* — the caption
   stays until replaced by another `#subtitle` in the same Typst scope, or until that scope
@@ -299,6 +339,36 @@ its own (shadowing).
   #subtitle([Child scope caption], position: "top", duration: 800)
   #pause(duration: 800)
 ]
+```
+
+## Easing counters
+
+### `#ecnew(name, seed: 0, step: 1, duration: none, easing: "linear")`
+
+Register an integer counter. Returns `seed` under standard Typst (so binding it captures
+the initial value). With no `duration`, the counter steps once per millisecond; a positive
+`duration` ramps `seed → seed + step·duration` over that window, shaped by `easing`.
+
+### `#ecval(value, default: 0)`
+
+Read the current value of an easing counter. Inside candy's pipeline it is substituted with
+the live, eased integer and may be used directly as a Typst parameter
+(`rect(width: ecval(n) * 1cm)`). Under standard Typst it returns its argument unchanged
+when it is already a number, so bind the `ecnew` result (`#let n = ecnew("n")`) and pass
+`n`.
+
+### `#ecpause(name)` / `#ecresume(name)` / `#ecdestroy(name)`
+
+Pause / resume / freeze a counter. Inert under standard Typst.
+
+```typst
+#let r = ecnew("r", seed: 40, step: 1)
+#mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
+#pause(duration: 600)
+#ecpause("r")
+#pause(duration: 600)
+#ecresume("r")
+#ecdestroy("r")
 ```
 
 ## Helpers & constants

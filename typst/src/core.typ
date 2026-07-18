@@ -7,6 +7,8 @@
 // toolchain reads the same directives from the source's **AST** (not the
 // rendered output) and produces the full video.
 
+#import "validation.typ": *
+
 // Candy — scene definition.
 //
 // `scene` sets the canvas size / background for a group of content and is the
@@ -60,6 +62,8 @@
   if name != none and type(name) != str {
     panic("scene name must be a string")
   }
+  _assert_length(width, "scene width")
+  _assert_length(height, "scene height")
   page(width: width, height: height, margin: 0pt, fill: bg, body)
 }
 
@@ -69,7 +73,7 @@
 ///
 /// - `target` / `name`: the scene name to switch to (required).
 /// - `duration`: transition duration in ms (default `0`, instant jump).
-/// - `easing`: easing curve string (default `"linear"`).
+/// - `easing`: easing curve string (default `"smooth"`).
 ///
 /// Named scenes are defined via `#scene(name: "foo", ...)`. Anonymous scenes
 /// receive auto-assigned names like `"scene_00000000"`.
@@ -77,9 +81,9 @@
 /// Under standard Typst this is inert (returns `none`). In candy's animation
 /// pipeline it jumps the timeline cursor to the target scene's start time.
 #let scene-switch(target, duration: 0, easing: "smooth") = {
-  if type(target) != str {
-    panic("Scene-switch target must be a string!")
-  }
+  _assert_str(target, "Scene-switch target")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
   none
 }
 
@@ -93,7 +97,11 @@
 /// - `duration`: number of milliseconds for the transition (default `100`).
 ///
 /// Inert under standard Typst.
-#let transition(kind: "cut", duration: 100) = none
+#let transition(kind: "cut", duration: 100) = {
+  _assert_enum(kind, ("cut", "fade", "slide"), "transition kind")
+  _assert_nonneg(duration, "duration")
+  none
+}
 
 /// Register an animatable object ("mobject").
 ///
@@ -126,13 +134,19 @@
 ///   current rotation).
 ///
 /// - `duration`: number of milliseconds the animation spans (default `500`).
-/// - `easing`: a string naming the rate curve (default `"linear"`). One of:
+/// - `easing`: a string naming the rate curve (default `"smooth"`). One of:
 ///   `"linear"`, `"smooth"`, `"smoothstep"`, `"smootherstep"`,
 ///   `"quad-in"` / `"quad-out"` / `"quad-in-out"`,
 ///   `"cubic-in"` / `"cubic-out"` / `"cubic-in-out"` (aliases: `"ease-in"`,
 ///   `"ease-out"`, `"ease-in-out"`),
 ///   `"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
 ///   Unknown names fall back to `linear` with a warning.
+/// - `timing`: sequencing relative to the previous animation on the timeline.
+///   `"after"` (default) starts this animation once the previous one finishes;
+///   `"with"` starts it at the same time as the previous one (parallel). Only
+///   object animations accept `timing`.
+/// - `delay`: extra wait in **milliseconds** before this animation begins, on
+///   top of `timing` (default `0`).
 ///
 /// Absolute and relative transforms may be combined in one `animate` call:
 /// each produces a separate action that animates in parallel over the slide's
@@ -149,40 +163,61 @@
   opacity: none,
   duration: 500,
   easing: "smooth",
+  timing: "after",
+  delay: 0,
 ) = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
+  _assert_str(target, "Animation target")
+  if to != none and type(to) != array {
+    panic("animate `to` must be an (x, y) array or none")
   }
+  if opacity != none {
+    _assert_range(opacity, 0, 1, "opacity")
+  }
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
 /// Make a mobject visible instantly (set opacity to 1.0). No interpolation.
 ///
 /// - `target`: the `name` of the object to make visible.
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Useful for "appear without fading" effects. Inert under standard Typst.
-#let appear(target) = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let appear(target, timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
 /// Make a mobject invisible instantly (set opacity to 0.0). No interpolation.
 ///
 /// - `target`: the `label` of the object to make invisible.
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Useful for "disappear without fading" effects. Inert under standard Typst.
-#let disappear(target) = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let disappear(target, timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
 /// Hold the current frame for `duration` milliseconds (default `500`, a manual pause marker).
 /// Inert under standard Typst.
-#let pause(duration: 500) = none
+#let pause(duration: 500) = {
+  _assert_nonneg(duration, "duration")
+  none
+}
 
 /// Show `body` for `duration` milliseconds (default `500`) as its own animation unit (a block-level
 /// object, precisely controllable like a mobject).
@@ -197,7 +232,27 @@
 /// - `loop`: repeat the clip.
 /// - `volume`: gain in `[0, 1]`.
 /// - `slice`: optional `(start, end)` seconds sub-range of the clip.
-#let audio(path, blocking: false, loop: false, volume: 1.0, slice: none) = none
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). Audio is an object animation, so it
+///   accepts `timing`.
+/// - `delay`: extra wait in milliseconds before this track begins (default `0`).
+#let audio(
+  path,
+  blocking: false,
+  loop: false,
+  volume: 1.0,
+  slice: none,
+  timing: "after",
+  delay: 0,
+) = {
+  _assert_str(path, "audio path")
+  _assert_bool(blocking, "blocking")
+  _assert_bool(loop, "loop")
+  _assert_range(volume, 0, 1, "audio volume")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
+  none
+}
 
 /// Insert a video reference as a placeholder mobject.
 ///
@@ -216,6 +271,9 @@
 /// ```
 /// then use `#mobject("vid", image("first_frame.png", width: 8cm))`.
 #let video(path, width: 8cm, height: 5cm) = {
+  _assert_str(path, "video path")
+  _assert_length(width, "video width")
+  _assert_length(height, "video height")
   block(
     width: width,
     height: height,

@@ -4,6 +4,8 @@
 // bodies via `ecval(name)`. Standard Typst sees the integer `seed`; the candy
 // pipeline steps the value over time, shaped by the counter's easing.
 
+#import "validation.typ": *
+
 /// Register an integer counter named `name`.
 ///
 /// - `seed`: the integer value (standard-Typst return value, and the starting
@@ -23,9 +25,13 @@
 /// Scope rules follow Typst: a counter in a child scope shadows a parent-scope
 /// counter of the same name, and it auto-destroys when its scope exits.
 #let ecnew(name, seed: 0, step: 1, duration: none, easing: "linear") = {
-  if type(name) != str {
-    panic("Easing-counter name must be a string!")
+  _assert_str(name, "Easing-counter name")
+  _assert_int(seed, "ecnew seed")
+  _assert_int(step, "ecnew step")
+  if duration != none {
+    _assert_nonneg(duration, "duration")
   }
+  _assert_str(easing, "easing")
   none
 }
 

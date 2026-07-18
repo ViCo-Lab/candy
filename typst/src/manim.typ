@@ -5,18 +5,25 @@
 // or returns `none`), so a `.tyx` file using them is still a valid Typst
 // document. The Candy Rust parser reads them from the AST.
 
+#import "validation.typ": *
+
 /// Snapshot a mobject's current transform (x/y/scale/rotation/opacity) into a
 /// named save slot. The slot can later be restored with `restore`.
 ///
 /// - `target`: the `name` of the object to snapshot.
 /// - `slot`: a name for the save slot (default `"default"`). Multiple slots
 ///   per target are allowed.
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `mobject.save_state()`. Inert under standard Typst.
-#let save_state(target, slot: "default") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let save_state(target, slot: "default", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_str(slot, "save slot")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -27,12 +34,19 @@
 /// - `slot`: the save slot to restore from (default `"default"`).
 /// - `duration`: number of milliseconds (default `500`).
 /// - `easing`: rate curve (default `"smooth"`; see `animate` for the list).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `Restore(mobject)`. Inert under standard Typst.
-#let restore(target, slot: "default", duration: 500, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let restore(target, slot: "default", duration: 500, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_str(slot, "save slot")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -45,12 +59,21 @@
 /// - `dx`, `dy`: offset in cm at the peak (default `0`).
 /// - `duration`: number of milliseconds (default `300`).
 /// - `easing`: rate curve for the "out" half (default `"smooth"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `Indicate`. Inert under standard Typst.
-#let indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_number(factor, "factor")
+  _assert_scalar(dx, "indicate dx")
+  _assert_scalar(dy, "indicate dy")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -61,12 +84,19 @@
 /// - `factor`: peak scale multiplier (default `2.0`).
 /// - `duration`: number of milliseconds (default `200`).
 /// - `easing`: rate curve (default `"smooth"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `Flash`. Inert under standard Typst.
-#let flash(target, factor: 2.0, duration: 200, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let flash(target, factor: 2.0, duration: 200, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_number(factor, "factor")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -77,6 +107,10 @@
 /// - `degrees`: peak rotation amplitude (default `15`).
 /// - `duration`: number of milliseconds (default `500`).
 /// - `easing`: rate curve (default `"wiggle"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `Wiggle`. Inert under standard Typst.
 #let wiggle(
@@ -84,10 +118,15 @@
   degrees: 15.0,
   duration: 500,
   easing: "wiggle",
+  timing: "after",
+  delay: 0,
 ) = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+  _assert_str(target, "Animation target")
+  _assert_number(degrees, "degrees")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -99,25 +138,39 @@
 /// - `color`: a color name or hex string (e.g. `"red"`, `"#ff0000"`).
 /// - `duration`: number of milliseconds (default `1`, i.e. instantaneous).
 /// - `easing`: rate curve (default `"linear"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
 ///
 /// Mirrors Manim's `set_color`. Inert under standard Typst.
-#let set_color(target, color: "black", duration: 1, easing: "linear") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+#let set_color(target, color: "black", duration: 1, easing: "linear", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_str(color, "color")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
 /// Blink: alternate opacity 1↔0 N times. Mirrors Manim's `Blink`.
 ///
 /// - `target`: the `label` of the object to blink.
-/// - `blinks`: number of on-off cycles (default `3`).
+/// - `blinks`: number of on-off cycles (default `3`, must be an integer).
 /// - `duration`: total milliseconds (default `500`, split evenly across blinks).
-/// - `easing`: rate curve (default `"linear"`).
-#let blink(target, blinks: 3, duration: 500, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `easing`: rate curve (default `"smooth"`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let blink(target, blinks: 3, duration: 500, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_int(blinks, "blinks")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -129,10 +182,18 @@
 /// - `rotate`: initial rotation in degrees (default `360` — one full turn).
 /// - `duration`: milliseconds for the spiral-in (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
-#let spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_number(scale, "scale")
+  _assert_number(rotate, "rotate")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -143,10 +204,17 @@
 /// - `factor`: scale-down factor (default `0.5` — shrinks to half size).
 /// - `duration`: milliseconds (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
-#let focus-on(target, factor: 0.5, duration: 300, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_number(factor, "factor")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -158,10 +226,17 @@
 /// - `to`: the `name` of the target object (fades in).
 /// - `duration`: milliseconds (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
-#let fade-transform(from, to, duration: 300, easing: "smooth") = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let fade-transform(from, to, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+  _assert_str(from, "fade-transform `from`")
+  _assert_str(to, "fade-transform `to`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -175,11 +250,23 @@
 /// - `target`: the `label` of the object to move.
 /// - `path`: an array of `(x, y)` points in cm, e.g. `((0cm, 0cm), (4cm, 2cm), (8cm, 0cm))`.
 /// - `duration`: how long the motion lasts, in milliseconds (default `500`).
-/// - `easing`: rate curve (default `"linear"`).
-#let move-along-path(target, path, duration: 500, easing: "smooth", mode: "polyline", orient: false) = {
-  if type(target) != str {
-    panic("Animation target must be a string!")
-  }
+/// - `easing`: rate curve (default `"smooth"`).
+/// - `mode`: path interpretation — `"polyline"` (default).
+/// - `orient`: if `true`, rotate the object to face its direction of travel
+///   (default `false`).
+/// - `timing`: sequencing relative to the previous animation — `"after"`
+///   (default) or `"with"` (parallel). See `animate` for details.
+/// - `delay`: extra wait in milliseconds before this animation begins
+///   (default `0`).
+#let move-along-path(target, path, duration: 500, easing: "smooth", mode: "polyline", orient: false, timing: "after", delay: 0) = {
+  _assert_str(target, "Animation target")
+  _assert_array(path, "move-along-path `path`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  _assert_str(mode, "mode")
+  _assert_bool(orient, "orient")
+  _assert_timing(timing)
+  _assert_nonneg(delay, "delay")
   none
 }
 
@@ -192,5 +279,10 @@
 /// - `easing`: rate curve (default `"smooth"`).
 ///
 /// Implemented as a scale + translate on all mobjects; inert under standard
-/// Typst.
-#let zoom-to(rect, duration: 500, easing: "smooth") = none
+/// Typst. This is a scene/camera animation, so it does **not** accept `timing`.
+#let zoom-to(rect, duration: 500, easing: "smooth") = {
+  _assert_array(rect, "zoom-to `rect`")
+  _assert_nonneg(duration, "duration")
+  _assert_str(easing, "easing")
+  none
+}

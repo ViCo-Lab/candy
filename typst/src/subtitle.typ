@@ -2,6 +2,8 @@
 //
 // A `subtitle` overlays arbitrary Typst block content on top of the animation.
 
+#import "validation.typ": *
+
 #let _subtitle_anchor(position) = {
   let m = 1cm
   if type(position) == array {
@@ -53,8 +55,16 @@
 ///
 /// Subtitles are camera-independent: a global `#camera` (pan/zoom/rotate) only
 /// transforms the mobjects, never the captions — a subtitle always stays at its
-/// fixed page anchor and fixed size, regardless of the current view.
+/// fixed page anchor and fixed size, regardless of the current view. This is a
+/// mask/overlay, so it does **not** accept `timing`.
 #let subtitle(body, duration: none, position: "bottom", easing: "linear") = {
+  if duration != none and type(duration) != int and type(duration) != float {
+    panic("subtitle duration must be a number or none")
+  }
+  if type(position) != str and type(position) != array {
+    panic("subtitle position must be a string or an (x, y) array")
+  }
+  _assert_str(easing, "easing")
   let (align, dx, dy) = _subtitle_anchor(position)
 
   // Fixed style: white text with black stroke for maximum contrast on any background
