@@ -133,7 +133,7 @@ impl PageScheduler {
             let page = slide
                 .actions
                 .iter()
-                .filter_map(|a: &Action| page_of.get(a.target()).copied())
+                .filter_map(|a: &Action| a.target().and_then(|l| page_of.get(l).copied()))
                 .next()
                 .or(cur_page)
                 .unwrap_or(0);

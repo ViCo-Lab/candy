@@ -328,7 +328,7 @@ when the stream is not a terminal or `NO_COLOR` (https://no-color.org) is set.
 
 All timing is in **milliseconds** (not frames). `--fps` controls only the output frame rate: a
 1000 ms slide at 30 fps ≈ 30 frames, at 60 fps ≈ 60 frames — same wall-clock duration.
-`#subtitle` and `#ecounter` lifetimes are given directly in ms; `#animate` / `#pause` / `#play`
+`#subtitle` and `#ecnew` lifetimes are given directly in ms; `#animate` / `#pause` / `#play`
 durations are all in milliseconds.
 
 ## Artifacts

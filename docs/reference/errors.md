@@ -6,7 +6,7 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 > **Source location:** diagnostics that originate from a specific piece of user
 > source point at it. When a warning/error carries a location, the reporter
 > prints `path:line:col`, the offending source line, and a `^` caret under the
-> exact span — e.g. `W015` (duplicate mobject/ecounter name) and `E004`
+> exact span — e.g. `W015` (duplicate mobject/ecnew name) and `E004`
 > (LabelNotFound) both do. This lets you jump straight to the problematic code
 > instead of guessing from the message alone.
 
@@ -67,4 +67,4 @@ each variant to its `W` code.
 | W012 | `OutputNameCountMismatch` | The number of `--output` names does not match the number of inputs; custom names ignored, default `dist/<stem>.<ext>` used. |
 | W013 | `OutputNameInvalid` | An `--output` name contains a path separator / multi-level directory; default `dist/<stem>.<ext>` used. |
 | W014 | `LibvaFallback` | VA-API (libva) hardware encoding was requested but unavailable or failed; candy transparently fell back to a software codec. |
-| W015 | `DuplicateName` | A mobject label or ecounter name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |
+| W015 | `DuplicateName` | A mobject label or ecnew name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |

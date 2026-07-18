@@ -7,15 +7,6 @@
 // toolchain reads the same directives from the source's **AST** (not the
 // rendered output) and produces the full video.
 
-/// Register an animatable object ("mobject").
-///
-/// - `label`: unique string id, referenced later by `animate` / `play`.
-/// - `body`: the object's content — a bare block or element (e.g.
-///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
-///
-/// Under standard Typst this simply renders `body` at its natural position.
-#let mobject(label, body) = block(body)
-
 // Candy — scene definition.
 //
 // `scene` sets the canvas size / background for a group of content and is the
@@ -28,6 +19,10 @@
 /// a slide; the page size is also used by the renderer as the canvas size for
 /// every frame in this scene.
 ///
+/// - `name`: optional human-readable name for scene switching (e.g., `"intro"`,
+///   `"demo"`). Named scenes can be targeted directly via `#scene-switch(target: "name")`.
+///   Anonymous scenes (without a `name:`) are auto-assigned UUID-like names
+///   (e.g., `"scene_00000000"`) so they can still be referenced by `#scene-switch`.
 /// - `width`: page width (default `16cm` — standard 16:9 slide width).
 /// - `height`: page height (default `9cm`).
 /// - `bg`: background fill (default `white`).
@@ -54,11 +49,64 @@
 ///   as a single implicit root scene following the same one-page / split rules
 ///   (default canvas 16cm × 9cm). A scene's page size is inherited from the
 ///   nearest ancestor that declares one.
+/// - *Named scenes & switching.* Use `#scene(name: "foo", ...)` to give a scene
+///   a human-readable name. Then use `#scene-switch(target: "foo")` to jump the
+///   timeline cursor to that scene. Anonymous scenes get auto-assigned UUID
+///   names (e.g., `"scene_a1b2c3d4"`) which can also be targeted.
 ///
 /// Call `scene` at the top of your `.tyx` to set the canvas size. Without it,
 /// candy defaults to 16cm × 9cm.
-#let scene(width: 16cm, height: 9cm, bg: white, body) = {
+#let scene(name: none, width: 16cm, height: 9cm, bg: white, body) = {
+  if name != none and type(name) != str {
+    panic("scene name must be a string")
+  }
   page(width: width, height: height, margin: 0pt, fill: bg, body)
+}
+
+/// Switch to a named scene by `target` (the scene's `name:` value or UUID-like
+/// auto-assigned name). Optionally animate the transition over `duration` ms
+/// with an `easing` curve.
+///
+/// - `target` / `name`: the scene name to switch to (required).
+/// - `duration`: transition duration in ms (default `0`, instant jump).
+/// - `easing`: easing curve string (default `"linear"`).
+///
+/// Named scenes are defined via `#scene(name: "foo", ...)`. Anonymous scenes
+/// receive auto-assigned names like `"scene_00000000"`.
+///
+/// Under standard Typst this is inert (returns `none`). In candy's animation
+/// pipeline it jumps the timeline cursor to the target scene's start time.
+#let scene-switch(target, duration: 0, easing: "smooth") = {
+  if type(target) != str {
+    panic("Scene-switch target must be a string!")
+  }
+  none
+}
+
+/// Mark a slide transition (a "cut" between scenes). Semantically, this is a
+/// boundary marker; candy inserts a brief blank frame or crossfade between
+/// the preceding and following content.
+///
+/// - `kind`: transition style — `"cut"` (instant, default), `"fade"` (crossfade),
+///   `"slide"` (push). Only `"cut"` is fully implemented; others are recorded
+///   for future versions.
+/// - `duration`: number of milliseconds for the transition (default `100`).
+///
+/// Inert under standard Typst.
+#let transition(kind: "cut", duration: 100) = none
+
+/// Register an animatable object ("mobject").
+///
+/// - `label`: unique string id, referenced later by `animate` / `play`.
+/// - `body`: the object's content — a bare block or element (e.g.
+///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
+///
+/// Under standard Typst this simply renders `body` at its natural position.
+#let mobject(name, body) = {
+  if type(name) != str {
+    panic("Mobject name must be a string")
+  }
+  body
 }
 
 /// Animate an object to a new placement / scale / rotation / opacity over
@@ -100,12 +148,47 @@
   rotate-by: none,
   opacity: none,
   duration: 500,
-  easing: "linear",
-) = none
+  easing: "smooth",
+) = {
+  if type(target) != str {
+    panic("Animation target must be a string!")
+  }
+  none
+}
+
+/// Make a mobject visible instantly (set opacity to 1.0). No interpolation.
+///
+/// - `target`: the `name` of the object to make visible.
+///
+/// Useful for "appear without fading" effects. Inert under standard Typst.
+#let appear(target) = {
+  if type(target) != str {
+    panic("Animation target must be a string!")
+  }
+  none
+}
+
+/// Make a mobject invisible instantly (set opacity to 0.0). No interpolation.
+///
+/// - `target`: the `label` of the object to make invisible.
+///
+/// Useful for "disappear without fading" effects. Inert under standard Typst.
+#let disappear(target) = {
+  if type(target) != str {
+    panic("Animation target must be a string!")
+  }
+  none
+}
 
 /// Hold the current frame for `duration` milliseconds (default `500`, a manual pause marker).
 /// Inert under standard Typst.
 #let pause(duration: 500) = none
+
+/// Show `body` for `duration` milliseconds (default `500`) as its own animation unit (a block-level
+/// object, precisely controllable like a mobject).
+///
+/// Under standard Typst the body is shown in the first frame.
+#let play(body, duration: 500) = body
 
 /// Insert a voice / audio track. Inert under standard Typst (does nothing).
 ///
@@ -114,16 +197,35 @@
 /// - `loop`: repeat the clip.
 /// - `volume`: gain in `[0, 1]`.
 /// - `slice`: optional `(start, end)` seconds sub-range of the clip.
-#let audio(
-  path,
-  blocking: false,
-  loop: false,
-  volume: 1.0,
-  slice: none,
-) = none
+#let audio(path, blocking: false, loop: false, volume: 1.0, slice: none) = none
 
-/// Show `body` for `duration` milliseconds (default `500`) as its own animation unit (a block-level
-/// object, precisely controllable like a mobject).
+/// Insert a video reference as a placeholder mobject.
 ///
-/// Under standard Typst the body is shown in the first frame.
-#let play(body, duration: 500) = block(body)
+/// Since Typst cannot embed video, candy renders a labeled placeholder box
+/// (a rounded rect with a ▶ icon and the filename). Under standard Typst this
+/// is a visible placeholder; candy's renderer treats it like any other mobject
+/// body (it can be animated with `animate`/`indicate`/etc.).
+///
+/// - `path`: path to the video file (displayed in the placeholder).
+/// - `width`: placeholder width (default `8cm`).
+/// - `height`: placeholder height (default `5cm`).
+///
+/// To show the actual first frame, extract it with ffmpeg first:
+/// ```sh
+/// ffmpeg -i input.mp4 -vframes 1 -q:v 2 first_frame.png
+/// ```
+/// then use `#mobject("vid", image("first_frame.png", width: 8cm))`.
+#let video(path, width: 8cm, height: 5cm) = {
+  block(
+    width: width,
+    height: height,
+    radius: 4pt,
+    stroke: 1pt + gray,
+    fill: luma(240),
+    align(center + horizon)[
+      #text(28pt, fill: gray)[▶]
+      #v(0.5em)
+      #text(10pt, fill: gray)[Video: #path]
+    ],
+  )
+}

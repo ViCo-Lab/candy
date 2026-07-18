@@ -176,9 +176,10 @@ pub enum CandyError {
     Libva(String),
     /// E010 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used
-    /// when `ecval(...)` or lifecycle events (`counter_pause`, `counter_destroy`,
+    /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
     /// …) reference an unknown counter name. The first field is the kind
-    /// (`"mobject"` / `"ecounter"`) and the second is the offending key name.
+    /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
+    /// key name.
     UnknownKey(String, String, Option<SourceLoc>),
     /// E011 — A key parameter evaluated to a non-string type (e.g., number,
     /// boolean, array). Keys must always resolve to strings.
@@ -384,14 +385,14 @@ pub enum CandyWarn {
     /// W014 — Hardware VA-API (libva) encoding was requested but unavailable or
     /// failed; candy transparently fell back to a software codec.
     LibvaFallback(String),
-    /// W015 — A mobject label or ecounter name was redefined in the *same*
-    /// lexical scope. Candy keeps the later definition (it shadows the earlier
-    /// one) but warns, because an accidental duplicate usually indicates a typo.
-    /// Redefining a name inside a *nested* scope is legitimate Typst shadowing
-    /// and does not warn. The first field is the kind (`"mobject"` /
-    /// `"ecounter"`), the second the offending name, the third the source
-    /// location of the *redefining* (later) declaration so the user is pointed
-    /// at the exact code.
+    /// W015 — A mobject label, ecnew, or scene name was redefined in the
+    /// *same* lexical scope. Candy keeps the later definition (it shadows the
+    /// earlier one) but warns, because an accidental duplicate usually indicates
+    /// a typo. Redefining a name inside a *nested* scope is legitimate Typst
+    /// shadowing and does not warn. The first field is the kind (`"mobject"` /
+    /// `"ecnew"` / `"scene"`), the second the offending name, the third the
+    /// source location of the *redefining* (later) declaration so the user is
+    /// pointed at the exact code.
     DuplicateName(String, String, SourceLoc),
 }
 

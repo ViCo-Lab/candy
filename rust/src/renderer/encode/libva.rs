@@ -38,6 +38,20 @@
 #![cfg(feature = "libva")]
 #![allow(clippy::missing_safety_doc)]
 
+// Bindgen-generated raw libva FFI (built by `build.rs` under the `libva` feature).
+// The generated output is fully machine-produced, so its lints (non-upper-case
+// globals, unsafe-op-in-unsafe-fn, trivial casts, …) are inherent and not
+// actionable. We wrap the `include!` in a `#[allow(warnings)]` submodule and
+// re-export its items so the rest of this module can keep referencing the bare
+// `VA*` names while `cargo clippy --all-features` stays green. (An inner
+// `#![allow(warnings)]` inside the included file is invalid because `include!`
+// splices items mid-module, where inner attributes are not permitted.)
+#[allow(warnings)]
+mod libva_bindings {
+    include!(concat!(env!("OUT_DIR"), "/libva_bindings.rs"));
+}
+pub use libva_bindings::*;
+
 use std::fs::File;
 use std::io::Write;
 use std::os::raw::{c_int, c_uint, c_void};
@@ -51,9 +65,6 @@ use crate::renderer::audio::AudioData;
 use crate::renderer::encode::container;
 use crate::renderer::encode::video::{EncodedVideoFile, new_samples_tempfile};
 use crate::renderer::encode::{Codec, Container};
-
-// Bindgen-generated raw libva FFI (built by `build.rs` under the `libva` feature).
-include!(concat!(env!("OUT_DIR"), "/libva_bindings.rs"));
 
 // --- Local aliases for the VA enums/constants we need -----------------------
 // (kept here so the code reads clearly and does not depend on bindgen's
@@ -518,7 +529,7 @@ impl LibvaStream {
         }
 
         // Per-frame coded buffer.
-        let coded_size = (self.w * self.h * 2 + 65536) as u32;
+        let coded_size = self.w * self.h * 2 + 65536;
         let mut coded_buf: VABufferID = VA_INVALID_ID;
         va_ok(
             unsafe {
@@ -705,7 +716,7 @@ impl LibvaStream {
             )
         } else if self.is_hevc {
             let mut s: VAEncSliceParameterBufferHEVC = unsafe { std::mem::zeroed() };
-            let ctu = ((self.w + 63) / 64) * ((self.h + 63) / 64);
+            let ctu = self.w.div_ceil(64) * self.h.div_ceil(64);
             s.slice_segment_address = 0;
             s.num_ctu_in_slice = ctu;
             s.slice_type = slice_type;
@@ -720,7 +731,7 @@ impl LibvaStream {
         } else {
             let mut s: VAEncSliceParameterBufferH264 = unsafe { std::mem::zeroed() };
             s.macroblock_address = 0;
-            s.num_macroblocks = ((self.w / 16) * (self.h / 16)) as u32;
+            s.num_macroblocks = (self.w / 16) * (self.h / 16);
             s.slice_type = slice_type;
             s.pic_parameter_set_id = 0;
             s.idr_pic_id = if is_idr { self.frame_count as u16 } else { 0 };
@@ -945,10 +956,10 @@ fn split_annexb(data: &[u8]) -> Vec<Vec<u8>> {
     let n = data.len();
     while i < n {
         // Find next start code.
-        if (i + 3 <= n && &data[i..i + 3] == [0, 0, 1])
-            || (i + 4 <= n && &data[i..i + 4] == [0, 0, 0, 1])
+        if (i + 3 <= n && data[i..i + 3] == [0, 0, 1])
+            || (i + 4 <= n && data[i..i + 4] == [0, 0, 0, 1])
         {
-            let sc = if i + 4 <= n && &data[i..i + 4] == [0, 0, 0, 1] {
+            let sc = if i + 4 <= n && data[i..i + 4] == [0, 0, 0, 1] {
                 4
             } else {
                 3
@@ -957,7 +968,7 @@ fn split_annexb(data: &[u8]) -> Vec<Vec<u8>> {
             // Find next start code.
             let mut j = start;
             while j + 3 <= n {
-                if &data[j..j + 3] == [0, 0, 1] || (j + 4 <= n && &data[j..j + 4] == [0, 0, 0, 1]) {
+                if data[j..j + 3] == [0, 0, 1] || (j + 4 <= n && data[j..j + 4] == [0, 0, 0, 1]) {
                     break;
                 }
                 j += 1;
@@ -1164,13 +1175,14 @@ fn build_av1c(seq_hdr: &[u8]) -> Vec<u8> {
     let profile = (seq_hdr[0] >> 5) & 0x07;
     let level = seq_hdr[0] & 0x1F;
     let tier = seq_hdr.get(1).copied().unwrap_or(0) & 0x01;
-    let mut c = Vec::with_capacity(4);
-    c.push(0x81); // marker (1) + version (1)
-    c.push((profile << 5) | (level & 0x1F));
-    // 8-bit 4:2:0: high_bitdepth=0, twelve_bit=0, monochrome=0,
-    // chroma_sub_x=1, chroma_sub_y=1; reserved + initial_presentation_delay = 0
-    c.push((tier << 7) | (1 << 3) | (1 << 2));
-    c.push(0x00);
+    let c = vec![
+        0x81, // marker (1) + version (1)
+        (profile << 5) | (level & 0x1F),
+        // 8-bit 4:2:0: high_bitdepth=0, twelve_bit=0, monochrome=0,
+        // chroma_sub_x=1, chroma_sub_y=1; reserved + initial_presentation_delay = 0
+        (tier << 7) | (1 << 3) | (1 << 2),
+        0x00,
+    ];
     c
 }
 

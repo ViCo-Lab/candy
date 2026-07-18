@@ -4,7 +4,7 @@
 //   · a nested title-card scene (auto-hidden once the main scene starts),
 //   · a trajectory that is "drawn" segment by segment with sequential fades,
 //   · a ball that flies the parabola via `#track` (keyframed positions),
-//   · a live `#ecounter` / `#ecval` flight timer ticking in the corner,
+//   · a live `#ecnew` / `#ecval` flight timer ticking in the corner,
 //   · a cinematic `#camera` push-in at the apex and pull-back at landing,
 //   · `#indicate` / `#flash` attention hits and a `#transform` of the
 //     running equation into its vertex form, closed by a `#typewriter` line.
@@ -79,7 +79,7 @@
     #pause(duration: 300)
 
     // ── Flight: a live timer + the ball on its track ──
-    #ecounter("t", seed: 0, step: 1, duration: 3000, easing: "linear")
+    #ecnew("t", seed: 0, step: 1, duration: 3000, easing: "linear")
     #subtitle([flight time: #str(ecval("t")) ms], position: "bottom-right")
 
     #mobject("ball", circle(radius: 0.35cm, fill: red))

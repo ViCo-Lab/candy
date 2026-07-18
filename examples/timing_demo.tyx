@@ -59,7 +59,7 @@
 // ─── Scene 4: Counter Lifecycle (3s) ───────────
 #scene[
   // Declare counter r with seed 0; duration controls how long each increment takes
-  #ecounter("r", seed: 0, step: 1, duration: 500)
+  #ecnew("r", seed: 0, step: 1, duration: 500)
 
   // Display the current counter value
   #mobject("count-display", text(size: 24pt)[Count: #ecval("r")])
@@ -68,11 +68,11 @@
   #pause(duration: 500)
 
   // Resume the counter (it will increment every 500ms)
-  #counter_resume("r")
+  #ecresume("r")
   #pause(duration: 3000)
 
   // Destroy the counter (stops it permanently)
-  #counter_destroy("r")
+  #ecdestroy("r")
 ]
 
 // ─── Scene 5: SaveState / Restore (2s) ─────────

@@ -64,16 +64,18 @@ pub(crate) const CANDY: &[&str] = &[
     // Scene module: `scene` establishes a nestable, scope-bounded, one-page
     // segment of the timeline (parent auto-hides when a child is active).
     "scene",
-    // Easing-counter module: `ecounter` defines a named integer
-    // counter, `ecval` reads its current integer value (substituted per-frame by
-    // the renderer), and `counter_pause` / `counter_resume` / `counter_destroy`
-    // drive its lifecycle. `ecval` is a no-op at parse time (the parser never
-    // acts on reads — only definitions and lifecycle events matter).
-    "ecounter",
+    // Easing-counter module: `ecnew` defines a named integer counter, `ecval`
+    // reads its current integer value (substituted per-frame by the renderer),
+    // and `ecpause` / `ecresume` / `ecdestroy` drive its lifecycle. `ecval` is a
+    // no-op at parse time (the parser never acts on reads — only definitions and
+    // lifecycle events matter).
+    "ecnew",
     "ecval",
-    "counter-pause",
-    "counter-resume",
-    "counter-destroy",
+    "ecpause",
+    "ecresume",
+    "ecdestroy",
+    // Named scene switching: `scene-switch(target: "name")` jumps to a named scene.
+    "scene-switch",
 ];
 
 /// Resolve a function call to its Candy symbol (or `None` if it isn't one).
@@ -91,7 +93,7 @@ pub(crate) fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String
             let name = id.as_str();
             // Accept both naming conventions: the public API and the Typst
             // module use underscores (`save_state`, `set_color`,
-            // `counter_pause`), while the parser's `CANDY` set uses kebab-case
+            // `ecpause`), while the parser's `CANDY` set uses kebab-case
             // (`save-state`, `set-color`). Normalize so a call resolves
             // regardless of which convention the author wrote.
             let norm = name.replace('_', "-");
@@ -132,10 +134,17 @@ pub(crate) fn current_scope(ctx: &ParseCtx) -> String {
     ctx.scope_stack.last().copied().unwrap_or(0).to_string()
 }
 
-/// Resolve the easing named arg, falling back to Linear with a warning.
+/// Resolve the easing named arg.
+///
+/// Each directive declares its own default easing in its Typst signature; pass
+/// that default as `default` so the Rust parser honors the Typst contract
+/// exactly (e.g. `animate` defaults to `"smooth"`, `ecnew`/`set-color`/`subtitle`
+/// default to `"linear"`, `wiggle` defaults to `"wiggle"`). An unknown easing
+/// name falls back to `Linear` with a warning.
 pub(crate) fn resolve_easing(
     named: &HashMap<String, Expr>,
     label: &crate::core::ast::Label,
+    default: crate::core::easing::Easing,
 ) -> crate::core::easing::Easing {
     match named.get("easing") {
         Some(Expr::Str(s)) => {
@@ -151,7 +160,7 @@ pub(crate) fn resolve_easing(
                 }
             }
         }
-        _ => crate::core::easing::Easing::Linear,
+        _ => default,
     }
 }
 

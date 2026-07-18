@@ -1,7 +1,7 @@
 # Easing reference
 
 `easing:` accepts a named curve or a custom spec. It is accepted by `#animate`,
-`#subtitle`, `#ecounter`, `#restore`, and the other timed directives.
+`#subtitle`, `#ecnew`, `#restore`, and the other timed directives.
 
 ## Named curves
 

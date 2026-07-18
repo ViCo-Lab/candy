@@ -5,7 +5,7 @@
   // A growing circle whose radius is driven by an easing counter.
   // `ecval("r")` is a valid AST node substituted per-frame by the renderer with
   // the live counter value; under standard Typst it resolves to `default` (0).
-  #ecounter("r", seed: 40, step: 1)
+  #ecnew("r", seed: 40, step: 1)
   #mobject("dot", circle(radius: ecval("r") * 1pt + 1cm, fill: blue))
 
   // A square that slides using a custom mathematical easing (`expr:`).
@@ -20,9 +20,9 @@
 
   // Pause the counter mid-animation, then resume it.
   #pause(duration: 600)
-  #counter_pause("r")
+  #ecpause("r")
   #pause(duration: 600)
-  #counter_resume("r")
+  #ecresume("r")
 
   // A child scope: shows its own subtitle, temporarily hiding the root one.
   #[
@@ -31,6 +31,6 @@
   ]
 
   // Destroy the counter before the end.
-  #counter_destroy("r")
+  #ecdestroy("r")
   #pause(duration: 400)
 ]

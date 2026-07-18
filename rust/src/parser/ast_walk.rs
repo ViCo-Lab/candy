@@ -23,8 +23,8 @@ use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
-    AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene, SceneInfo,
-    Slide, Subtitle,
+    Action, AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene,
+    SceneInfo, Slide, Subtitle,
 };
 use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::meta::PrivateMeta;
@@ -68,6 +68,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     // to it. This is the "no root scene → whole document is one scene" rule.
     ctx.scenes.push(SceneInfo {
         id: 0,
+        name: Some("root".to_string()),
         parent: None,
         scope: 0,
         page_size: ctx
@@ -149,7 +150,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
 
     // Every scene must have at least one slide so the renderer can emit frames.
     // Candy DSL directives (`mobject`, `animate`, `pause`, `play`, `subtitle`,
-    // `ecounter`, `scene`, …) all advance the parse cursor and produce slides.
+    // `ecnew`, `scene`, …) all advance the parse cursor and produce slides.
     // If no candy directives were used, `ctx.slides` stays empty — inject a
     // single `pause(duration: 500)` so the whole-document recompiler still
     // produces one frame and renders the static Typst content.
@@ -164,6 +165,17 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
             actions: Vec::new(),
         });
     }
+
+    // Assign UUID-like names to anonymous scenes so they can be referenced
+    // by scene-switch(target: "scene_<uuid>") even when the author didn't provide
+    // an explicit name.
+    Scene::assign_anonymous_names(&mut ctx.scenes);
+
+    // Re-order the slide timeline to follow `#scene-switch(target)` jumps and
+    // recompute each scene's `[start_ms, end_ms]` interval so the renderer's
+    // `active_scene_at(time_ms)` gating shows the target scene's content.
+    // No-op for documents without scene switching.
+    finalize_scene_switching(&mut ctx);
 
     let private = PrivateMeta::default();
     let scene = Scene {
@@ -259,10 +271,10 @@ pub(crate) struct ParseCtx {
     /// warns + shadows) while a redefinition inside a *nested* scope is
     /// legitimate Typst shadowing and is left alone.
     pub(crate) mobject_names: HashMap<String, HashSet<String>>,
-    /// Per-scope registry of declared **ecounter names** (scope id → names),
+    /// Per-scope registry of declared **ecnew names** (scope id → names),
     /// mirroring `mobject_names` for the easing-counter namespace.
-    pub(crate) ecounter_names: HashMap<String, HashSet<String>>,
-    /// Source location of every label's declaration (`#mobject` / `#ecounter`),
+    pub(crate) ecnew_names: HashMap<String, HashSet<String>>,
+    /// Source location of every label's declaration (`#mobject` / `#ecnew`),
     /// keyed by label. Fed into `Scene::artifacts.label_locs` so later
     /// diagnostics (e.g. `E004` LabelNotFound) can point at the declaration.
     pub(crate) label_locs: HashMap<Label, SourceLoc>,
@@ -271,7 +283,12 @@ pub(crate) struct ParseCtx {
     /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
     /// owns mobjects declared right now; `scene_stack` tracks open scenes.
     pub(crate) scenes: Vec<SceneInfo>,
-    /// Parent→child grouping links (`child → parent`), recorded by `#group`.
+    /// Parent→child grouping links (`child → parent`), recorded by `#group`. A
+    /// group is a special kind of mobject: an mobject can own child mobjects, and
+    /// animating the parent transforms all children (parent→child inheritance).
+    /// The renderer composes group transforms using this map; the parent label is
+    /// itself a normal mobject (registered in `items` / `initial`) but is never
+    /// drawn directly.
     pub(crate) groups: HashMap<Label, Label>,
     /// Next fresh scene id (root is `0`, assigned in `parse_tyx`).
     pub(crate) next_scene_id: usize,
@@ -361,15 +378,33 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             // if present. Captured as source text because the background is
             // resolved later (by the renderer, against the real Typst library).
             let mut bg_src: Option<String> = None;
+            // Optional human-readable name for scene switching.
+            let mut scene_name: Option<String> = None;
             for a in call.args().items() {
                 if let ast::Arg::Named(n) = a {
-                    if let Some(cm) = collect_named_lengths_here(n.expr()) {
-                        match n.name().as_str() {
+                    let name = n.name().as_str();
+                    // Extract `name:` argument for scene switching.
+                    if name == "name" {
+                        if let Expr::Str(s) = n.expr() {
+                            scene_name = Some(s.get().to_string());
+                        } else {
+                            // Scene name is not a string — warn (W015).
+                            use crate::core::diag::SourceLoc;
+                            let cr = node.range();
+                            let loc = SourceLoc::at(&ctx.file_path, raw, cr);
+                            crate::warn!(crate::core::diag::CandyWarn::DuplicateName(
+                                "scene".into(),
+                                "<non-string>".into(),
+                                loc
+                            ));
+                        }
+                    } else if let Some(cm) = collect_named_lengths_here(n.expr()) {
+                        match name {
                             "width" => w_cm = Some(cm),
                             "height" => h_cm = Some(cm),
                             _ => {}
                         }
-                    } else if n.name().as_str() == "bg" {
+                    } else if name == "bg" {
                         // Recover the expression's source text from the
                         // FuncCall's LinkedNode children (the AST `Named` node
                         // only exposes the `Expr`, not its source range).
@@ -414,6 +449,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             let start = ctx.cursor;
             ctx.scenes.push(SceneInfo {
                 id,
+                name: scene_name,
                 parent: Some(parent),
                 scope,
                 page_size,
@@ -601,6 +637,158 @@ fn collect_named_lengths(node: &LinkedNode, f: &mut impl FnMut(&str, f64)) {
 /// `scene` width/height extraction). Thin wrapper over [`crate::parser::expr`].
 fn collect_named_lengths_here(e: Expr) -> Option<f64> {
     crate::parser::expr::expr_length_cm(&e)
+}
+
+/// Re-order the slide timeline to follow `#scene-switch(target)` jumps and
+/// recompute each scene's `[start_ms, end_ms]` interval to match the remapped
+/// playback.
+///
+/// The renderer decides which scene is visible at a given frame via
+/// `Scene::active_scene_at(time_ms)` (every `#scene(...)` body is gated by
+/// `sys.inputs.at("candy:active_scene")`), so for a scene switch to actually
+/// *show* the target scene's content the scene intervals must reflect the
+/// switched order. This walk does exactly that: it follows the linear slide
+/// list, and whenever it hits a `SceneSwitch` to a **later** scene it jumps the
+/// cursor to that scene's `start_ms` and skips the slides belonging to the
+/// scenes in between (so they are not replayed at the wrong time). Each scene's
+/// interval is then recomputed from the segments it actually played.
+///
+/// Documents without any `SceneSwitch` action are left completely untouched —
+/// their linear timeline and sequential (mutually-exclusive) scene intervals are
+/// already correct, so this is a no-op for them. Backward switches (target
+/// `start_ms <=` current cursor) are intentionally not jumped: replaying an
+/// earlier scene would require duplicating its frames and is out of scope for
+/// the v1 switch model.
+fn finalize_scene_switching(ctx: &mut ParseCtx) {
+    let has_switch = ctx.slides.iter().any(|s| {
+        s.actions
+            .iter()
+            .any(|a| matches!(a, Action::SceneSwitch { .. }))
+    });
+    if !has_switch {
+        return;
+    }
+
+    let n = ctx.slides.len();
+    // Original cumulative start times (pre-remap), used to map a slide back to
+    // the scene it originally belonged to.
+    let mut slide_start = vec![0u32; n];
+    {
+        let mut p = 0u32;
+        for (i, s) in ctx.slides.iter().enumerate() {
+            slide_start[i] = p;
+            p += s.duration_ms;
+        }
+    }
+
+    let root = ctx
+        .scenes
+        .iter()
+        .find(|s| s.parent.is_none())
+        .map(|s| s.id);
+
+    // `active_at(t)` mirrors `Scene::active_scene_at` but over `ctx.scenes`
+    // (the intervals as they stand when this runs).
+    let active_at = |t: u32| -> usize {
+        let mut best: Option<usize> = None;
+        let mut best_depth = 0usize;
+        for s in &ctx.scenes {
+            if t >= s.start_ms && t <= s.end_ms {
+                let mut depth = 0usize;
+                let mut cur = s.parent;
+                while let Some(pid) = cur {
+                    depth += 1;
+                    cur = ctx.scenes.iter().find(|x| x.id == pid).and_then(|x| x.parent);
+                }
+                if best.is_none() || depth > best_depth {
+                    best = Some(s.id);
+                    best_depth = depth;
+                }
+            }
+        }
+        best.or(root).unwrap_or(0)
+    };
+
+    let resolve = |target: &str| -> Option<usize> {
+        ctx.scenes
+            .iter()
+            .find(|s| s.name.as_deref() == Some(target))
+            .map(|s| s.id)
+            .or_else(|| {
+                target
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|id| ctx.scenes.iter().any(|s| s.id == *id))
+            })
+    };
+
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    let mut segments: std::collections::HashMap<usize, Vec<(u32, u32)>> =
+        std::collections::HashMap::new();
+
+    let mut i = 0usize;
+    let mut ptr = 0u32;
+    while i < n {
+        order.push(i);
+        let dur = ctx.slides[i].duration_ms;
+        let end = ptr + dur;
+        let sid = active_at(slide_start[i] + dur / 2);
+        segments.entry(sid).or_default().push((ptr, end));
+
+        // Detect a scene switch on this slide.
+        let switch = ctx.slides[i].actions.iter().find_map(|a| match a {
+            Action::SceneSwitch { target, .. } => Some(target.clone()),
+            _ => None,
+        });
+        let mut jumped = false;
+        if let Some(t) = switch {
+            if let Some(tid) = resolve(&t) {
+                let tstart = ctx
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == tid)
+                    .map(|s| s.start_ms)
+                    .unwrap_or(ptr);
+                if tstart > ptr {
+                    ptr = tstart;
+                    // Skip slides whose *original* scene is not the target, so we
+                    // don't replay the skipped scene's content at the wrong time.
+                    while i + 1 < n
+                        && active_at(slide_start[i + 1] + ctx.slides[i + 1].duration_ms / 2) != tid
+                    {
+                        i += 1;
+                    }
+                    jumped = true;
+                }
+            }
+        }
+        if !jumped {
+            ptr = end;
+        }
+        i += 1;
+    }
+
+    // Reorder slides to the switched playback order.
+    let mut new_slides = Vec::with_capacity(n);
+    for &idx in &order {
+        new_slides.push(ctx.slides[idx].clone());
+    }
+    ctx.slides = new_slides;
+
+    // Recompute each scene's interval from the segments it actually played.
+    for s in ctx.scenes.iter_mut() {
+        if let Some(segs) = segments.get(&s.id) {
+            let start = segs.iter().map(|(a, _)| *a).min().unwrap_or(s.start_ms);
+            let end = segs.iter().map(|(_, b)| *b).max().unwrap_or(s.end_ms);
+            s.start_ms = start;
+            s.end_ms = end;
+        } else {
+            // A scene never reached by the switched flow is made inactive so the
+            // renderer never shows its content.
+            s.start_ms = u32::MAX;
+            s.end_ms = u32::MAX;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1293,52 +1481,52 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
     }
 
-    /// An ecounter redefined in the *same* scope must warn (W014) and let the
+    /// An ecnew redefined in the *same* scope must warn (W014) and let the
     /// **later** definition shadow the earlier. We assert the shadowing
     /// outcome: exactly one `CounterDef` with that name survives, carrying the
     /// later seed.
     #[test]
-    fn duplicate_ecounter_same_scope_shadows_later() {
+    fn duplicate_ecnew_same_scope_shadows_later() {
         let src = with_auto_version(
             r#"
 #import "candy": *
-#ecounter("k", seed: 1, step: 1)
-#ecounter("k", seed: 99, step: 2)
+#ecnew("k", seed: 1, step: 1)
+#ecnew("k", seed: 99, step: 2)
 "#,
         );
-        let tmp = std::env::temp_dir().join("candy_test_dup_ecounter.tyx");
+        let tmp = std::env::temp_dir().join("candy_test_dup_ecnew.tyx");
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp).unwrap();
         std::fs::remove_file(&tmp).ok();
         let same: Vec<&crate::core::ast::CounterDef> =
             scene.counters.iter().filter(|c| c.name == "k").collect();
         // The duplicate is collapsed: only the later definition survives.
-        assert_eq!(same.len(), 1, "duplicate ecounter should shadow to one def");
-        assert_eq!(same[0].seed, 99, "later ecounter seed should win");
+        assert_eq!(same.len(), 1, "duplicate ecnew should shadow to one def");
+        assert_eq!(same[0].seed, 99, "later ecnew seed should win");
         assert_eq!(same[0].step, 2);
     }
 
-    /// Two ecounters with the same name in *different* (nested) scopes are
+    /// Two ecnew counters with the same name in *different* (nested) scopes are
     /// legitimate Typst shadowing: both `CounterDef`s survive (resolved at
     /// runtime by scope depth) and must NOT warn.
     #[test]
-    fn nested_scope_ecounter_redefinition_is_not_duplicate() {
+    fn nested_scope_ecnew_redefinition_is_not_duplicate() {
         let src = with_auto_version(
             r#"
 #import "candy": *
-#ecounter("k", seed: 1)
+#ecnew("k", seed: 1)
 #{
-  #ecounter("k", seed: 2)
+  #ecnew("k", seed: 2)
 }
 "#,
         );
-        let tmp = std::env::temp_dir().join("candy_test_nested_ecounter.tyx");
+        let tmp = std::env::temp_dir().join("candy_test_nested_ecnew.tyx");
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp).unwrap();
         std::fs::remove_file(&tmp).ok();
         let same: Vec<&crate::core::ast::CounterDef> =
             scene.counters.iter().filter(|c| c.name == "k").collect();
-        assert_eq!(same.len(), 2, "nested ecounter redefinitions both survive");
+        assert_eq!(same.len(), 2, "nested ecnew redefinitions both survive");
     }
 
     /// A document with mobject items but no candy animation directives should
@@ -1409,7 +1597,7 @@ This is plain Typst content with an equation $E = mc^2$.
         let src = with_auto_version(
             r#"
 #import "candy": *
-#ecounter("k", seed: 0, step: 1)
+#ecnew("k", seed: 0, step: 1)
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_static_counter.tyx");

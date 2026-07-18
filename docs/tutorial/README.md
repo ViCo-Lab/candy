@@ -17,7 +17,7 @@ the [Reference](../reference/README.md).
    `#reveal`, `#typewriter` (glyph-by-glyph formula morphing).
 4. [Scenes, camera & groups](scenes-camera-groups.md) — `#scene`, `#camera`,
    `#group`, `#track`, `#zoom-to`, `#transition`.
-5. [Subtitles & counters](subtitles-counters.md) — `#subtitle`, `#ecounter` /
+5. [Subtitles & counters](subtitles-counters.md) — `#subtitle`, `#ecnew` /
    `#ecval`.
 6. [Output & codecs](output.md) — CLI flags, output formats (mp4/mkv/webm/gif/png/svg),
    the codec matrix, and artifacts.

@@ -87,11 +87,12 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "reveal" | "typewriter" => process_reveal(&pos, &named, sym.as_str(), ctx),
         // Subtitle + easing-counter modules.
         "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
-        "ecounter" => process_ecounter(&pos, &named, node, raw, ctx),
+        "ecnew" => process_ecnew(&pos, &named, node, raw, ctx),
+        "scene-switch" => process_scene_switch(&pos, &named, ctx),
         "ecval" => { /* read; value substituted per-frame by the renderer */ }
-        "counter-pause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause),
-        "counter-resume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume),
-        "counter-destroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy),
+        "ecpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause),
+        "ecresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume),
+        "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy),
         _ => {}
     }
 }
@@ -165,11 +166,13 @@ fn process_mobject(
     );
 }
 
-/// `animate(target, to:, scale:, opacity:, duration:, easing:)`.
+/// `animate(target, to:, dx:, dy:, scale:, scale-by:, rotate:, rotate-by:,
+/// opacity:, duration:, easing:)`.
 ///
 /// The `easing` named argument accepts a string (`"linear"`, `"smooth"`,
-/// `"ease-in-out"`, …) and falls back to `Easing::Linear` if missing or
-/// unrecognized. Unrecognized names emit a warning to stderr and continue.
+/// `"ease-in-out"`, …). Its default is `"smooth"` — matching the `animate`
+/// signature declared in the Typst package (`typst/src/core.typ`). Unrecognized
+/// names emit a warning to stderr and fall back to `linear`.
 fn process_animate(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -205,8 +208,8 @@ fn process_animate(
                 }
             }
         }
-        // Missing or non-string easing → linear (candy v0.1 behavior).
-        _ => Easing::Linear,
+        // Missing or non-string easing → "smooth" (the Typst `animate` default).
+        _ => Easing::Smooth,
     };
 
     let mut actions = Vec::new();
@@ -427,7 +430,7 @@ fn process_restore(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::Restore {
@@ -457,7 +460,7 @@ fn process_indicate(
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::Indicate {
@@ -487,7 +490,7 @@ fn process_flash(
         .unwrap_or(200.0)
         .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::Flash {
@@ -515,7 +518,7 @@ fn process_wiggle(
         .unwrap_or(500.0)
         .max(1.0) as u32;
     let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(15.0);
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Wiggle);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::Wiggle {
@@ -567,7 +570,7 @@ fn process_set_color(
         .and_then(expr_to_f64)
         .unwrap_or(1.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Linear);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![Action::SetColor {
@@ -600,7 +603,7 @@ fn process_blink(
         .unwrap_or(500.0)
         .max(1.0) as u32;
     let per_blink = (duration / (blinks * 2)).max(1);
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     // Each blink = FadeTo(0) + FadeTo(1).
     for _ in 0..blinks {
         ctx.slides.push(Slide {
@@ -641,7 +644,7 @@ fn process_spiral_in(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     // Set initial state: scaled up, rotated, invisible.
     ctx.slides.push(Slide {
         duration_ms: 1,
@@ -701,7 +704,7 @@ fn process_focus_on(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
     ctx.slides.push(Slide {
         duration_ms: duration,
         actions: vec![
@@ -744,7 +747,7 @@ fn process_fade_transform(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &from);
+    let easing = resolve_easing(named, &from, Easing::Smooth);
     // Fade out `from` and fade in `to` in the same slide (parallel).
     ctx.slides.push(Slide {
         duration_ms: duration,
@@ -777,7 +780,7 @@ fn process_move_along_path(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
 
     // The path is the 2nd positional arg per the Typst signature
     // (`#move-along-path(target, path, ...)`), but we also accept a named
@@ -846,7 +849,7 @@ fn process_track(
         .and_then(expr_to_f64)
         .unwrap_or(1000.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
 
     // Keyframes come from the 2nd positional arg (an array of tuples) or
     // `keys:`. Each tuple is `(t, (x, y, scale, opacity, rotation))`.
@@ -891,7 +894,7 @@ fn process_camera(
         .max(1.0) as u32;
     let easing = match named.get("easing") {
         Some(Expr::Str(s)) => Easing::from_str(s.get().as_str()).unwrap_or(Easing::Linear),
-        _ => Easing::Linear,
+        _ => Easing::Smooth,
     };
     let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
     let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
@@ -919,9 +922,13 @@ fn process_camera(
 }
 
 /// `#group(name, ("child1", "child2", ...))` — declare `name` as a synthetic
-/// parent mobject and attach each listed child to it. Subsequent `#animate(name,
-/// ...)` moves / rotates / scales all children together (parent→child transform
-/// inheritance). Groups may be nested (a child may itself be a group).
+/// mobject that owns the listed children. A group is just a special kind of
+/// mobject: an mobject may own child mobjects, and animating the parent
+/// (`#animate(name, ...)`) moves / rotates / scales all of its children together
+/// via parent→child transform inheritance. The renderer treats the group label
+/// like any other mobject (it is registered in `items` / `initial` / scene
+/// ownership) but never draws the empty parent body itself — only the children
+/// are painted. Groups may be nested (a child may itself be a group).
 fn process_group(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -986,7 +993,7 @@ fn process_reveal(
             }
         }
     };
-    let _ = resolve_easing(named, &label);
+    let _ = resolve_easing(named, &label, Easing::Smooth);
 
     // The body must be a string literal ("...") for char/word reveal.
     let Some(body) = ctx.items.get(&label) else {
@@ -1040,7 +1047,7 @@ fn process_reveal(
     let appeared_earlier = ctx
         .slides
         .iter()
-        .any(|s| s.actions.iter().any(|a| a.target() == &label));
+        .any(|s| s.actions.iter().any(|a| a.target() == Some(&label)));
     if !controlled_earlier && !appeared_earlier && start > 0 {
         tl.insert(0, (0, "none".to_string()));
     }
@@ -1074,7 +1081,7 @@ fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
     }
 }
 
-/// `morph(from, to, duration: 24, easing: "smooth")` — crossfade + scale
+/// `morph(from, to, duration: 500, easing: "smooth")` — crossfade + scale
 /// transform from one mobject to another. The `from` object shrinks and fades
 /// out while the `to` object grows and fades in. Both must be registered via
 /// `mobject`.
@@ -1097,9 +1104,9 @@ fn process_morph(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(24.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &from);
+    let easing = resolve_easing(named, &from, Easing::Smooth);
 
     // Hide the `to` object initially (it will fade in as the shape morphs in).
     ctx.slides.push(Slide {
@@ -1178,7 +1185,7 @@ fn is_inline_content(body: &str) -> bool {
     true
 }
 
-/// `transform(target, to: <content>, duration: 24, easing: "smooth")` —
+/// `transform(target, to: <content>, duration: 500, easing: "smooth")` —
 /// Manim's `Transform` / `ReplacementTransform`: morph a single mobject's
 /// content into a new inline `content` (a Typst body). Keeps the **original
 /// label** holding the new content afterwards.
@@ -1203,9 +1210,9 @@ fn process_transform(
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
-        .unwrap_or(24.0)
+        .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label);
+    let easing = resolve_easing(named, &label, Easing::Smooth);
 
     // Capture the current content of `target` before we replace it.
     // Capture the *currently displayed* content of `target` before we replace
@@ -1351,7 +1358,7 @@ fn process_subtitle(
         .and_then(expr_to_f64)
         .map(|d| d.max(1.0) as u32);
     let position = parse_sub_pos(named);
-    let easing = resolve_easing(named, &Label("subtitle".into()));
+    let easing = resolve_easing(named, &Label("subtitle".into()), Easing::Linear);
 
     let id = format!("__sub_{}", ctx.subtitle_id);
     ctx.subtitle_id += 1;
@@ -1379,9 +1386,10 @@ fn process_subtitle(
     ctx.subtitle_call_ranges.insert(id, (s, cr.end));
 }
 
-/// `ecounter(name, seed:, step:, duration:, easing:)` — define a named integer
-/// counter.
-fn process_ecounter(
+/// `ecnew(name, seed:, step:, duration:, easing:)` — define a named integer
+/// counter. Its default easing is `"linear"` (per the Typst signature in
+/// `typst/src/counter.typ`); an explicit `easing:` overrides it.
+fn process_ecnew(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
     node: &LinkedNode,
@@ -1399,7 +1407,7 @@ fn process_ecounter(
         .get("duration")
         .and_then(expr_to_f64)
         .map(|d| d.max(1.0) as u32);
-    let easing = resolve_easing(named, &Label(format!("counter:{name}")));
+    let easing = resolve_easing(named, &Label(format!("counter:{name}")), Easing::Linear);
     let scope = current_scope(ctx);
     // Record the declaration's source location so later diagnostics can point
     // at the exact code.
@@ -1407,7 +1415,7 @@ fn process_ecounter(
     ctx.label_locs
         .insert(Label(format!("counter:{name}")), loc.clone());
 
-    // Duplicate-name detection (respecting scope): an ecounter redefined in the
+    // Duplicate-name detection (respecting scope): an ecnew redefined in the
     // *same* lexical scope warns and the later definition shadows the earlier
     // (we replace the prior same-scope `CounterDef` so the new one wins). A
     // redefinition inside a *nested* scope is legitimate Typst shadowing and is
@@ -1422,13 +1430,13 @@ fn process_ecounter(
         start_ms: ctx.cursor,
     };
     if ctx
-        .ecounter_names
+        .ecnew_names
         .entry(scope.clone())
         .or_default()
         .contains(&name)
     {
         warn!(CandyWarn::DuplicateName(
-            "ecounter".into(),
+            "ecnew".into(),
             name.clone(),
             loc
         ));
@@ -1442,12 +1450,12 @@ fn process_ecounter(
             ctx.counters.push(def);
         }
     } else {
-        ctx.ecounter_names.get_mut(&scope).unwrap().insert(name);
+        ctx.ecnew_names.get_mut(&scope).unwrap().insert(name);
         ctx.counters.push(def);
     }
 }
 
-/// `counter_pause(name)` / `counter_resume(name)` / `counter_destroy(name)` —
+/// `ecpause(name)` / `ecresume(name)` / `ecdestroy(name)` —
 /// record a lifecycle event on a named counter at the current timeline.
 fn process_counter_event(
     pos: &[Expr],
@@ -1465,4 +1473,58 @@ fn process_counter_event(
         kind,
         at_ms: ctx.cursor,
     });
+}
+
+/// `scene-switch(target, duration: 0, easing: "smooth")` — switch to a named
+/// scene. This creates a `SceneSwitch` action that the scheduler handles as a
+/// timeline jump (the cursor jumps to the target scene's `start_ms`).
+///
+/// The target scene must have been previously defined via `#scene(name: "foo",
+/// ...)`. Anonymous scenes (without a `name:` argument) are auto-assigned
+/// UUID-like names and can also be targeted.
+fn process_scene_switch(
+    _pos: &[Expr],
+    named: &std::collections::HashMap<String, Expr>,
+    ctx: &mut ParseCtx,
+) {
+    // Accept `target:` or `name:` as the scene reference.
+    let target = named
+        .get("target")
+        .or_else(|| named.get("name"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        });
+    let Some(target) = target else {
+        return;
+    };
+
+    let duration = named
+        .get("duration")
+        .and_then(expr_to_f64)
+        .unwrap_or(0.0)
+        .max(0.0) as u32;
+
+    let easing = match named.get("easing") {
+        Some(Expr::Str(s)) => {
+            let name = s.get();
+            match Easing::from_str(name.as_str()) {
+                Some(e) => e,
+                None => Easing::Linear,
+            }
+        }
+        _ => Easing::Smooth,
+    };
+
+    // SceneSwitch is instantaneous by default (0 duration). Emit a 1 ms slide
+    // so the scheduler sees the action.
+    ctx.slides.push(Slide {
+        duration_ms: duration.max(1),
+        actions: vec![Action::SceneSwitch {
+            target,
+            duration_ms: duration,
+            easing,
+        }],
+    });
+    ctx.cursor += duration.max(1);
 }

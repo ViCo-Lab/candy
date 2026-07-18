@@ -1,7 +1,7 @@
 # Subtitles & counters
 
 Overlay captions with `#subtitle`, and drive animatable integers with the easing-counter
-module (`#ecounter` / `#ecval`).
+module (`#ecnew` / `#ecval`).
 
 ## `#subtitle` — overlay captions
 
@@ -29,13 +29,13 @@ its own (shadowing).
 ]
 ```
 
-## Easing counters — `#ecounter` / `#ecval`
+## Easing counters — `#ecnew` / `#ecval`
 
 A key-value store of animatable integers, referenced from mobject / subtitle bodies via
 `ecval(name)`. Standard Typst sees the integer seed; the Candy pipeline steps the value
 over time, shaped by the counter's easing.
 
-`#ecounter(name, seed: 0, step: 1, duration: none, easing: "linear")` registers an
+`#ecnew(name, seed: 0, step: 1, duration: none, easing: "linear")` registers an
 integer counter. It returns `seed` under standard Typst (so binding it captures the
 initial value). With no `duration`, the counter steps once per millisecond; a positive
 `duration` ramps `seed → seed + step·duration` over that window, shaped by `easing`.
@@ -43,21 +43,21 @@ initial value). With no `duration`, the counter steps once per millisecond; a po
 `#ecval(value, default: 0)` reads the current value of an easing counter. Inside Candy's
 pipeline it is substituted with the live, eased integer and may be used directly as a
 Typst parameter (`rect(width: ecval(n) * 1cm)`). Under standard Typst it returns its
-argument unchanged when it is already a number, so bind the `ecounter` result
-(`#let n = ecounter("n")`) and pass `n`.
+argument unchanged when it is already a number, so bind the `ecnew` result
+(`#let n = ecnew("n")`) and pass `n`.
 
-`#counter_pause(name)` / `#counter_resume(name)` / `#counter_destroy(name)` pause /
+`#ecpause(name)` / `#ecresume(name)` / `#ecdestroy(name)` pause /
 resume / freeze a counter. All inert under standard Typst.
 
 ```typst
 #scene(width: 16cm, height: 9cm)[
-  #let r = ecounter("r", seed: 40, step: 1)
+  #let r = ecnew("r", seed: 40, step: 1)
   #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
   #subtitle([r = #str(ecval(r))], position: "bottom")
-  #counter_pause("r")
+  #ecpause("r")
   #pause(duration: 600)
-  #counter_resume("r")
+  #ecresume("r")
 ]
 ```
 

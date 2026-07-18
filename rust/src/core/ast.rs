@@ -278,6 +278,32 @@ pub enum Action {
         rotate: f64,
         easing: Easing,
     },
+
+    // ---- Named scene switching ----
+    /// Switch to a named scene by its `name` (e.g., `"intro"`, `"demo"`).
+    /// This is a timeline-jump action: the scheduler records a transition that
+    /// makes the target scene active from this point onward. The target scene
+    /// must exist in `scenes` with a matching `name` field. If the target is
+    /// an anonymous scene, use its auto-assigned UUID name (e.g.,
+    /// `"scene_a1b2c3d4"`).
+    ///
+    /// When a named scene is switched to via this action:
+    /// - If the target is a **sibling** scene at the same hierarchy level,
+    ///   it replaces the current scene on canvas (mutual exclusion).
+    /// - If the target is a **nested** child scene, it enters that nested scope
+    ///   (auto-hiding parent per nested scene semantics).
+    /// - Mobjects not registered in the target scene's `owns_labels` are hidden
+    ///   (only the target scene's mobjects are visible).
+    SceneSwitch {
+        /// The name of the target scene to switch to.
+        target: String,
+        /// Duration of the transition effect in ms (0 = instant jump).
+        #[serde(default)]
+        duration_ms: u32,
+        /// Easing for any fade transition during the switch.
+        #[serde(default)]
+        easing: Easing,
+    },
 }
 
 /// A real shape-morph pair recorded by `#morph(from, to)` (as opposed to the
@@ -353,7 +379,7 @@ pub struct TransformPlan {
 }
 
 impl Action {
-    pub fn target(&self) -> &Label {
+    pub fn target(&self) -> Option<&Label> {
         match self {
             Action::MoveTo { target, .. }
             | Action::MoveBy { target, .. }
@@ -375,7 +401,9 @@ impl Action {
             | Action::Show { target }
             | Action::Hide { target }
             | Action::SetColor { target, .. }
-            | Action::Transform { target, .. } => target,
+            | Action::Transform { target, .. } => Some(target),
+            // SceneSwitch doesn't target a mobject label; it targets a scene by name.
+            Action::SceneSwitch { .. } => None,
         }
     }
 
@@ -400,7 +428,10 @@ impl Action {
             | Action::Wiggle { easing, .. }
             | Action::SetColor { easing, .. }
             | Action::Transform { easing, .. } => easing.clone(),
-            Action::SaveState { .. } | Action::Show { .. } | Action::Hide { .. } => Easing::Linear,
+            Action::SaveState { .. }
+            | Action::Show { .. }
+            | Action::Hide { .. }
+            | Action::SceneSwitch { .. } => Easing::Linear,
         }
     }
 }
@@ -439,7 +470,7 @@ pub struct AudioTrack {
 }
 
 /// Animation scene parsed from `.tyx` or `@preview/candy` output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Scene {
     pub slides: Vec<Slide>,
     /// CORRECTION (beyond the original spec): the Typst source body for each
@@ -528,9 +559,12 @@ pub struct Scene {
     /// "legacy single-scene document" — behavior is identical to v0.1.
     #[serde(default)]
     pub root_scene: Option<usize>,
-    /// Group parent map: child label → parent label. Used by the renderer to
-    /// compose group transforms (parent→child). Functional data lives here,
-    /// not in `private_metadata`.
+    /// Group parent map: child label → parent label. A group is a special kind
+    /// of mobject — an mobject may own child mobjects, and animating the parent
+    /// transforms all of its children together (parent→child inheritance). The
+    /// renderer composes group transforms using this map; the parent label is
+    /// itself a normal mobject (registered in `items` / `initial`) but is never
+    /// drawn directly. Functional data lives here, not in `private_metadata`.
     #[serde(default)]
     pub groups: HashMap<Label, Label>,
     /// Parse artifacts needed by the **per-frame whole-document recompiler**
@@ -576,7 +610,7 @@ pub struct ParseArtifacts {
     /// rendering anomaly.
     pub subtitle_call: HashMap<String, (usize, usize)>,
     /// Source location of every label's *declaration* (`#mobject("x", …)` /
-    /// `#ecounter("x", …)`), keyed by label. Used to point the user at the
+    /// `#ecnew("x", …)`), keyed by label. Used to point the user at the
     /// exact code when a label later causes a diagnostic (e.g. `E004`
     /// LabelNotFound). Not serialized (it is a re-derivable cache of the
     /// source), default-empty so synthetic `Scene`s (tests) stay trivial.
@@ -652,7 +686,78 @@ impl Scene {
         }
         m
     }
+
+    /// Look up a scene by its human-readable `name`. Returns the scene id if
+    /// found, `None` otherwise. Anonymous scenes (name = `None`) are not
+    /// included — use [`Scene::resolve_scene_id`] which also accepts UUID-style
+    /// names like `"scene_a1b2c3d4"`.
+    pub fn find_scene_by_name(&self, name: &str) -> Option<usize> {
+        self.scenes.iter().find(|s| {
+            s.name.as_deref() == Some(name)
+        }).map(|s| s.id)
+    }
+
+    /// Resolve a scene-switch target string to a scene id. This handles both:
+    /// - Named scenes (exact match on `name`)
+    /// - Anonymous scenes matched by their auto-assigned UUID-like name
+    ///   (e.g., `"scene_a1b2c3d4"` matches an anonymous scene whose internal
+    ///   resolved name is that UUID).
+    ///
+    /// Returns `None` if no matching scene is found.
+    pub fn resolve_scene_id(&self, target: &str) -> Option<usize> {
+        // Direct name match (named scene or resolved UUID name).
+        if let Some(id) = self.find_scene_by_name(target) {
+            return Some(id);
+        }
+        // Also check by scene id as string (for numeric references).
+        if let Ok(id) = target.parse::<usize>() {
+            if self.scenes.iter().any(|s| s.id == id) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Assign deterministic UUID-like names to all anonymous scenes (those with
+    /// `name = None`). Uses `scene_<hex_of_id>_<index>` format so names are
+    /// stable across runs. This is called during/after parsing so that anonymous
+    /// scenes can still be referenced via `#switch(target: "scene_<hex>")`.
+    pub fn assign_anonymous_names(scenes: &mut [SceneInfo]) {
+        use std::collections::HashSet;
+
+        // Collect already-used explicit names.
+        let mut used_names: HashSet<String> = scenes
+            .iter()
+            .filter_map(|s| s.name.clone())
+            .collect();
+
+        // Track how many anonymous scenes we've assigned per scene id
+        // (for handling multiple anonymous scenes with same id edge case).
+        let mut anon_counter: usize = 0;
+
+        for scene in scenes.iter_mut() {
+            if scene.name.is_none() {
+                // Generate a deterministic name based on scene id + counter.
+                // Format: "scene_<8-char-hex>" where hex is derived from id.
+                let hex_id = format!("{:08x}", scene.id);
+                let base_name = format!("scene_{}", &hex_id[..8.min(hex_id.len())]);
+                
+                let name = if used_names.contains(&base_name) {
+                    // Collision - append counter.
+                    let candidate = format!("{}_{:04x}", base_name, anon_counter);
+                    anon_counter += 1;
+                    candidate
+                } else {
+                    base_name
+                };
+                
+                used_names.insert(name.clone());
+                scene.name = Some(name);
+            }
+        }
+    }
 }
+
 
 impl Scene {
     /// Mandatory pipeline assertion: every `duration_ms ≥ 1`.
@@ -674,16 +779,18 @@ impl Scene {
             }
         }
         // Validate slide actions reference declared mobjects.
+        // SceneSwitch targets a scene by name, not a mobject label, so skip it.
         let mobject_names: std::collections::HashSet<&str> =
             self.items.keys().map(|l| l.0.as_str()).collect();
         for s in self.slides.iter() {
             for action in &s.actions {
-                let target = action.target();
-                if !mobject_names.contains(target.0.as_str()) {
-                    return Err(format!(
-                        "E010: mobject \"@{label}\" not found in Typst layout",
-                        label = target.0
-                    ));
+                if let Some(target) = action.target() {
+                    if !mobject_names.contains(target.0.as_str()) {
+                        return Err(format!(
+                            "E010: mobject \"@{label}\" not found in Typst layout",
+                            label = target.0
+                        ));
+                    }
                 }
             }
         }
@@ -904,7 +1011,16 @@ pub struct ScopeInfo {
 /// - its own `page_size` (canvas in Typst points; `None` ⇒ inherit parent),
 /// - a `[start_ms, end_ms]` timeline interval (derived from the parse cursor
 ///   when the scene's body opens / closes),
-/// - the set of mobjects (`owns_labels`) declared inside its body.
+/// - the set of mobjects (`owns_labels`) declared inside its body,
+/// - an optional human-readable **name** for direct scene switching.
+///
+/// **Named scenes** can be switched to directly via `#switch(name: "scene_name")`
+/// or `#switch(target: "scene_name")`, which jumps the timeline cursor to the
+/// target scene's `start_ms`. When a named scene is entered, it auto-hides all
+/// sibling/ancestor scenes (same as nested scene semantics).
+///
+/// **Anonymous scenes** (created by old-style `#scene(...)` without a name)
+/// are automatically assigned a UUID-like name for internal management.
 ///
 /// Semantics (see `typst/README.md` → *Scene / canvas*):
 /// - scenes may be **nested**;
@@ -921,10 +1037,16 @@ pub struct ScopeInfo {
 ///   split into sub-scenes);
 /// - with **no explicit root scene**, the whole document is one implicit scene
 ///   (id `0`), following the same split rules.
+/// - **Scene switching**: use `#switch(target: "name")` to jump to a named scene.
+///   Anonymous scenes get auto-assigned UUID names (e.g., `"scene_a1b2c3d4"`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneInfo {
     /// Unique scene id (root = `0`).
     pub id: usize,
+    /// Human-readable name for scene switching (e.g., `"intro"`, `"demo"`).
+    /// `None` means anonymous (will be auto-assigned a UUID-like name internally).
+    #[serde(default)]
+    pub name: Option<String>,
     /// Parent scene id (`None` for the root scene).
     #[serde(default)]
     pub parent: Option<usize>,

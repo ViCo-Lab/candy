@@ -8,7 +8,7 @@ A counter is a key-value store of animatable integers, referenced from mobject /
 bodies via `ecval(name)`. Standard Typst sees the integer seed; the Candy pipeline steps
 the value over time, shaped by the counter's easing.
 
-## `#ecounter(name, seed: 0, step: 1, duration: none, easing: "linear")`
+## `#ecnew(name, seed: 0, step: 1, duration: none, easing: "linear")`
 
 Register an integer counter. Returns `seed` under standard Typst (so binding it captures
 the initial value). With no `duration`, the counter steps once per millisecond; a positive
@@ -19,33 +19,33 @@ the initial value). With no `duration`, the counter steps once per millisecond; 
 Read the current value of an easing counter. Inside Candy's pipeline it is substituted with
 the live, eased integer and may be used directly as a Typst parameter
 (`rect(width: ecval(n) * 1cm)`). Under standard Typst it returns its argument unchanged when
-it is already a number, so bind the `ecounter` result (`#let n = ecounter("n")`) and pass
+it is already a number, so bind the `ecnew` result (`#let n = ecnew("n")`) and pass
 `n`.
 
-## `#counter_pause(name)` / `#counter_resume(name)` / `#counter_destroy(name)`
+## `#ecpause(name)` / `#ecresume(name)` / `#ecdestroy(name)`
 
 Pause / resume / freeze a counter. Inert under standard Typst.
 
 ```typst
-#let r = ecounter("r", seed: 40, step: 1)
+#let r = ecnew("r", seed: 40, step: 1)
 #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
 #pause(duration: 600)
-#counter_pause("r")
+#ecpause("r")
 #pause(duration: 600)
-#counter_resume("r")
-#counter_destroy("r")
+#ecresume("r")
+#ecdestroy("r")
 ```
 
 ## Full example
 
 ```typst
 #scene(width: 16cm, height: 9cm)[
-  #let r = ecounter("r", seed: 40, step: 1)
+  #let r = ecnew("r", seed: 40, step: 1)
   #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
   #subtitle([r = #str(ecval(r))], position: "bottom")
-  #counter_pause("r")
+  #ecpause("r")
   #pause(duration: 600)
-  #counter_resume("r")
+  #ecresume("r")
 ]
 ```

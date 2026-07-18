@@ -264,7 +264,7 @@ impl Renderer {
         // Report E010 errors for any unknown counters found during rendering.
         if let Some(counter_name) = unknown_counters.first() {
             return Err(CandyError::UnknownKey(
-                "ecounter".to_string(),
+                "ecnew".to_string(),
                 counter_name.clone(),
                 None,
             ));

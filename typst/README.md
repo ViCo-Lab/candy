@@ -85,7 +85,7 @@ so you can iterate on layout with `typst compile` and render the animation with
   directly in **milliseconds** (default `500`). There is no frame-based timing — the
   scheduler works entirely in ms, and only the final rasterization samples that timeline
   at `--fps`.
-- `#subtitle` and `#ecounter` lifetimes are expressed in **milliseconds** directly.
+- `#subtitle` and `#ecnew` lifetimes are expressed in **milliseconds** directly.
 
 ### Scene / canvas
 
@@ -475,7 +475,7 @@ A key-value store of animatable integers, referenced from mobject / subtitle bod
 `ecval(name)`. Standard Typst sees the integer seed; the candy pipeline steps the value
 over time, shaped by the counter's easing.
 
-#### `#ecounter(name, seed: 0, step: 1, duration: none, easing: "linear")` {#ecounter}
+#### `#ecnew(name, seed: 0, step: 1, duration: none, easing: "linear")` {#ecnew}
 
 Register an integer counter. Returns `seed` under standard Typst (so binding it captures
 the initial value). With no `duration`, the counter steps once per millisecond; a
@@ -487,21 +487,21 @@ positive `duration` ramps `seed → seed + step·duration` over that window, sha
 Read the current value of an easing counter. Inside candy's pipeline it is substituted
 with the live, eased integer and may be used directly as a Typst parameter
 (`rect(width: ecval(n) * 1cm)`). Under standard Typst it returns its argument unchanged
-when it is already a number, so bind the `ecounter` result (`#let n = ecounter("n")`) and
+when it is already a number, so bind the `ecnew` result (`#let n = ecnew("n")`) and
 pass `n`.
 
-#### `#counter_pause(name)` / `#counter_resume(name)` / `#counter_destroy(name)` {#counter-control}
+#### `#ecpause(name)` / `#ecresume(name)` / `#ecdestroy(name)` {#counter-control}
 
 Pause / resume / freeze a counter. Inert under standard Typst.
 
 ```typst
-#let r = ecounter("r", seed: 40, step: 1)
+#let r = ecnew("r", seed: 40, step: 1)
 #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
 #pause(duration: 600)
-#counter_pause("r")
+#ecpause("r")
 #pause(duration: 600)
-#counter_resume("r")
-#counter_destroy("r")
+#ecresume("r")
+#ecdestroy("r")
 ```
 
 ---
@@ -536,7 +536,7 @@ Opacity presets: `visible` (1.0) `half-visible` (0.5) `invisible` (0.0).
 `"ease-in-out"`),
 `"sin"` (sine ease-out), `"there-and-back"`, `"wiggle"`, `"lingering"`.
 
-**Custom specs** (accepted by `#animate`, `#subtitle`, `#ecounter`, …):
+**Custom specs** (accepted by `#animate`, `#subtitle`, `#ecnew`, …):
 
 - `expr:<math>` — a mathematical expression in `t` ∈ [0, 1], e.g.
   `"expr: 1 - (1 - t)^3"`.
@@ -558,13 +558,13 @@ same `.tyx` compiles under plain `typst compile` with the `seed` value.
 
 ```typst
 #scene(width: 16cm, height: 9cm)[
-  #let r = ecounter("r", seed: 40, step: 1)
+  #let r = ecnew("r", seed: 40, step: 1)
   #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")
   #subtitle([r = #str(ecval(r))], position: "bottom")
-  #counter_pause("r")
+  #ecpause("r")
   #pause(duration: 600)
-  #counter_resume("r")
+  #ecresume("r")
 ]
 ```
 
@@ -581,7 +581,7 @@ same `.tyx` compiles under plain `typst compile` with the `seed` value.
 | `examples/manim_features.tyx` | `save_state`/`restore`, `wiggle`, `flash`, `indicate`, `appear`/`disappear` |
 | `examples/composite_demo.tyx` | `blink`, `spiral-in`, `fade-transform`, `focus-on` |
 | `examples/full_demo.tyx` | `move-along-path` + `morph` + `indicate` |
-| `examples/modules_demo.tyx` | `ecounter`/`ecval`, custom `expr:`/`bezier:` easing, `subtitle`, counter control |
+| `examples/modules_demo.tyx` | `ecnew`/`ecval`, custom `expr:`/`bezier:` easing, `subtitle`, counter control |
 | `examples/preview_demo.tyx` | external `@preview` package (`cetz`) resolved in-process |
 | `examples/custom_page.tyx` | custom page size via `#set page` |
 | `examples/play_demo.tyx` | `#play` beat-by-beat reveal |
@@ -595,7 +595,7 @@ same `.tyx` compiles under plain `typst compile` with the `seed` value.
 | `examples/camera_tour.tyx` | cinematic `#camera` pan/zoom/rotate tour + nested title-card scene + `#transition` |
 | `examples/data_viz.tyx` | animated horizontal bar chart "race" via `#transform` (reused labels) + `#indicate` leader + `#typewriter` |
 | `examples/orbit_demo.tyx` | `#group` ring spin + `#track` orbiting planet + `#camera` push-in (orrery) |
-| `examples/projectile_demo.tyx` | nested title scene + `#track` parabolic flight + `#ecounter`/`#ecval` live timer + `#camera` push-in + `#transform` of the trajectory equation |
+| `examples/projectile_demo.tyx` | nested title scene + `#track` parabolic flight + `#ecnew`/`#ecval` live timer + `#camera` push-in + `#transform` of the trajectory equation |
 
 See each file in `examples/` for the full, runnable source. Build any of them with:
 

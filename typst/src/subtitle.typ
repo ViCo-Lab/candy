@@ -54,12 +54,7 @@
 /// Subtitles are camera-independent: a global `#camera` (pan/zoom/rotate) only
 /// transforms the mobjects, never the captions — a subtitle always stays at its
 /// fixed page anchor and fixed size, regardless of the current view.
-#let subtitle(
-  body,
-  duration: none,
-  position: "bottom",
-  easing: "linear",
-) = {
+#let subtitle(body, duration: none, position: "bottom", easing: "linear") = {
   let (align, dx, dy) = _subtitle_anchor(position)
 
   // Fixed style: white text with black stroke for maximum contrast on any background

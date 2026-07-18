@@ -96,7 +96,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
         let end = ptr + slide.duration_ms;
 
         for action in &slide.actions {
-            let t = action.target().clone();
+            let Some(target) = action.target() else {
+                // SceneSwitch doesn't target a mobject — handled by timeline logic.
+                continue;
+            };
+            let t = target.clone();
             let s = *state.get(&t).unwrap_or(&State::default());
             let easing = action.easing();
 
@@ -579,7 +583,26 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
             }
         }
 
-        ptr = end;
+        // Scene switching: a `SceneSwitch` action jumps the cursor to the target
+        // scene's `start_ms` (its interval was remapped by `finalize_scene_switching`
+        // at parse time so the renderer's `active_scene_at` gating shows the target
+        // scene's content). Only forward jumps are taken — a backward target would
+        // replay earlier frames and is out of scope for the v1 switch model. The
+        // switch slide itself emits no keyframes (its action has no mobject target,
+        // so the inner loop `continue`s past it).
+        let mut next_ptr = end;
+        for a in &slide.actions {
+            if let Action::SceneSwitch { target, .. } = a {
+                if let Some(tid) = scene.resolve_scene_id(target) {
+                    if let Some(s) = scene.scenes.get(tid) {
+                        if s.start_ms > next_ptr {
+                            next_ptr = s.start_ms;
+                        }
+                    }
+                }
+            }
+        }
+        ptr = next_ptr;
     }
 
     // Ensure every item has a keyframe at the final frame.
@@ -657,7 +680,8 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
         | Action::SetColor { .. }
         | Action::Transform { .. }
         | Action::Track { .. }
-        | Action::Camera { .. } => s,
+        | Action::Camera { .. }
+        | Action::SceneSwitch { .. } => s,
     };
     state.insert(t.clone(), ns);
 }

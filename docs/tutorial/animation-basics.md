@@ -12,7 +12,7 @@ works, and the `#pause` / `#play` helpers.
   directly in **milliseconds** (default `500`). There is no frame-based timing — the
   scheduler works entirely in ms, and only the final rasterization samples that timeline
   at `--fps`.
-- `#subtitle` and `#ecounter` lifetimes are likewise expressed in **milliseconds** directly.
+- `#subtitle` and `#ecnew` lifetimes are likewise expressed in **milliseconds** directly.
 
 ## `#animate` — transforms
 
