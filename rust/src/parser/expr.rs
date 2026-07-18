@@ -232,6 +232,29 @@ pub(crate) fn expr_to_f64(e: &Expr) -> Option<f64> {
     }
 }
 
+/// Evaluate an opacity-style ratio expression to `f64` in `[0, 1]`.
+///
+/// Accepts a Typst `ratio` literal such as `50%` (→ `0.5`). For the Rust-only
+/// parse path that bypasses the Typst compile-time validation (the candy
+/// toolchain parses `.tyx` directly, so it never sees the Typst `_assert_ratio`
+/// panic), a bare unitless number is also accepted and treated as a fraction
+/// (`0.5` → `0.5`) so legacy `.tyx` files keep working. Lengths and angles are
+/// rejected (`None`) because they are not valid opacity values.
+pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Int(i) => Some(i.get() as f64),
+        Expr::Float(f) => Some(f.get()),
+        Expr::Numeric(n) => {
+            let (val, unit) = n.get();
+            match unit {
+                ast::Unit::Percent => Some(val / 100.0),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Evaluate a boolean expression.
 pub(crate) fn expr_to_bool(e: &Expr) -> Option<bool> {
     match e {

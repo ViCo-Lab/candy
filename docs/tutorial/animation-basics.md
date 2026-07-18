@@ -35,7 +35,7 @@ action.
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #animate("box", scale: 1.5, duration: 800, easing: "smooth")
-#animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600)
+#animate("sq", dx: 2cm, rotate-by: 90, opacity: 50%, duration: 600)
 ```
 
 ## `#pause` — hold a frame

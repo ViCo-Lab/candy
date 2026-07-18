@@ -32,7 +32,7 @@
     // Ground line.
     #mobject("ground", line(start: (0cm, 0cm), end: (16cm, 0cm), stroke: 1.5pt + gray))
     #animate("ground", to: (8cm, 1.0cm), duration: 1)
-    #animate("ground", opacity: 1.0, duration: 400, easing: "smooth")
+    #animate("ground", opacity: 100%, duration: 400, easing: "smooth")
     #pause(duration: 200)
 
     // The running equation, parked at the top.
@@ -61,14 +61,14 @@
     #animate("s7", to: (13.25cm, 2.48cm), duration: 1)
     #disappear("s0"); #disappear("s1"); #disappear("s2"); #disappear("s3")
     #disappear("s4"); #disappear("s5"); #disappear("s6"); #disappear("s7")
-    #animate("s0", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s1", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s2", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s3", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s4", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s5", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s6", opacity: 1.0, duration: 250, easing: "smooth"); #pause(duration: 150)
-    #animate("s7", opacity: 1.0, duration: 250, easing: "smooth")
+    #animate("s0", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s1", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s2", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s3", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s4", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s5", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s6", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
+    #animate("s7", opacity: 100%, duration: 250, easing: "smooth")
     #subtitle([This is the planned path: y = 6 - 1/8·(x - 8)².], position: "bottom")
     #pause(duration: 400)
 

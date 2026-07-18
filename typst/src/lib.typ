@@ -27,6 +27,5 @@
 #import "core.typ": *
 #import "manim.typ": *
 #import "composite.typ": *
-#import "subtitle.typ": *
 #import "counter.typ": *
 #import "constants.typ": *

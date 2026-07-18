@@ -55,11 +55,11 @@
   #mobject("l5", line(start: (11cm, 5cm), end: (12cm, 3cm), stroke: 1pt + rgb("#5b6ee1")))
 
   #disappear("l1"); #disappear("l2"); #disappear("l3"); #disappear("l4"); #disappear("l5")
-  #animate("l1", opacity: 1.0, duration: 400, easing: "smooth")
-  #animate("l2", opacity: 1.0, duration: 400, easing: "smooth")
-  #animate("l3", opacity: 1.0, duration: 400, easing: "smooth")
-  #animate("l4", opacity: 1.0, duration: 400, easing: "smooth")
-  #animate("l5", opacity: 1.0, duration: 400, easing: "smooth")
+  #animate("l1", opacity: 100%, duration: 400, easing: "smooth")
+  #animate("l2", opacity: 100%, duration: 400, easing: "smooth")
+  #animate("l3", opacity: 100%, duration: 400, easing: "smooth")
+  #animate("l4", opacity: 100%, duration: 400, easing: "smooth")
+  #animate("l5", opacity: 100%, duration: 400, easing: "smooth")
   #pause(duration: 500)
 
   // Sparkle.

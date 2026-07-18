@@ -26,7 +26,7 @@
   _assert_str(target, "Animation target")
   _assert_array(keys, "track `keys`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -48,7 +48,7 @@
   _assert_number(zoom, "camera zoom")
   _assert_number(rotate, "camera rotate")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   none
 }
 
@@ -79,7 +79,7 @@
   _assert_str(target, "Animation target")
   _assert_enum(by, ("char", "word"), "reveal `by`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -96,7 +96,7 @@
 #let typewriter(target, duration: 1000, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -123,7 +123,7 @@
   _assert_str(from, "morph `from`")
   _assert_str(to, "morph `to`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -155,7 +155,7 @@
     panic("transform `to` must be Typst content or none")
   }
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none

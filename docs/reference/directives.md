@@ -119,7 +119,7 @@ transforms in any combination; each produces a parallel action.
 | `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
 | `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
 | `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
-| `opacity:` | target opacity in `[0, 1]` |
+| `opacity:` | target opacity as a ratio in `[0%, 100%]` (e.g. `50%`) |
 | `duration:` | length of the animation in **milliseconds** (default `500`) |
 | `easing:` | rate curve (default `"smooth"`; see [Easing](easing.md)) |
 | `timing:` | `"after"` (default) or `"with"` — sequencing vs the previous animation |
@@ -128,13 +128,13 @@ transforms in any combination; each produces a parallel action.
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #animate("box", scale: 1.5, duration: 800, easing: "smooth")
-#animate("sq", dx: 2cm, rotate-by: 90, opacity: 0.5, duration: 600, timing: "with")
+#animate("sq", dx: 2cm, rotate-by: 90, opacity: 50%, duration: 600, timing: "with")
 ```
 
 ### `#appear(target, timing: "after", delay: 0)` / `#disappear(target, timing: "after", delay: 0)`
 
-Make a mobject visible instantly (`opacity: 1.0`) or invisible instantly (`opacity:
-0.0`), with no interpolation. Useful for appear/disappear-without-fading effects. Inert
+Make a mobject visible instantly (`opacity: 100%`) or invisible instantly (`opacity:
+0%`), with no interpolation. Useful for appear/disappear-without-fading effects. Inert
 under standard Typst.
 
 ### `#save_state(target, slot: "default", timing: "after", delay: 0)`

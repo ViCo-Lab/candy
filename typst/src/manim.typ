@@ -44,7 +44,7 @@
   _assert_str(target, "Animation target")
   _assert_str(slot, "save slot")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -71,7 +71,7 @@
   _assert_scalar(dx, "indicate dx")
   _assert_scalar(dy, "indicate dy")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -94,7 +94,7 @@
   _assert_str(target, "Animation target")
   _assert_number(factor, "factor")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -124,7 +124,7 @@
   _assert_str(target, "Animation target")
   _assert_number(degrees, "degrees")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -150,7 +150,7 @@
   _assert_str(target, "Animation target")
   _assert_color(color, "color")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -170,7 +170,7 @@
   _assert_str(target, "Animation target")
   _assert_int(blinks, "blinks")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -193,7 +193,7 @@
   _assert_number(scale, "scale")
   _assert_number(rotate, "rotate")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -214,7 +214,7 @@
   _assert_str(target, "Animation target")
   _assert_number(factor, "factor")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -236,7 +236,7 @@
   _assert_str(from, "fade-transform `from`")
   _assert_str(to, "fade-transform `to`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -264,8 +264,8 @@
   _assert_str(target, "Animation target")
   _assert_array(path, "move-along-path `path`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
-  _assert_str(mode, "mode")
+  _assert_easing(easing, "easing")
+  _assert_enum(mode, ("polyline", "bezier"), "move-along-path `mode`")
   _assert_bool(orient, "orient")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
@@ -285,6 +285,6 @@
 #let zoom-to(rect, duration: 500, easing: "smooth") = {
   _assert_array(rect, "zoom-to `rect`")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   none
 }

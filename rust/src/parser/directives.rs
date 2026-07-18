@@ -23,8 +23,8 @@ use crate::warn;
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
     call_symbol, current_scope, expr_src, expr_to_bool, expr_to_f64, expr_to_i64, expr_to_key,
-    parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg, track_key_from_expr,
-    tuple_cm,
+    expr_to_ratio, parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg,
+    track_key_from_expr, tuple_cm,
 };
 
 /// Register `label` as owned by `scene`, recording its first-seen (declaration)
@@ -72,7 +72,7 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "wiggle" => process_wiggle(&pos, &named, ctx),
         "appear" => process_appear_disappear(&pos, true, ctx),
         "disappear" => process_appear_disappear(&pos, false, ctx),
-        "set-color" => process_set_color(&pos, &named, ctx),
+        "set-color" => process_set_color(&pos, &named, node, raw, ctx),
         // Manim-inspired composite animations.
         "blink" => process_blink(&pos, &named, ctx),
         "spiral-in" => process_spiral_in(&pos, &named, ctx),
@@ -268,7 +268,7 @@ fn process_animate(
             easing: easing.clone(),
         });
     }
-    if let Some(o) = named.get("opacity").and_then(expr_to_f64) {
+    if let Some(o) = named.get("opacity").and_then(expr_to_ratio) {
         actions.push(Action::FadeTo {
             target: label.clone(),
             opacity: o.clamp(0.0, 1.0),
@@ -548,22 +548,29 @@ fn process_appear_disappear(pos: &[Expr], appear: bool, ctx: &mut ParseCtx) {
     ctx.cursor += 1;
 }
 
-/// `set_color(target, color: "black", duration: 1, easing: "linear")` —
+/// `set_color(target, color: black, duration: 1, easing: "linear")` —
 /// record a color change (tracked, renderer no-op for now).
 fn process_set_color(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
+    node: &LinkedNode,
+    raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let Some(label) = target_arg(pos, named) else {
         return;
     };
+    // The Typst contract requires a *native* color value (e.g. `red`,
+    // `rgb(255,0,0)`, `luma(50)`), not a string. Recover the source text of
+    // whatever color expression was passed; legacy string literals are kept
+    // verbatim for the Rust-only parse path that skips Typst validation.
     let color = named
         .get("color")
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(s.get().to_string()),
-            _ => None,
+        .map(|e| match e {
+            Expr::Str(s) => s.get().to_string(),
+            _ => expr_src(raw, node, e).to_string(),
         })
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "black".to_string());
     let duration = named
         .get("duration")
@@ -1435,11 +1442,7 @@ fn process_ecnew(
         .or_default()
         .contains(&name)
     {
-        warn!(CandyWarn::DuplicateName(
-            "ecnew".into(),
-            name.clone(),
-            loc
-        ));
+        warn!(CandyWarn::DuplicateName("ecnew".into(), name.clone(), loc));
         if let Some(slot) = ctx
             .counters
             .iter()

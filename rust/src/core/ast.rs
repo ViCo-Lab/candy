@@ -692,9 +692,10 @@ impl Scene {
     /// included — use [`Scene::resolve_scene_id`] which also accepts UUID-style
     /// names like `"scene_a1b2c3d4"`.
     pub fn find_scene_by_name(&self, name: &str) -> Option<usize> {
-        self.scenes.iter().find(|s| {
-            s.name.as_deref() == Some(name)
-        }).map(|s| s.id)
+        self.scenes
+            .iter()
+            .find(|s| s.name.as_deref() == Some(name))
+            .map(|s| s.id)
     }
 
     /// Resolve a scene-switch target string to a scene id. This handles both:
@@ -726,10 +727,8 @@ impl Scene {
         use std::collections::HashSet;
 
         // Collect already-used explicit names.
-        let mut used_names: HashSet<String> = scenes
-            .iter()
-            .filter_map(|s| s.name.clone())
-            .collect();
+        let mut used_names: HashSet<String> =
+            scenes.iter().filter_map(|s| s.name.clone()).collect();
 
         // Track how many anonymous scenes we've assigned per scene id
         // (for handling multiple anonymous scenes with same id edge case).
@@ -741,7 +740,7 @@ impl Scene {
                 // Format: "scene_<8-char-hex>" where hex is derived from id.
                 let hex_id = format!("{:08x}", scene.id);
                 let base_name = format!("scene_{}", &hex_id[..8.min(hex_id.len())]);
-                
+
                 let name = if used_names.contains(&base_name) {
                     // Collision - append counter.
                     let candidate = format!("{}_{:04x}", base_name, anon_counter);
@@ -750,14 +749,13 @@ impl Scene {
                 } else {
                     base_name
                 };
-                
+
                 used_names.insert(name.clone());
                 scene.name = Some(name);
             }
         }
     }
 }
-
 
 impl Scene {
     /// Mandatory pipeline assertion: every `duration_ms ≥ 1`.

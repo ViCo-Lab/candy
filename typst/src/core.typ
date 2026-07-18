@@ -83,7 +83,7 @@
 #let scene-switch(target, duration: 0, easing: "smooth") = {
   _assert_str(target, "Scene-switch target")
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   none
 }
 
@@ -178,7 +178,7 @@
     }
   }
   _assert_nonneg(duration, "duration")
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   _assert_timing(timing)
   _assert_nonneg(delay, "delay")
   none
@@ -290,4 +290,74 @@
       #text(10pt, fill: gray)[Video: #path]
     ],
   )
+}
+
+#let _subtitle_anchor(position) = {
+  let m = 1cm
+  if type(position) == array {
+    // Absolute (x, y) in cm: anchor the box's top-left corner there.
+    let (x, y) = (position.at(0), position.at(1))
+    (top + left, x * 1cm, y * 1cm)
+  } else if position == "top" {
+    (top + center, 0cm, m)
+  } else if position == "center" or position == "centre" {
+    (center + center, 0cm, 0cm)
+  } else if position == "bottom-left" {
+    (bottom + left, m, -m)
+  } else if position == "bottom-right" {
+    (bottom + right, -m, -m)
+  } else if position == "top-left" {
+    (top + left, m, m)
+  } else if position == "top-right" {
+    (top + right, -m, m)
+  } else {
+    // default: "bottom"
+    (bottom + center, 0cm, -m)
+  }
+}
+
+/// Show a caption over the animation.
+///
+/// - `body`: any valid Typst block content (e.g. `[Hello]`, `[$E = mc^2$]`,
+///   `align(center)[ ... ]`).
+/// - `duration`: how long the caption stays, in **milliseconds**. `none`
+///   (default) means "persist" — the caption stays until it is replaced by
+///   another `subtitle` in the *same* Typst scope, or until that scope exits
+///   (auto-destroy). A positive number gives an explicit lifetime.
+/// - `position`: anchor on the page. One of `"bottom"` (default), `"top"`,
+///   `"center"`, `"bottom-left"`, `"bottom-right"`, `"top-left"`,
+///   `"top-right"`, or a tuple `(x, y)` in cm for an absolute position.
+/// - `easing`: rate curve used for the caption's own fade (default
+///   `"linear"`). Custom modes `"bezier:x1,y1,x2,y2"` and `"expr:<math>"` are
+///   accepted.
+///
+/// Subtitles use a fixed style: white text with black stroke for maximum
+/// readability on any background.
+///
+/// Only one subtitle may be visible per Typst scope at a time; a later one
+/// replaces an earlier one. A subtitle in a parent scope is temporarily hidden
+/// while a child scope shows its own (shadowing). Under standard Typst the
+/// caption is auto-positioned (via `place`) at the requested anchor so the
+/// first frame renders correctly; candy's pipeline reads the same call from
+/// the AST and overlays it on every frame with the same anchoring.
+///
+/// Subtitles are camera-independent: a global `#camera` (pan/zoom/rotate) only
+/// transforms the mobjects, never the captions — a subtitle always stays at its
+/// fixed page anchor and fixed size, regardless of the current view. This is a
+/// mask/overlay, so it does **not** accept `timing`.
+#let subtitle(body, duration: none, position: "bottom", easing: "linear") = {
+  if duration != none and type(duration) != int and type(duration) != float {
+    panic("subtitle duration must be a number or none")
+  }
+  if type(position) != str and type(position) != array {
+    panic("subtitle position must be a string or an (x, y) array")
+  }
+  _assert_easing(easing, "easing")
+  let (align, dx, dy) = _subtitle_anchor(position)
+
+  // Fixed style: white text with black stroke for maximum contrast on any background
+  [
+    #set text(fill: white, stroke: black + 0.025em)
+    #place(align, dx: dx, dy: dy)[#body]
+  ]
 }

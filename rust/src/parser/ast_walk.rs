@@ -681,11 +681,7 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
         }
     }
 
-    let root = ctx
-        .scenes
-        .iter()
-        .find(|s| s.parent.is_none())
-        .map(|s| s.id);
+    let root = ctx.scenes.iter().find(|s| s.parent.is_none()).map(|s| s.id);
 
     // `active_at(t)` mirrors `Scene::active_scene_at` but over `ctx.scenes`
     // (the intervals as they stand when this runs).
@@ -698,7 +694,11 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
                 let mut cur = s.parent;
                 while let Some(pid) = cur {
                     depth += 1;
-                    cur = ctx.scenes.iter().find(|x| x.id == pid).and_then(|x| x.parent);
+                    cur = ctx
+                        .scenes
+                        .iter()
+                        .find(|x| x.id == pid)
+                        .and_then(|x| x.parent);
                 }
                 if best.is_none() || depth > best_depth {
                     best = Some(s.id);
@@ -957,7 +957,7 @@ mod tests {
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
 #animate("dot", to: (4cm, 0pt), duration: 30)
-#animate("box", rotate: 45, opacity: 0.5, easing: "smooth", duration: 20)
+#animate("box", rotate: 45, opacity: 50%, easing: "smooth", duration: 20)
 #pause(duration: 15)
 #audio("voice.opus", blocking: false, loop: false, volume: 0.9)
 #play(circle(radius: 1cm), duration: 10)
@@ -975,7 +975,7 @@ mod tests {
             r#"
 #import "candy": *
 #mobject("sq", rect(width: 2cm, height: 2cm))
-#animate("sq", rotate: 90, opacity: 0.3, duration: 25, easing: "cubic-in-out")
+#animate("sq", rotate: 90, opacity: 30%, duration: 25, easing: "cubic-in-out")
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_rotate.tyx");
@@ -1015,7 +1015,7 @@ mod tests {
 #wiggle("dot", degrees: 12, duration: 16)
 #disappear("dot")
 #appear("dot")
-#set_color("dot", color: "red", duration: 1)
+#set_color("dot", color: red, duration: 1)
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_manim.tyx");
@@ -1182,7 +1182,7 @@ mod tests {
 #wiggle("dot", degrees: 10, duration: 14)
 #disappear("dot")
 #appear("dot")
-#set_color("dot", color: "red", duration: 1)
+#set_color("dot", color: red, duration: 1)
 "#;
         std::fs::write(&tmp, calls).unwrap();
         let out = crate::renderer::compile_file_for_test(&tmp);

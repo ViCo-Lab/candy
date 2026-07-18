@@ -119,7 +119,7 @@
   #pause(duration: 400)
 
   // Animate individual members (set opacity instead of non-existent fade-to-opacity)
-  #animate("g1", opacity: 0.5, duration: 400)
+  #animate("g1", opacity: 50%, duration: 400)
   #animate("g2", opacity: 0.5, duration: 400)
   #animate("g3", opacity: 0.5, duration: 400)
 ]

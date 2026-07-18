@@ -1002,7 +1002,11 @@ fn transform_target_renders_after_window() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1088,7 +1092,11 @@ fn chained_transform_persists_intermediate() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1246,7 +1254,11 @@ fn typewriter_multibyte_prefix_does_not_panic() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1290,7 +1302,11 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1355,7 +1371,11 @@ fn transform_composes_with_concurrent_animate() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1392,22 +1412,26 @@ fn transform_translation_animate_shifts_all_fragments() {
         std::fs::write(&tmp, src).unwrap();
         let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
         let frames = crate::core::scheduler::schedule(&scene).unwrap();
-    eprintln!(
-        "DBG scenes={:?} items={:?} label_scene={:?}",
-        scene
-            .scenes
-            .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
-            .collect::<Vec<_>>(),
-        scene.items.keys().collect::<Vec<_>>(),
-        scene.label_scene_map(),
-    );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
-    eprintln!(
-        "DBG active@0={} frames_len={}",
-        scene.active_scene_at(0),
-        frames.len()
-    );
+        eprintln!(
+            "DBG scenes={:?} items={:?} label_scene={:?}",
+            scene
+                .scenes
+                .iter()
+                .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+                .collect::<Vec<_>>(),
+            scene.items.keys().collect::<Vec<_>>(),
+            scene.label_scene_map(),
+        );
+        eprintln!(
+            "DBG scene_call={:?} artifacts_has={}",
+            scene.artifacts.scene_call,
+            scene.artifacts.source.len()
+        );
+        eprintln!(
+            "DBG active@0={} frames_len={}",
+            scene.active_scene_at(0),
+            frames.len()
+        );
         let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
         r.ensure_natural_public().unwrap();
         let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
@@ -1508,7 +1532,11 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),
@@ -1602,7 +1630,11 @@ fn overflowing_scene_plays_pages_in_sequence() {
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
     );
-    eprintln!("DBG scene_call={:?} artifacts_has={}", scene.artifacts.scene_call, scene.artifacts.source.len());
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
     eprintln!(
         "DBG active@0={} frames_len={}",
         scene.active_scene_at(0),

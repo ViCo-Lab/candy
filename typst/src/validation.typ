@@ -94,6 +94,77 @@
   _assert_enum(v, ("after", "with"), "timing")
 }
 
+// The named easing curves candy understands, in kebab-case. This mirrors the
+// Rust `Easing::from_str` vocabulary (including its aliases) exactly, so a name
+// accepted here is accepted by the renderer and vice versa. Comparison is done
+// after lower-casing and turning `_` into `-`, so `"Ease_In_Out"` is accepted.
+#let _EASING_NAMES = (
+  "linear",
+  "smooth", "sigmoid",
+  "smoothstep", "smootherstep",
+  "quad", "quad-in", "ease-in-quad",
+  "quad-out", "ease-out-quad",
+  "quad-in-out", "ease-in-out-quad",
+  "cubic", "cubic-in", "ease-in-cubic",
+  "cubic-out", "ease-out-cubic",
+  "cubic-in-out", "ease-in-out-cubic",
+  "ease-in", "ease-out", "ease-in-out",
+  "sin", "sine", "ease-out-sine",
+  "there-and-back", "wiggle", "lingering",
+)
+
+// Cheap numeric-string test used to validate custom `bezier:` control points
+// without letting `float(...)` raise its own (less specific) error. Accepts an
+// optional sign, digits, a single decimal point, and an exponent — enough to
+// reject obvious garbage like `bezier:a,b,c,d`.
+#let _is_number(s) = {
+  let t = s.trim()
+  if t == "" { return false }
+  let allowed = "0123456789.eE+-"
+  for c in t {
+    if not allowed.contains(c) { return false }
+  }
+  true
+}
+
+// Assert `v` is a valid easing-curve string — one of the "special format"
+// strings candy accepts. Three forms are allowed:
+//   1. a named curve from `_EASING_NAMES` (case-insensitive; `_`/`-`
+//      interchangeable), e.g. `"smooth"`, `"ease-in-out"`;
+//   2. a custom CSS-style cubic bezier `"bezier:x1,y1,x2,y2"` — exactly four
+//      numbers;
+//   3. a custom math expression `"expr:<math>"` — a non-empty function of `t`.
+// Anything else panics so easing typos are caught at compile time rather than
+// silently falling back to linear.
+#let _assert_easing(v, what) = {
+  if type(v) != str {
+    panic(what + " must be a string naming an easing curve")
+  }
+  let raw = v.trim()
+  if raw.starts-with("bezier:") {
+    let parts = raw.slice("bezier:".len()).split(",")
+    if parts.len() != 4 {
+      panic(what + " must be `bezier:x1,y1,x2,y2` with exactly four numbers")
+    }
+    for p in parts {
+      if not _is_number(p) {
+        panic(what + " bezier control points must be numbers: `bezier:x1,y1,x2,y2`")
+      }
+    }
+    return
+  }
+  if raw.starts-with("expr:") {
+    if raw.slice("expr:".len()).trim() == "" {
+      panic(what + " math expression (`expr:<math>`) must not be empty")
+    }
+    return
+  }
+  let norm = lower(raw).replace("_", "-")
+  if not _EASING_NAMES.contains(norm) {
+    panic(what + " is not a known easing curve; use a named curve, `bezier:x1,y1,x2,y2`, or `expr:<math>` (got " + repr(v) + ")")
+  }
+}
+
 // Assert `v` is a native Typst color (e.g. `red`, `white`, `rgb(255,0,0)`,
 // `rgb("#ff0000")`, `luma(50)`); otherwise panic. A string such as `"red"` or
 // `"#ff0000"` is NOT a color and is rejected — callers must pass a real color

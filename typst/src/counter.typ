@@ -31,7 +31,7 @@
   if duration != none {
     _assert_nonneg(duration, "duration")
   }
-  _assert_str(easing, "easing")
+  _assert_easing(easing, "easing")
   none
 }
 

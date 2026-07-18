@@ -16,7 +16,7 @@
   #mobject("shape", rect(width: 3cm, height: 3cm, fill: blue))
   #animate("shape", to: (5cm, 0cm), duration: 1000, easing: "smooth")
   #transform("shape", to: circle(radius: 1.6cm, fill: red), duration: 1000, easing: "smooth")
-  #animate("shape", opacity: 0.3, duration: 1000, easing: "ease-in-out")
+  #animate("shape", opacity: 30%, duration: 1000, easing: "ease-in-out")
 
   // 2) Formula transition: an equation smoothly transitions to a new equation
   //    (the old one crossfades out while the new one grows + fades in).
