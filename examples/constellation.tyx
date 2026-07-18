@@ -18,7 +18,7 @@
 #scene(width: 16cm, height: 9cm, bg: rgb("#05060f"))[
 
   #mobject("cap", text(20pt, weight: "bold", fill: white)[Ursa Minor])
-  #spiral-in("cap", scale: 2.0, rotate: 180.0, duration: 700, easing: "cubic-out")
+  #spiral-in("cap", scale: 2.0, rotate: deg, duration: 700, easing: "cubic-out")
   #pause(duration: 300)
 
   // Six stars at scattered absolute positions on the night sky.
@@ -36,14 +36,14 @@
   #animate("s5", to: (11cm, 5cm), duration: 1)
   #animate("s6", to: (12cm, 3cm), duration: 1)
 
-  #spiral-in("s1", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
-  #spiral-in("s2", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s1", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
+  #spiral-in("s2", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
   #pause(duration: 200)
-  #spiral-in("s3", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
-  #spiral-in("s4", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s3", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
+  #spiral-in("s4", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
   #pause(duration: 200)
-  #spiral-in("s5", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
-  #spiral-in("s6", scale: 3.0, rotate: 360.0, duration: 500, easing: "cubic-out")
+  #spiral-in("s5", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
+  #spiral-in("s6", scale: 3.0, rotate: deg, duration: 500, easing: "cubic-out")
   #pause(duration: 600)
 
   // Connecting lines. Start invisible, then fade each in sequentially so the

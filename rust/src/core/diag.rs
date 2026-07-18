@@ -400,6 +400,12 @@ pub enum CandyWarn {
     /// source location of the *redefining* (later) declaration so the user is
     /// pointed at the exact code.
     DuplicateName(String, String, SourceLoc),
+
+    /// W016 — The user called a Candy private function (name starts with `_`).
+    /// These are internal helpers, not part of the public API.
+    ///
+    /// Field: the private function name (e.g. `"_assert_str"`).
+    CallingPrivate(String),
 }
 
 impl CandyWarn {
@@ -421,6 +427,7 @@ impl CandyWarn {
             CandyWarn::OutputNameInvalid(_) => "W013",
             CandyWarn::LibvaFallback(_) => "W014",
             CandyWarn::DuplicateName(_, _, _) => "W015",
+            CandyWarn::CallingPrivate(_) => "W016",
         }
     }
 
@@ -482,6 +489,9 @@ impl CandyWarn {
                      nested scope is legitimate Typst shadowing and is not warned)"
                 )
             }
+            CandyWarn::CallingPrivate(name) => {
+                format!("`#{name}` is a private Candy helper, not part of the public API")
+            }
         }
     }
 
@@ -494,7 +504,6 @@ impl CandyWarn {
         }
     }
 }
-
 impl fmt::Display for CandyWarn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}", self.code(), self.message())

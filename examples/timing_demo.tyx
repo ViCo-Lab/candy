@@ -23,7 +23,7 @@
   // Scale + Rotate run in PARALLEL via timing: "with" (start together),
   // instead of one after the other.
   #animate("a", scale: 2.0, duration: 500, easing: "smooth")
-  #animate("a", rotate: 90deg, duration: 500, timing: "with", easing: "smooth")
+  #animate("a", rotate: 15deg, duration: 500, timing: "with", easing: "smooth")
   // A delayed start: begin 300ms after the previous animation ends.
   #animate("b", scale: 1.5, duration: 400, timing: "after", delay: 300, easing: "smooth")
 ]
@@ -82,7 +82,7 @@
   #mobject("f", circle(radius: 1cm, fill: teal))
 
   // Snapshot current position
-  #save_state("f", slot: "start")
+  #save-state("f", slot: "start")
 
   // Move far away and scale up
   #animate("f", to: (5cm, 0cm), duration: 600, easing: "smooth")
@@ -172,7 +172,7 @@
   #pause(duration: 300)
 
   // Wiggle: oscillate rotation ±15°
-  #wiggle("i", degrees: 15, duration: 500, easing: "wiggle")
+  #wiggle("i", degrees: 15deg, duration: 500, easing: "wiggle")
 ]
 
 // ─── Scene 10: Play Beats + Reveal (2s) ────────

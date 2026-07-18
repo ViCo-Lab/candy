@@ -42,7 +42,7 @@ Typst.
 Mark a slide transition. `kind`: `"cut"` (instant, default), `"fade"` (crossfade),
 `"slide"` (push). Only `"cut"` is fully implemented. Inert under standard Typst.
 
-### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "smooth")`
+### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0deg, duration: 1000, easing: "smooth")`
 
 A global camera move (pan + zoom + rotate) applied to the whole scene. `x` / `y` are a
 pan offset in cm from the page center; `zoom > 1` magnifies; `rotate` tilts clockwise in
@@ -50,7 +50,7 @@ degrees. Scene-scoped. Inert under standard Typst.
 
 ```typst
 #camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-#camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+#camera(zoom: 1.0, rotate: 12deg, duration: 1500, easing: "smooth")
 ```
 
 ### `#zoom-to(rect, duration: 500, easing: "smooth")`
@@ -80,12 +80,12 @@ position.
 ### `#group(name, members: ())`
 
 Group several mobjects under a synthetic parent so they move / scale / rotate together.
-Animate the `name` afterwards (e.g. `#animate("g", rotate: 360)`) to transform every
+Animate the `name` afterwards (e.g. `#animate("g", rotate: 360deg)`) to transform every
 member at once. Groups may be nested.
 
 ```typst
 #group("wheel", members: ("spoke1", "spoke2", "hub"))
-#animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+#animate("wheel", rotate: 360deg, duration: 3000, easing: "linear")
 ```
 
 ### `#video(path, width: 8cm, height: 5cm)`
@@ -117,8 +117,8 @@ transforms in any combination; each produces a parallel action.
 | `dx:` / `dy:` | relative offset in cm (Manim-style `shift`), e.g. `dx: 2cm` |
 | `scale:` | absolute scale factor (e.g. `1.5`) |
 | `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
-| `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
-| `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
+| `rotate:` | absolute clockwise rotation in degrees (e.g. `45deg`) |
+| `rotate-by:` | relative rotation in degrees (e.g. `15deg` adds 15°) |
 | `opacity:` | target opacity as a ratio in `[0%, 100%]` (e.g. `50%`) |
 | `duration:` | length of the animation in **milliseconds** (default `500`) |
 | `easing:` | rate curve (default `"smooth"`; see [Easing](easing.md)) |
@@ -128,7 +128,7 @@ transforms in any combination; each produces a parallel action.
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #animate("box", scale: 1.5, duration: 800, easing: "smooth")
-#animate("sq", dx: 2cm, rotate-by: 90, opacity: 50%, duration: 600, timing: "with")
+#animate("sq", dx: 2cm, rotate-by: 90deg, opacity: 50%, duration: 600, timing: "with")
 ```
 
 ### `#appear(target, timing: "after", delay: 0)` / `#disappear(target, timing: "after", delay: 0)`
@@ -137,17 +137,17 @@ Make a mobject visible instantly (`opacity: 100%`) or invisible instantly (`opac
 0%`), with no interpolation. Useful for appear/disappear-without-fading effects. Inert
 under standard Typst.
 
-### `#save_state(target, slot: "default", timing: "after", delay: 0)`
+### `#save-state(target, slot: "default", timing: "after", delay: 0)`
 
 Snapshot a mobject's current transform (x / y / scale / rotation / opacity) into a named
-slot. Mirrors `mobject.save_state()`.
+slot. Mirrors `mobject.save-state()`.
 
 ### `#restore(target, slot: "default", duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 
 ```typst
-#save_state("dot", slot: "home")
+#save-state("dot", slot: "home")
 #animate("dot", to: (3cm, 2cm), duration: 800)
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 ```
@@ -162,25 +162,25 @@ Briefly scale + shift a mobject, then return — a transient "look here" effect.
 Briefly scale up and fade toward transparent, then restore — a "flash" attention effect.
 Mirrors `Flash`.
 
-### `#wiggle(target, degrees: 15.0, duration: 500, easing: "wiggle", timing: "after", delay: 0)`
+### `#wiggle(target, degrees: 15deg, duration: 500, easing: "wiggle", timing: "after", delay: 0)`
 
 Oscillate rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
 
-### `#set_color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0)`
+### `#set-color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0)`
 
 Record a color change for a mobject. The color is tracked in the timeline, but the current
 renderer treats it as a no-op (Typst bodies are opaque strings). Future versions with
-structured mobjects will apply it. Mirrors `set_color`.
+structured mobjects will apply it. Mirrors `set-color`.
 
 ```typst
-#set_color("dot", color: red, duration: 300, easing: "smooth")
+#set-color("dot", color: red, duration: 300, easing: "smooth")
 ```
 
 ### `#blink(target, blinks: 3, duration: 500, easing: "smooth", timing: "after", delay: 0)`
 
 Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
 
-### `#spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth", timing: "after", delay: 0)`
+### `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
 `SpiralIn`.

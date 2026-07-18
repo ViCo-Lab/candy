@@ -4,5 +4,5 @@
 // then rotates back with there-and-back easing.
 #mobject("sq", rect(width: 2cm, height: 2cm, fill: green))
 
-#animate("sq", rotate: 90, opacity: 30%, duration: 800, easing: "cubic-in-out")
-#animate("sq", rotate: 0, opacity: 100%, duration: 800, easing: "there-and-back")
+#animate("sq", rotate: deg, opacity: 30%, duration: 800, easing: "cubic-in-out")
+#animate("sq", rotate: deg, opacity: 100%, duration: 800, easing: "there-and-back")

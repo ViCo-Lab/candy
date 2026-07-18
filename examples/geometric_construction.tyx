@@ -10,7 +10,7 @@
 #scene(width: 16cm, height: 9cm, bg: white)[
 
   #mobject("cap", text(20pt, weight: "bold", fill: blue)[Constructing a regular hexagon])
-  #spiral-in("cap", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #spiral-in("cap", scale: 1.6, rotate: deg, duration: 600, easing: "cubic-out")
   #pause(duration: 300)
 
   // Center + circumcircle (radius 2cm).
@@ -34,13 +34,13 @@
   #animate("v3", to: (6.0cm, 4.5cm),   duration: 1)
   #animate("v4", to: (7.0cm, 2.768cm), duration: 1)
   #animate("v5", to: (9.0cm, 2.768cm), duration: 1)
-  #spiral-in("v0", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
-  #spiral-in("v1", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
-  #spiral-in("v2", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v0", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
+  #spiral-in("v1", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
+  #spiral-in("v2", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
   #pause(duration: 150)
-  #spiral-in("v3", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
-  #spiral-in("v4", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
-  #spiral-in("v5", scale: 2.5, rotate: 360.0, duration: 350, easing: "cubic-out")
+  #spiral-in("v3", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
+  #spiral-in("v4", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
+  #spiral-in("v5", scale: 2.5, rotate: deg, duration: 350, easing: "cubic-out")
   #subtitle([2 · Mark six points one radius apart around the circle.], position: "bottom")
   #pause(duration: 600)
 
@@ -71,7 +71,7 @@
   // Group the whole figure and spin it to show the symmetry.
   #group("hex", members: ("v0", "v1", "v2", "v3", "v4", "v5",
                           "e0", "e1", "e2", "e3", "e4", "e5", "center"))
-  #animate("hex", rotate: 360, duration: 2400, easing: "linear")
+  #animate("hex", rotate: deg, duration: 2400, easing: "linear")
   #subtitle([4 · Six-fold rotational symmetry.], position: "bottom")
   #pause(duration: 400)
 

@@ -5,5 +5,5 @@
 // no-op (Typst bodies are opaque strings); future structured mobjects apply it.
 #scene(width: 16cm, height: 9cm, bg: white)[
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
-  #set_color("box", color: green, duration: 300, easing: "smooth")
+  #set-color("box", color: green, duration: 300, easing: "smooth")
 ]

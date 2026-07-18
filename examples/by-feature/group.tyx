@@ -8,5 +8,5 @@
   #mobject("spoke1", circle(radius: 0.4cm, fill: red))
   #mobject("spoke2", circle(radius: 0.4cm, fill: blue))
   #group("wheel", members: ("spoke1", "spoke2", "hub"))
-  #animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+  #animate("wheel", rotate: deg, duration: 3000, easing: "linear")
 ]

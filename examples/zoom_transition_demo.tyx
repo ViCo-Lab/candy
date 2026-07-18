@@ -6,7 +6,7 @@
 //   (scale + translate on all mobjects) over `duration` frames.
 // - `#transition(kind: ..)` marks a slide transition. Only "cut" is fully
 //   implemented; "fade"/"slide" are recorded for future versions.
-// - `#set_color(target, color: ..)` records a color change on the timeline
+// - `#set-color(target, color: ..)` records a color change on the timeline
 //   (no-op in the current renderer, tracked for future structured mobjects).
 //
 // Run:  candy build examples/zoom_transition_demo.tyx
@@ -19,7 +19,7 @@
   #animate("b", to: (10cm, 4cm), duration: 600, easing: "smooth")
 
   // Recolor b (recorded on the timeline).
-  #set_color("b", color: green, duration: 30, easing: "smooth")
+  #set-color("b", color: green, duration: 30, easing: "smooth")
 
   // Camera zoom into the region around b.
   #zoom-to((8, 2, 6, 5), duration: 1000, easing: "smooth")

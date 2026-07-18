@@ -33,7 +33,7 @@
 
   // Spin the ring (group rotation pivots about the figure's centroid ≈ center).
   #group("ring", members: ("d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"))
-  #animate("ring", rotate: 360, duration: 4000, easing: "linear")
+  #animate("ring", rotate: deg, duration: 4000, easing: "linear")
   #subtitle([A ring of moons, spinning as one.], position: "bottom")
 
   // A planet orbiting on a wider circle, driven by a keyframe track.

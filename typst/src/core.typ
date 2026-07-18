@@ -123,7 +123,7 @@
 /// Absolute transforms:
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
 /// - `scale`: an absolute scale factor (e.g. `1.5`).
-/// - `rotate`: an absolute clockwise rotation in degrees (e.g. `45`).
+/// - `rotate`: an absolute clockwise rotation in degrees (e.g. `45deg`).
 /// - `opacity`: a target opacity as a ratio in `[0%, 100%]` (e.g. `50%` for
 ///   half-opaque). Pass `none` to leave opacity unchanged.
 ///
@@ -131,7 +131,7 @@
 /// - `dx`, `dy`: relative offset in cm (e.g. `dx: 2cm` moves right 2cm from
 ///   the current position). Either or both may be given.
 /// - `scale-by`: relative scale multiplier (e.g. `1.5` grows by 50%).
-/// - `rotate-by`: relative rotation in degrees (e.g. `15` adds 15° to the
+/// - `rotate-by`: relative rotation in degrees (e.g. `15deg` adds 15° to the
 ///   current rotation).
 ///
 /// - `duration`: number of milliseconds the animation spans (default `500`).
@@ -177,6 +177,8 @@
       panic("animate `opacity` must be in [0%, 100%]")
     }
   }
+  if rotate != none { _assert_angle(rotate, "rotate") }
+  if rotate-by != none { _assert_angle(rotate-by, "rotate-by") }
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)

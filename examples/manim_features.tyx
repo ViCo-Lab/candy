@@ -6,7 +6,7 @@
 #mobject("dot", circle(radius: 0.5cm, fill: blue))
 
 // Move right, save state, move down, then restore to the saved position.
-#save_state("dot", slot: "home")
+#save-state("dot", slot: "home")
 #animate("dot", to: (3cm, 0pt), duration: 800, easing: "smooth")
 #animate("dot", to: (3cm, 2cm), duration: 500, easing: "smooth")
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")

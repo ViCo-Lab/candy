@@ -9,5 +9,5 @@
 ]
 #scene(width: 16cm, height: 9cm, bg: black)[
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
-  #animate("box", rotate: 90, duration: 800, easing: "smooth")
+  #animate("box", rotate: deg, duration: 800, easing: "smooth")
 ]

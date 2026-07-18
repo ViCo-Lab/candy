@@ -135,6 +135,10 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "ecpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause),
         "ecresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume),
         "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy),
+        // Snake-case Candy private functions — warn but still parse.
+        sym if sym.starts_with('_') => {
+            warn!(CandyWarn::CallingPrivate(sym.to_string()));
+        }
         _ => {}
     }
 }
@@ -552,7 +556,7 @@ fn process_flash(
     );
 }
 
-/// `wiggle(target, degrees: 15, duration: 500, easing: "wiggle")` —
+/// `wiggle(target, degrees: 15deg, duration: 500, easing: "wiggle")` —
 /// oscillate rotation, then return to original.
 fn process_wiggle(
     pos: &[Expr],
@@ -567,7 +571,7 @@ fn process_wiggle(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let degrees = named.get("degrees").and_then(expr_to_f64).unwrap_or(15.0);
+    let degrees = named.get("degrees").and_then(expr_to_angle).unwrap_or(15.0);
     let easing = resolve_easing(named, &label, Easing::Wiggle);
     emit_slide(
         ctx,
@@ -699,7 +703,7 @@ fn process_blink(
     ctx.entry_close();
 }
 
-/// `spiral_in(target, scale: 3.0, rotate: 360, duration: 300, easing: "smooth")`
+/// `spiral_in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")`
 /// — fly in from a scaled-up, rotated state to the natural position, fading in.
 /// Mirrors Manim's `SpiralIn`.
 fn process_spiral_in(

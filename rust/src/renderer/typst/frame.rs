@@ -32,6 +32,14 @@ impl Renderer {
         let active = if self.scene.scenes.is_empty() {
             0
         } else {
+            eprintln!(
+                "[DBG render_frame_at] t={time_ms} scenes={:?}",
+                self.scene
+                    .scenes
+                    .iter()
+                    .map(|s| (s.id, s.start_ms, s.end_ms))
+                    .collect::<Vec<_>>()
+            );
             self.scene.active_scene_at(time_ms)
         };
         let active_page = self.pages.active_page_of(active, time_ms);

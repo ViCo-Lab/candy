@@ -9,7 +9,7 @@
 #scene(width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
 
   #mobject("cap", text(18pt, weight: "bold", fill: white)[Field survey])
-  #spiral-in("cap", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #spiral-in("cap", scale: 1.6, rotate: deg, duration: 600, easing: "cubic-out")
   #pause(duration: 300)
 
   // A scatter of "markers" to fly over.
@@ -35,7 +35,7 @@
   #pause(duration: 700)
 
   // Phase 3 — a slow rotate for a dynamic angle.
-  #camera(zoom: 1.4, rotate: 12, duration: 1500, easing: "smooth")
+  #camera(zoom: 1.4, rotate: deg, duration: 1500, easing: "smooth")
   #subtitle([Tilting the view.], position: "bottom")
   #pause(duration: 700)
 
@@ -43,7 +43,7 @@
   #transition(kind: "fade", duration: 400)
   #scene(width: 16cm, height: 9cm, bg: black)[
     #mobject("t", text(40pt, weight: "bold", fill: white)[Candy])
-    #spiral-in("t", scale: 2.5, rotate: 360.0, duration: 1000, easing: "cubic-out")
+    #spiral-in("t", scale: 2.5, rotate: deg, duration: 1000, easing: "cubic-out")
     #subtitle([a code-oriented animation engine for Typst], position: "bottom")
     #pause(duration: 900)
   ]

@@ -94,34 +94,6 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
         root.end_ms = ctx.cursor;
     }
-    // Scenes behave like slides: a scene stays on stage from its `start_ms`
-    // until the next sibling scene begins (or until the end of the document,
-    // for the last scene). Without this, a scene's interval ends the moment its
-    // own animation window ends, so its content would vanish the instant the
-    // timeline moved past it — and, worse, when no explicit scene contained the
-    // current time the *root* scene became active and every explicit scene's
-    // content leaked onto the canvas at once (scenes overlapping each other).
-    // Extending each scene to the next sibling keeps scenes mutually exclusive
-    // (no overlap) while still letting a scene's content persist for the rest
-    // of the timeline. `active_scene_at` already returns the *deepest* enclosing
-    // scene, so nested scenes keep hiding their parents.
-    let doc_end = ctx.cursor;
-    for i in 0..ctx.scenes.len() {
-        let (sid, parent, start) = {
-            let s = &ctx.scenes[i];
-            (s.id, s.parent, s.start_ms)
-        };
-        let next_start = ctx
-            .scenes
-            .iter()
-            .filter(|o| o.id != sid && o.parent == parent && o.start_ms >= start)
-            .map(|o| o.start_ms)
-            .min();
-        let new_end = next_start.unwrap_or(doc_end);
-        if ctx.scenes[i].end_ms < new_end {
-            ctx.scenes[i].end_ms = new_end;
-        }
-    }
     // Attribute every declared label to its owning scene in *declaration*
     // order (`label_order` is recorded the first time each label is registered).
     // This keeps the natural top-to-bottom flow layout and the paint z-order
@@ -1052,7 +1024,7 @@ mod tests {
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
 #animate("dot", to: (4cm, 0pt), duration: 30)
-#animate("box", rotate: 45, opacity: 50%, easing: "smooth", duration: 20)
+#animate("box", rotate: 45deg, opacity: 50%, easing: "smooth", duration: 20)
 #pause(duration: 15)
 #audio("voice.opus", blocking: false, loop: false, volume: 0.9)
 #play(circle(radius: 1cm), duration: 10)
@@ -1270,14 +1242,14 @@ mod tests {
         let calls = r#"
 #import "lib.typ": *
 #mobject("dot", circle(radius: 1cm))
-#save_state("dot", slot: "home")
+#save-state("dot", slot: "home")
 #restore("dot", slot: "home", duration: 10, easing: "smooth")
 #indicate("dot", factor: 1.2, duration: 12)
 #flash("dot", factor: 2.0, duration: 10)
-#wiggle("dot", degrees: 10, duration: 14)
+#wiggle("dot", degrees: 10deg, duration: 14)
 #disappear("dot")
 #appear("dot")
-#set_color("dot", color: red, duration: 1)
+#set-color("dot", color: red, duration: 1)
 "#;
         std::fs::write(&tmp, calls).unwrap();
         let out = crate::renderer::compile_file_for_test(&tmp);

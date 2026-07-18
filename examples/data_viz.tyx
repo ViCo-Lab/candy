@@ -10,7 +10,7 @@
 #scene(width: 16cm, height: 9cm, bg: white)[
 
   #mobject("title", text(20pt, weight: "bold", fill: blue)[Quarterly revenue])
-  #spiral-in("title", scale: 1.6, rotate: 0.0, duration: 600, easing: "cubic-out")
+  #spiral-in("title", scale: 1.6, rotate: deg, duration: 600, easing: "cubic-out")
   #pause(duration: 300)
 
   // Five horizontal bars (left-aligned, stacked). Each starts short.

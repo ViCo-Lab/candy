@@ -19,7 +19,7 @@
 ///   (default `0`).
 ///
 /// Mirrors Manim's `mobject.save_state()`. Inert under standard Typst.
-#let save_state(target, slot: "default", timing: "after", delay: 0) = {
+#let save-state(target, slot: "default", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
   _assert_str(slot, "save slot")
   _assert_timing(timing)
@@ -104,7 +104,7 @@
 /// milliseconds, then return to the original rotation.
 ///
 /// - `target`: the `name` of the object to wiggle.
-/// - `degrees`: peak rotation amplitude (default `15`).
+/// - `degrees`: peak rotation amplitude (default `15deg`).
 /// - `duration`: number of milliseconds (default `500`).
 /// - `easing`: rate curve (default `"wiggle"`).
 /// - `timing`: sequencing relative to the previous animation — `"after"`
@@ -115,14 +115,14 @@
 /// Mirrors Manim's `Wiggle`. Inert under standard Typst.
 #let wiggle(
   target,
-  degrees: 15.0,
+  degrees: 15deg,
   duration: 500,
   easing: "wiggle",
   timing: "after",
   delay: 0,
 ) = {
   _assert_str(target, "Animation target")
-  _assert_number(degrees, "degrees")
+  _assert_angle(degrees, "degrees")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)
@@ -146,7 +146,7 @@
 ///   (default `0`).
 ///
 /// Mirrors Manim's `set_color`. Inert under standard Typst.
-#let set_color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0) = {
+#let set-color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
   _assert_color(color, "color")
   _assert_nonneg(duration, "duration")
@@ -181,17 +181,17 @@
 ///
 /// - `target`: the `name` of the object to spiral in.
 /// - `scale`: initial scale factor (default `3.0` — starts 3× size).
-/// - `rotate`: initial rotation in degrees (default `360` — one full turn).
+/// - `rotate`: initial rotation in degrees (default `360deg` — one full turn).
 /// - `duration`: milliseconds for the spiral-in (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
 /// - `timing`: sequencing relative to the previous animation — `"after"`
 ///   (default) or `"with"` (parallel). See `animate` for details.
 /// - `delay`: extra wait in milliseconds before this animation begins
 ///   (default `0`).
-#let spiral-in(target, scale: 3.0, rotate: 360.0, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+#let spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
   _assert_number(scale, "scale")
-  _assert_number(rotate, "rotate")
+  _assert_angle(rotate, "rotate")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)
