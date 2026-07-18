@@ -207,6 +207,29 @@ pub fn build_input_with_gpu(
     let scene: Scene = input.parse()?; // Steps 1–2
     let project_root = input.project_root();
     let mut keyframes = scheduler::schedule(&scene)?; // Step 3
+    eprintln!(
+        "[DBG] slides={} total_ms={} max_kf={} scenes={:?}",
+        scene.slides.len(),
+        scene.total_ms(),
+        keyframes.iter().map(|f| f.time_ms).max().unwrap_or(0),
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>()
+    );
+    for (i, sl) in scene.slides.iter().enumerate() {
+        eprintln!(
+            "[DBG] slide[{}] start_ms={} dur={} actions={:?}",
+            i,
+            sl.start_ms,
+            sl.duration_ms,
+            sl.actions
+                .iter()
+                .map(|a| format!("{:?}", a))
+                .collect::<Vec<_>>()
+        );
+    }
 
     // Extend the timeline so persistent subtitles / long-lived counters that
     // end *after* the last mobject keyframe are still covered. We append a

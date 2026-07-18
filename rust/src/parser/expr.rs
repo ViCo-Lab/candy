@@ -255,6 +255,31 @@ pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
     }
 }
 
+/// Evaluate an angle expression to degrees (`f64`).
+///
+/// Accepts a Typst `angle` literal such as `90deg` (→ `90.0`) or `1.5rad`
+/// (→ `≈85.94`). For the Rust-only parse path that bypasses the Typst
+/// compile-time validation (the candy toolchain parses `.tyx` directly, so it
+/// never sees the Typst `_assert_angle` panic), a bare unitless number is also
+/// accepted and treated as degrees (`90` → `90.0`) so legacy `.tyx` files keep
+/// working. Lengths, ratios, and other units are rejected (`None`) because they
+/// are not valid angle values.
+pub(crate) fn expr_to_angle(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Int(i) => Some(i.get() as f64),
+        Expr::Float(f) => Some(f.get()),
+        Expr::Numeric(n) => {
+            let (val, unit) = n.get();
+            match unit {
+                ast::Unit::Deg => Some(val),
+                ast::Unit::Rad => Some(val * 180.0 / std::f64::consts::PI),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Evaluate a boolean expression.
 pub(crate) fn expr_to_bool(e: &Expr) -> Option<bool> {
     match e {

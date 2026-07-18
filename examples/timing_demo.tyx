@@ -20,10 +20,12 @@
   #animate("b", to: (-4cm, 0cm), duration: 600, easing: "linear")
   #pause(duration: 300)
 
-  // Scale
+  // Scale + Rotate run in PARALLEL via timing: "with" (start together),
+  // instead of one after the other.
   #animate("a", scale: 2.0, duration: 500, easing: "smooth")
-  // Rotate with explicit deg unit
-  #animate("a", rotate: 90deg, duration: 500, easing: "smooth")
+  #animate("a", rotate: 90deg, duration: 500, timing: "with", easing: "smooth")
+  // A delayed start: begin 300ms after the previous animation ends.
+  #animate("b", scale: 1.5, duration: 400, timing: "after", delay: 300, easing: "smooth")
 ]
 
 // ─── Scene 2: Morph + Transform (2s) ──────────
@@ -120,8 +122,8 @@
 
   // Animate individual members (set opacity instead of non-existent fade-to-opacity)
   #animate("g1", opacity: 50%, duration: 400)
-  #animate("g2", opacity: 0.5, duration: 400)
-  #animate("g3", opacity: 0.5, duration: 400)
+  #animate("g2", opacity: 50%, duration: 400)
+  #animate("g3", opacity: 50%, duration: 400)
 ]
 
 // ─── Scene 8: Track Multi-Property Animation (2s) ──

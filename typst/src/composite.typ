@@ -37,16 +37,16 @@
 ///
 /// - `x`, `y`: pan offset in cm from the page center (default `0`).
 /// - `zoom`: zoom factor (default `1.0`; `> 1` zooms in).
-/// - `rotate`: camera tilt in degrees clockwise (default `0`).
+/// - `rotate`: camera tilt in degrees clockwise (default `0deg`).
 /// - `duration`: milliseconds (default `1000`).
 /// - `easing`: rate curve (default `"smooth"`).
 ///
 /// This is a scene/camera animation, so it does **not** accept `timing`.
-#let camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "smooth") = {
+#let camera(x: 0, y: 0, zoom: 1.0, rotate: 0deg, duration: 1000, easing: "smooth") = {
   _assert_scalar(x, "camera x")
   _assert_scalar(y, "camera y")
   _assert_number(zoom, "camera zoom")
-  _assert_number(rotate, "camera rotate")
+  _assert_angle(rotate, "camera rotate")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   none

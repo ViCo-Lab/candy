@@ -22,9 +22,9 @@ use crate::warn;
 
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
-    call_symbol, current_scope, expr_src, expr_to_bool, expr_to_f64, expr_to_i64, expr_to_key,
-    expr_to_ratio, parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg,
-    track_key_from_expr, tuple_cm,
+    call_symbol, current_scope, expr_src, expr_to_angle, expr_to_bool, expr_to_f64, expr_to_i64,
+    expr_to_key, expr_to_ratio, parse_sub_pos, range_of, resolve_easing, strip_string_literal,
+    target_arg, track_key_from_expr, tuple_cm,
 };
 
 /// Parse the `timing` named argument. Returns `None` when absent (the caller
@@ -294,16 +294,16 @@ fn process_animate(
             easing: easing.clone(),
         });
     }
-    // Absolute rotate: `rotate: 90`.
-    if let Some(deg) = named.get("rotate").and_then(expr_to_f64) {
+    // Absolute rotate: `rotate: 90deg` (degrees).
+    if let Some(deg) = named.get("rotate").and_then(expr_to_angle) {
         actions.push(Action::Rotate {
             target: label.clone(),
             degrees: deg,
             easing: easing.clone(),
         });
     }
-    // Relative rotate: `rotate-by: 15` (add to current rotation).
-    if let Some(d) = named.get("rotate-by").and_then(expr_to_f64) {
+    // Relative rotate: `rotate-by: 15deg` (add to current rotation, degrees).
+    if let Some(d) = named.get("rotate-by").and_then(expr_to_angle) {
         actions.push(Action::RotateBy {
             target: label.clone(),
             delta_degrees: d,
@@ -317,7 +317,13 @@ fn process_animate(
             easing: easing.clone(),
         });
     }
-    emit_slide(ctx, parse_timing(named), parse_delay(named), duration, actions);
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        duration,
+        actions,
+    );
 }
 
 /// `pause(duration:)` — a no-op hold in standard Typst; a blank slide here.
@@ -592,7 +598,13 @@ fn process_appear_disappear(
     } else {
         Action::Hide { target: label }
     };
-    emit_slide(ctx, parse_timing(named), parse_delay(named), 1, vec![action]);
+    emit_slide(
+        ctx,
+        parse_timing(named),
+        parse_delay(named),
+        1,
+        vec![action],
+    );
 }
 
 /// `set_color(target, color: black, duration: 1, easing: "linear")` —
@@ -699,7 +711,7 @@ fn process_spiral_in(
         return;
     };
     let scale = named.get("scale").and_then(expr_to_f64).unwrap_or(3.0);
-    let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(360.0);
+    let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(360.0);
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -953,9 +965,10 @@ fn process_track(
 }
 
 /// `#camera(x:, y:, zoom:, rotate:, duration:, easing:)` — a global pan, zoom,
-/// and rotate applied to the whole scene. Implemented via a synthetic
-/// `__camera__` mobject so it flows through the normal scheduler / interpolator
-/// pipeline; the renderer reads it once per frame and never draws it.
+/// and rotate applied to the whole scene. `rotate` is a clockwise tilt in
+/// degrees (e.g. `90deg`). Implemented via a synthetic `__camera__` mobject so
+/// it flows through the normal scheduler / interpolator pipeline; the renderer
+/// reads it once per frame and never draws it.
 fn process_camera(
     _pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -977,7 +990,7 @@ fn process_camera(
         .and_then(expr_to_f64)
         .unwrap_or(1.0)
         .max(1e-3);
-    let rotate = named.get("rotate").and_then(expr_to_f64).unwrap_or(0.0);
+    let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(0.0);
 
     let cam = Label("__camera__".into());
     register_synthetic_mobject(ctx, &cam, "none");

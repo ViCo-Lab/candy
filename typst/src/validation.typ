@@ -78,7 +78,18 @@
 // `opacity`.
 #let _assert_ratio(v, what) = {
   if type(v) != ratio {
-    panic(what + " must be a ratio (e.g. `50%`), not a number")
+    panic(what + " must be a ratio (e.g. `50%`)")
+  }
+}
+
+
+// Assert `v` is a Typst angle (e.g. `90deg`, `1.5rad`); otherwise panic. A
+// bare number such as `90` is NOT an angle and is rejected — callers must pass
+// a real angle value with a unit. Used for angle-style parameters such as the
+// camera `rotate`.
+#let _assert_angle(v, what) = {
+  if type(v) != angle {
+    panic(what + " must be an angle (e.g. `90deg`)")
   }
 }
 
