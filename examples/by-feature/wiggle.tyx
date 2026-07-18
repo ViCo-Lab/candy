@@ -4,5 +4,5 @@
 // Oscillate rotation by ±`degrees` a few times, then return.
 #scene(width: 16cm, height: 9cm, bg: white)[
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
-  #wiggle("box", degrees: 15, duration: 500, easing: "wiggle")
+  #wiggle("box", degrees: 15deg, duration: 500, easing: "wiggle")
 ]

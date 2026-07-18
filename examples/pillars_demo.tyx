@@ -22,7 +22,7 @@
 
   // Group the two boxes; transform the group as one unit.
   #group("g", members: ("box-a", "box-b"))
-  #animate("g", to: (4cm, 1cm), scale: 1.4, rotate: deg, duration: 800, easing: "smoothstep")
+  #animate("g", to: (4cm, 1cm), scale: 1.4, rotate: 90deg, duration: 800, easing: "smoothstep")
 
   // Multi-keyframe track for the dot: drift right, scale, rotate, fade, return.
   #track(
@@ -38,6 +38,6 @@
   )
 
   // Camera pan + zoom across the whole scene.
-  #camera(x: 2cm, y: 1cm, zoom: 1.5, rotate: deg, duration: 600, easing: "smooth")
-  #camera(x: 0cm, y: 0cm, zoom: 1.0, rotate: deg, duration: 600, easing: "smooth")
+  #camera(x: 2cm, y: 1cm, zoom: 1.5, rotate: 45deg, duration: 600, easing: "smooth")
+  #camera(x: 0cm, y: 0cm, zoom: 1.0, rotate: 0deg, duration: 600, easing: "smooth")
 ]

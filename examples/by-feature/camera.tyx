@@ -8,5 +8,5 @@
   #mobject("a", circle(radius: 1cm, fill: blue))
   #mobject("b", rect(width: 1.5cm, height: 1.5cm, fill: red))
   #camera(zoom: 1.5, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-  #camera(zoom: 1.0, rotate: deg, duration: 1500, easing: "smooth")
+  #camera(zoom: 1.0, rotate: 45deg, duration: 1500, easing: "smooth")
 ]

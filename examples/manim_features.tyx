@@ -12,7 +12,7 @@
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 
 // Attention animations.
-#wiggle("dot", degrees: 20, duration: 600)
+#wiggle("dot", degrees: 20deg, duration: 600)
 #flash("dot", factor: 2.5, duration: 400)
 #indicate("dot", factor: 1.3, dx: 0.5cm, dy: -0.5cm, duration: 500)
 

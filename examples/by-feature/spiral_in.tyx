@@ -4,5 +4,5 @@
 // Fly in from a scaled-up, rotated, invisible state to the natural position.
 #scene(width: 16cm, height: 9cm, bg: white)[
   #mobject("title", text(28pt, weight: "bold", fill: blue)[Welcome])
-  #spiral-in("title", scale: 2.2, rotate: deg, duration: 800, easing: "cubic-out")
+  #spiral-in("title", scale: 2.2, rotate: 360deg, duration: 800, easing: "cubic-out")
 ]

@@ -18,7 +18,7 @@ Lookup-oriented documentation. For a guided introduction, see the
 | Directive | Section |
 |---|---|
 | `#mobject` / `#group` / `#video` | [Directives · Mobjects & definitions](directives.md#mobjects--definitions) |
-| `#animate` / `#appear` / `#disappear` / `#save_state` / `#restore` / `#indicate` / `#flash` / `#wiggle` / `#set_color` / `#blink` / `#spiral-in` / `#focus-on` / `#fade-transform` / `#move-along-path` / `#morph` / `#transform` / `#reveal` / `#typewriter` / `#track` / `#audio` | [Directives · Object animations](directives.md#object-animations) |
+| `#animate` / `#appear` / `#disappear` / `#save-state` / `#restore` / `#indicate` / `#flash` / `#wiggle` / `#set-color` / `#blink` / `#spiral-in` / `#focus-on` / `#fade-transform` / `#move-along-path` / `#morph` / `#transform` / `#reveal` / `#typewriter` / `#track` / `#audio` | [Directives · Object animations](directives.md#object-animations) |
 | `#scene` / `#scene-switch` / `#transition` / `#camera` / `#zoom-to` | [Directives · Scene & camera](directives.md#scene--camera) |
 | `#play` / `#pause` | [Directives · Content blocks](directives.md#content-blocks) |
 | `#subtitle` | [Directives · Subtitles (masks)](directives.md#subtitles-masks) |

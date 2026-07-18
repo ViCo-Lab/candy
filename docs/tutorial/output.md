@@ -54,13 +54,13 @@ Candy ships two **self-contained** video encoders (no system dependencies):
 | `h264` | openh264 (linked libopenh264) | MP4/MKV/WebM | Software H.264; used when ffmpeg is unavailable. |
 | `av1` | rav1e (pure Rust) | MP4/MKV/WebM | Tries full-quality AV1 (inter-prediction); if rav1e 0.8.1 panics on the frame geometry it automatically retries in all-intra mode, then falls back to H.264. |
 
-## Default codec (requires ffmpeg)
+## Default codec
 
-The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to the self-contained `h264` (openh264) encoder.
+The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to the self-contained `h264` (openh264) encoder so a valid video is still produced.
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 (`h264`) if ffmpeg unavailable. |
+| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; **falls back to openh264 (`h264`) if ffmpeg unavailable**. |
 
 When the system has **`ffmpeg`** on `$PATH`, Candy can shell out to it for additional
 codecs — no cargo dependency, runtime-detected. This enables hardware-accelerated

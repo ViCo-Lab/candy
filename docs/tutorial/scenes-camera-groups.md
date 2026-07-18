@@ -51,18 +51,18 @@ Without `#scene`, Candy defaults to 16 cm × 9 cm.
 
 `#group(name, members: ())` groups several mobjects under a synthetic parent so they
 move / scale / rotate together. Animate the `name` afterwards (e.g.
-`#animate("g", rotate: 360)`) to transform every member at once. Groups may be nested.
+`#animate("g", rotate: 360deg)`) to transform every member at once. Groups may be nested.
 The group's rotation pivots about the figure's centroid, so a ring of objects placed
 around a center spins in place.
 
 ```typst
 #group("wheel", members: ("spoke1", "spoke2", "hub"))
-#animate("wheel", rotate: 360, duration: 3000, easing: "linear")
+#animate("wheel", rotate: 360deg, duration: 3000, easing: "linear")
 ```
 
 ## `#camera` — a global move
 
-`#camera(x: 0, y: 0, zoom: 1.0, rotate: 0, duration: 1000, easing: "linear")` applies a
+`#camera(x: 0, y: 0, zoom: 1.0, rotate: 0deg, duration: 1000, easing: "linear")` applies a
 global camera move to the whole scene (pan + zoom + rotate), mirroring Manim's camera
 frame transforms. `x` / `y` are a pan offset in cm from the page center; `zoom > 1`
 magnifies; `rotate` tilts clockwise in degrees. The camera is scene-scoped: it only
@@ -70,7 +70,7 @@ transforms the scene active when the `#camera` directive runs.
 
 ```typst
 #camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-#camera(zoom: 1.0, rotate: 12, duration: 1500, easing: "smooth")
+#camera(zoom: 1.0, rotate: 12deg, duration: 1500, easing: "smooth")
 ```
 
 ## `#track` — a keyframe timeline

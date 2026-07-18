@@ -13,11 +13,11 @@ unavailable, Candy transparently falls back to openh264 (`h264`).
 
 ## Default codec (requires ffmpeg)
 
-The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to openh264 (`h264`).
+The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding. When `ffmpeg` is unavailable, Candy transparently falls back to openh264 (`h264`) so a valid video is still produced.
 
 | `--codec` | Encoder | Container | Notes |
 |---|---|---|---|
-| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; falls back to openh264 if ffmpeg unavailable. |
+| `x264` (default) | ffmpeg + libx264 | MP4/MKV/WebM | Higher-quality H.264; **falls back to openh264 if ffmpeg unavailable**. |
 
 ## FFmpeg-backed (runtime-detected, no cargo dep)
 

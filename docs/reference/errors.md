@@ -45,7 +45,7 @@ marker through the diag pipeline as `error: [EYEE] yee~ Batch failed` before exi
 `111`. A **single** failed input keeps its specific `E00x` code (e.g. `69` for `E006`) rather
 than `111`.
 
-## Warnings (W001–W015)
+## Warnings (W001–W016)
 
 Warnings are **non-fatal**: they are printed to **stderr** as `warn: [Wxxx] …` and the render
 continues. They describe recoverable or merely undesirable conditions. `CandyWarn::code()` maps
@@ -68,3 +68,4 @@ each variant to its `W` code.
 | W013 | `OutputNameInvalid` | An `--output` name contains a path separator / multi-level directory; default `dist/<stem>.<ext>` used. |
 | W014 | `LibvaFallback` | VA-API (libva) hardware encoding was requested but unavailable or failed; candy transparently fell back to a software codec. |
 | W015 | `DuplicateName` | A mobject label or ecnew name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |
+| W016 | `CallingPrivate` | The user called a Candy private function (name starts with `_`). These are internal helpers, not part of the public API. |

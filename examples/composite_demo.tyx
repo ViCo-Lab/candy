@@ -6,6 +6,6 @@
 
 #animate("title", dx: 2cm, duration: 500, easing: "smooth")
 #blink("circle1", blinks: 3, duration: 1000)
-#spiral-in("circle2", scale: 3.0, rotate: deg, duration: 1000, easing: "cubic-out")
+#spiral-in("circle2", scale: 3.0, rotate: 360deg, duration: 1000, easing: "cubic-out")
 #fade-transform("circle1", "circle2", duration: 500, easing: "smooth")
 #focus-on("title", factor: 0.8, duration: 500, easing: "smooth")

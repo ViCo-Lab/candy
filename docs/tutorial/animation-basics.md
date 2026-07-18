@@ -26,16 +26,16 @@ action.
 | `dx:` / `dy:` | relative offset in cm (Manim-style `shift`), e.g. `dx: 2cm` |
 | `scale:` | absolute scale factor (e.g. `1.5`) |
 | `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
-| `rotate:` | absolute clockwise rotation in degrees (e.g. `45`) |
-| `rotate-by:` | relative rotation in degrees (e.g. `15` adds 15°) |
-| `opacity:` | target opacity in `[0, 1]` |
+| `rotate:` | absolute clockwise rotation in degrees (e.g. `45deg`) |
+| `rotate-by:` | relative rotation in degrees (e.g. `15deg` adds 15°) |
+| `opacity:` | target opacity as a ratio in `[0%, 100%]` (e.g. `50%`) |
 | `duration:` | length of the animation in **milliseconds** (default `500`) |
-| `easing:` | rate curve (default `"linear"`; see [Reference · Easing](../reference/easing.md)) |
+| `easing:` | rate curve (default `"smooth"`; see [Reference · Easing](../reference/easing.md)) |
 
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #animate("box", scale: 1.5, duration: 800, easing: "smooth")
-#animate("sq", dx: 2cm, rotate-by: 90, opacity: 50%, duration: 600)
+#animate("sq", dx: 2cm, rotate-by: 90deg, opacity: 50%, duration: 600)
 ```
 
 ## `#pause` — hold a frame

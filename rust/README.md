@@ -19,7 +19,9 @@ crate (`candy`) is the high-performance backend that:
 - renders each frame **in-process** with the `typst` compiler library (never spawning the
   CLI),
 - encodes the frames with self-contained codecs (`rav1e` for AV1, `openh264` for H.264) and
-  muxes them into MP4 / Matroska (WebM/MKV) — **no FFmpeg, no external CLI**.
+  muxes them into MP4 / Matroska (WebM/MKV) — **no FFmpeg, no external CLI** required.
+  (When system `ffmpeg` is available, the default `x264` codec uses it for higher quality;
+  otherwise Candy transparently falls back to the self-contained `h264`.)
 
 When the system has `ffmpeg` on `$PATH`, Candy can additionally shell out to it for
 higher-quality / hardware-accelerated codecs (`x264`, `x265`, `*-vaapi`, `*-videotoolbox`,
@@ -57,7 +59,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve()
-│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W015) + macros
+│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W016) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
 │   └── scheduler.rs   # schedule(): Scene → keyframes

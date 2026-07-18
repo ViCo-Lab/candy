@@ -55,7 +55,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W015) + macros
+│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W016) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
 │   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string

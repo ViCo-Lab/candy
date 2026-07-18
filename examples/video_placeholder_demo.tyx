@@ -15,7 +15,7 @@
 
   // Fly the placeholder in and scale it up.
   #animate("clip", scale: 1.0, duration: 1000, easing: "linear")
-  #spiral-in("clip", scale: 3.0, rotate: deg, duration: 1000, easing: "cubic-out")
+  #spiral-in("clip", scale: 3.0, rotate: 360deg, duration: 1000, easing: "cubic-out")
 
   // Then indicate it to draw attention.
   #indicate("clip", factor: 1.3, duration: 500, easing: "smooth")
