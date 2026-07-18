@@ -273,7 +273,7 @@ pub(crate) struct StreamingVideo {
     #[cfg(target_os = "linux")]
     ffmpeg: Option<(Child, std::fs::File, MuxSink, ErrLog)>,
     #[cfg(not(target_os = "linux"))]
-    ffmpeg: Option<(Child, std::io::BufWriter<ChildStdin>, MuxSink, ErrLog)>,
+    ffmpeg: Option<(Child, std::io::BufWriter<std::process::ChildStdin>, MuxSink, ErrLog)>,
     frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
@@ -350,6 +350,7 @@ impl StreamingVideo {
                     frame_count: 0,
                     rav1e: None,
                     h264: None,
+                    #[cfg(all(target_os = "linux", feature = "libva"))]
                     libva: None,
                 })
             }
