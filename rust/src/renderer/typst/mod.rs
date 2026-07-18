@@ -328,13 +328,6 @@ impl Renderer {
         if let Some(doc) = self.body_cache.lock().unwrap().get(&k) {
             return Ok(doc.clone());
         }
-        if std::env::var("CANDY_DBG_SRC").is_ok() {
-            let _ = std::fs::write("/tmp/param_dbg.typ", &self.param_source);
-            eprintln!("DBG PARAM_SOURCE:\n{}\n=== INPUTS ===", self.param_source);
-            for (key, val) in inputs.iter() {
-                eprintln!("  {key} = {val:?}");
-            }
-        }
         let doc = Arc::new(self.compile(&self.param_source, inputs)?);
         self.body_cache.lock().unwrap().insert(k, doc.clone());
         Ok(doc)
@@ -1663,12 +1656,22 @@ fn overflowing_scene_plays_pages_in_sequence() {
     );
     // And the first frame must draw only the current page's mobjects (fewer than
     // all six), proving sequential page playback rather than one giant canvas.
-    // Native Typst wraps each mobject in a `<g>` group, so count those (the page
-    // background is a `<path>`, not a `<g>`).
-    let drawn = svg.matches("<g").count();
+    // In Typst 0.15 the mobjects render as `<path>` elements (the unfilled rects
+    // come out as `fill="none"` strokes); the page background is a separate
+    // `fill="#ffffff"` path, so count the stroked mobject paths.
+    let drawn = svg.matches("fill=\"none\"").count();
     assert!(
         drawn > 0 && drawn < 6,
         "first frame should show only the current page's mobjects (drew {drawn} of 6)"
+    );
+    // Sequential playback: a frame deep into the playback (well past the first
+    // page) must also show only the current page's mobjects — never all six
+    // stacked on one canvas, and never blank.
+    let svg_later = String::from_utf8(r.render_frame_at(4500, &frames).unwrap()).unwrap();
+    let drawn_later = svg_later.matches("fill=\"none\"").count();
+    assert!(
+        drawn_later > 0 && drawn_later < 6,
+        "later frame should still show only one page's mobjects (drew {drawn_later} of 6)"
     );
     std::fs::remove_file(&tmp).ok();
 }

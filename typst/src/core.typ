@@ -124,7 +124,8 @@
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
 /// - `scale`: an absolute scale factor (e.g. `1.5`).
 /// - `rotate`: an absolute clockwise rotation in degrees (e.g. `45`).
-/// - `opacity`: a target opacity in `[0, 1]`.
+/// - `opacity`: a target opacity as a ratio in `[0%, 100%]` (e.g. `50%` for
+///   half-opaque). Pass `none` to leave opacity unchanged.
 ///
 /// Relative transforms (Manim-style `shift` / `scale` / `rotate`):
 /// - `dx`, `dy`: relative offset in cm (e.g. `dx: 2cm` moves right 2cm from
@@ -171,7 +172,10 @@
     panic("animate `to` must be an (x, y) array or none")
   }
   if opacity != none {
-    _assert_range(opacity, 0, 1, "opacity")
+    _assert_ratio(opacity, "opacity")
+    if opacity < 0% or opacity > 100% {
+      panic("animate `opacity` must be in [0%, 100%]")
+    }
   }
   _assert_nonneg(duration, "duration")
   _assert_str(easing, "easing")

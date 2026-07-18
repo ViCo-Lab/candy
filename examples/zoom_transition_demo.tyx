@@ -19,7 +19,7 @@
   #animate("b", to: (10cm, 4cm), duration: 600, easing: "smooth")
 
   // Recolor b (recorded on the timeline).
-  #set_color("b", color: "green", duration: 30, easing: "smooth")
+  #set_color("b", color: green, duration: 30, easing: "smooth")
 
   // Camera zoom into the region around b.
   #zoom-to((8, 2, 6, 5), duration: 1000, easing: "smooth")

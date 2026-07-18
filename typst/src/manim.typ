@@ -135,7 +135,9 @@
 /// strings). Future versions with structured mobjects will apply it.
 ///
 /// - `target`: the `name` of the object to recolor.
-/// - `color`: a color name or hex string (e.g. `"red"`, `"#ff0000"`).
+/// - `color`: a native Typst color (e.g. `red`, `white`, `rgb(255,0,0)`,
+///   `rgb("#ff0000")`, `luma(50)`). A string such as `"red"` is NOT accepted —
+///   pass the color value itself.
 /// - `duration`: number of milliseconds (default `1`, i.e. instantaneous).
 /// - `easing`: rate curve (default `"linear"`).
 /// - `timing`: sequencing relative to the previous animation — `"after"`
@@ -144,9 +146,9 @@
 ///   (default `0`).
 ///
 /// Mirrors Manim's `set_color`. Inert under standard Typst.
-#let set_color(target, color: "black", duration: 1, easing: "linear", timing: "after", delay: 0) = {
+#let set_color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
-  _assert_str(color, "color")
+  _assert_color(color, "color")
   _assert_nonneg(duration, "duration")
   _assert_str(easing, "easing")
   _assert_timing(timing)

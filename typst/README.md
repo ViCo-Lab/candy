@@ -336,14 +336,14 @@ Briefly scale a mobject up by `factor` and fade it toward transparent, then rest
 Oscillate a mobject's rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
 Inert under standard Typst.
 
-#### `#set_color(target, color: "black", duration: 1, easing: "linear", timing: "after", delay: 0)` {#set_color}
+#### `#set_color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0)` {#set_color}
 
 Record a color change for a mobject. The color is tracked in the timeline, but the
 current renderer treats it as a no-op (Typst bodies are opaque strings). Future versions
 with structured mobjects will apply it. Mirrors `set_color`. Inert under standard Typst.
 
 ```typst
-#set_color("dot", color: "red", duration: 300, easing: "smooth")
+#set_color("dot", color: red, duration: 300, easing: "smooth")
 ```
 
 #### `#blink(target, blinks: 3, duration: 500, easing: "smooth", timing: "after", delay: 0)` {#blink}

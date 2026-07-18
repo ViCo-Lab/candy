@@ -62,10 +62,23 @@
   }
 }
 
-// Assert `v` is a length; otherwise panic.
+// Assert `v` is a length or a relative length; otherwise panic. A plain
+// `length` is absolute (e.g. `2cm`, `10pt`); a `relative` length is a mix of an
+// absolute part and a ratio part (e.g. `1cm + 10%`, `50% + 2pt`). Both are
+// accepted so callers may use mixed lengths.
 #let _assert_length(v, what) = {
-  if type(v) != length {
-    panic(what + " must be a length")
+  if type(v) != length and type(v) != relative {
+    panic(what + " must be a length or a relative length (e.g. `2cm`, `1cm + 10%`)")
+  }
+}
+
+// Assert `v` is a Typst ratio (e.g. `50%`, `100%`); otherwise panic. A bare
+// number such as `0.5` is NOT a ratio and is rejected — callers must pass a
+// percentage value, not a fraction. Used for ratio-style parameters such as
+// `opacity`.
+#let _assert_ratio(v, what) = {
+  if type(v) != ratio {
+    panic(what + " must be a ratio (e.g. `50%`), not a number")
   }
 }
 
@@ -79,4 +92,14 @@
 // Assert `v` is a valid timing enum ("after" or "with").
 #let _assert_timing(v) = {
   _assert_enum(v, ("after", "with"), "timing")
+}
+
+// Assert `v` is a native Typst color (e.g. `red`, `white`, `rgb(255,0,0)`,
+// `rgb("#ff0000")`, `luma(50)`); otherwise panic. A string such as `"red"` or
+// `"#ff0000"` is NOT a color and is rejected — callers must pass a real color
+// value, not a string that merely names one.
+#let _assert_color(v, what) = {
+  if type(v) != color {
+    panic(what + " must be a native Typst color (e.g. `red`, `rgb(255,0,0)`), not a string")
+  }
 }

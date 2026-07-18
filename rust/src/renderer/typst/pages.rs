@@ -93,10 +93,31 @@ impl PageScheduler {
                         return seg.page;
                     }
                 }
+                // `t` is outside every segment (e.g. before the first one, or
+                // after the last). Clamp to the *nearest* segment so a
+                // cross-page scene always shows *some* page rather than
+                // jumping to the final one when `t` lands in the leading gap
+                // before the first page segment.
+                if let Some(first) = segs.first() {
+                    if t < first.start_ms {
+                        return first.page;
+                    }
+                }
                 segs.last().unwrap().page
             }
             _ => 0,
         }
+    }
+
+    /// The global end time (ms) of `sid`'s page-playback schedule, i.e. the
+    /// latest segment's `end_ms`. Used by the renderer to extend the scene's
+    /// active window (`Scene::end_ms`) so `active_scene_at` keeps the scene
+    /// "on stage" for the whole cross-page playback instead of ending it the
+    /// instant its (zero-duration) content interval closes.
+    pub(crate) fn schedule_end_ms(&self, sid: usize) -> Option<u32> {
+        self.page_schedules
+            .get(&sid)
+            .and_then(|segs| segs.iter().map(|s| s.end_ms).max())
     }
 
     /// Partition one scene's timeline into ordered page-segments.

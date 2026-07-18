@@ -356,6 +356,22 @@ impl Renderer {
         // own independent timeline, and the renderer auto-advances from one page
         // to the next once the current page's content has finished playing.
         self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
+        // A cross-page scene's mobjects play out across its overflow pages, so
+        // its content is "on stage" for the *entire* page-playback schedule —
+        // not just its (often zero-duration) content interval. Extend each
+        // scene's `end_ms` to cover its schedule so `active_scene_at` keeps the
+        // scene active while the pages play in sequence; otherwise the scene's
+        // interval would close immediately and `active_scene_at` would fall back
+        // to the empty root scene, leaving every page after the first blank.
+        if !self.scene.scenes.is_empty() {
+            for s in self.scene.scenes.iter_mut() {
+                if let Some(end) = self.pages.schedule_end_ms(s.id) {
+                    if end > s.end_ms {
+                        s.end_ms = end;
+                    }
+                }
+            }
+        }
         // Precompute morph plans (the expensive part) exactly once. For each
         // `#morph(from, to)` pair we render both bodies to SVG, extract their
         // outline rings, normalize each ring to its own local origin, and build
