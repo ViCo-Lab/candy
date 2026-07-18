@@ -678,9 +678,14 @@ impl Scene {
     /// one scene (the innermost enclosing one) is visible.
     pub fn active_scene_at(&self, time_ms: u32) -> usize {
         let mut best: Option<usize> = None;
+        let mut best_depth = 0usize;
         for s in &self.scenes {
             if time_ms >= s.start_ms && time_ms <= s.end_ms {
-                best = Some(s.id);
+                let depth = self.scene_depth(s.id);
+                if best.is_none() || depth >= best_depth {
+                    best = Some(s.id);
+                    best_depth = depth;
+                }
             }
         }
         best.or(self.root_scene).unwrap_or(0)
