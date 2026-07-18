@@ -199,6 +199,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         groups: ctx.groups.clone(),
         artifacts: ParseArtifacts {
             source: raw,
+            file_path: path.to_path_buf(),
             mobject_body: ctx.mobject_body_ranges.clone(),
             scene_call: ctx.scene_call_ranges.clone(),
             subtitle_call: ctx.subtitle_call_ranges.clone(),

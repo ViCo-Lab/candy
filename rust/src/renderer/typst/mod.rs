@@ -76,7 +76,7 @@ pub(crate) use self::world::*;
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
-use crate::core::diag::{CandyError, CandyWarn};
+use crate::core::diag::{CandyError, CandyWarn, SourceLoc};
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use crate::parser::expr::strip_string_literal;
 use crate::warn;
@@ -87,6 +87,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
 use typst_library::foundations::{Dict, Smart, Value};
 use typst_library::visualize::Paint;
@@ -194,6 +195,11 @@ pub struct Renderer {
     /// source string is never copied into the cache key on every frame (the
     /// zero-copy companion to [`Renderer::compile_cached`]).
     param_source_key: String,
+    /// Absolute path of the original `.tyx` source file, if known (empty for
+    /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
+    /// source a real `FileId` so an `E006` points the user at the actual file
+    /// rather than the synthetic `main.typ` detached source.
+    source_path: PathBuf,
 }
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
@@ -213,6 +219,10 @@ impl Renderer {
         // still drive per-frame inputs (transform body swaps, reveals, ecval
         // counters, …) instead of rendering a blank page.
         let mut scene = scene;
+        // Capture the original `.tyx` path (if any) so the compiled Typst source
+        // can carry a real `FileId` and `E006` diagnostics point at the user's
+        // file. Empty for hand-built / programmatic scenes.
+        let source_path = scene.artifacts.file_path.clone();
         if scene.artifacts.source.is_empty() {
             let (src, mobject_body) = Self::synthesize_handbuilt_source(&scene);
             scene.artifacts.source = src;
@@ -242,11 +252,12 @@ impl Renderer {
             bg_cache: Mutex::new(HashMap::new()),
             param_source,
             param_source_key,
+            source_path,
         })
     }
     /// Compile a Typst source string into a single-page document.
     fn compile(&self, src: &str, inputs: &Dict) -> Result<PagedDocument, CandyError> {
-        let source = self.state.detached_cached(src);
+        let source = self.state.main_source(src, &self.source_path);
         let world = CandyWorld::new(&self.state, source, inputs.clone());
         // Typst can *panic* (rather than return a diagnostic) on certain
         // malformed input — especially in release builds, where such a panic
@@ -267,7 +278,7 @@ impl Renderer {
                     // A panic may have left partial comemo entries; clear them so
                     // the next compile starts clean.
                     comemo::evict(0);
-                    return Err(CandyError::Typst(format!("typst panicked: {msg}")));
+                    return Err(CandyError::Typst(format!("typst panicked: {msg}"), None));
                 }
             };
         // If the body consulted the wall clock (`datetime.today()`), the render
@@ -282,7 +293,16 @@ impl Renderer {
         // Our own LRU `body_cache` already retains the documents we need, so
         // clearing comemo here only frees the transient per-frame sub-computations.
         comemo::evict(0);
-        warned.output.map_err(Into::into)
+        match warned.output {
+            Ok(doc) => Ok(doc),
+            Err(errs) => {
+                let loc = errs.first().and_then(|d| typst_diag_loc(&world, d));
+                Err(CandyError::Typst(
+                    crate::core::diag::format_typst_errors(&errs),
+                    loc,
+                ))
+            }
+        }
     }
     /// Compile a Typst source, memoized by the exact source string.
     ///
@@ -432,6 +452,29 @@ impl Renderer {
         Ok("white".to_string())
     }
 }
+/// Resolve a Typst [`typst::diag::SourceDiagnostic`] to a candy [`SourceLoc`]
+/// via the compile `world`, so an `E006` can point the user at the exact
+/// `file:line:col` and the offending source line — just like the parser-level
+/// diagnostics (E002 / E004 / …) already do.
+///
+/// The span is resolved against the world's source map: for an error in the
+/// main document this yields the user's `.tyx` (its `FileId` is set from
+/// `source_path`); for an error inside an `@preview/candy` package file or a
+/// local `#import` it yields that file. Returns `None` when the span is
+/// detached or its source cannot be resolved (e.g. an internal Typst panic), in
+/// which case the `E006` is reported without a location.
+pub(crate) fn typst_diag_loc(
+    world: &CandyWorld,
+    diag: &typst::diag::SourceDiagnostic,
+) -> Option<SourceLoc> {
+    let range = world.range(diag.span)?;
+    let id = diag.span.id()?;
+    let src = world.source(id).ok()?;
+    let file_id = src.id();
+    let path = std::path::Path::new(file_id.vpath().get_without_slash());
+    Some(SourceLoc::at(path, src.text(), range))
+}
+
 #[cfg(test)]
 pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -448,7 +491,7 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
             let page = doc
                 .pages()
                 .first()
-                .ok_or_else(|| CandyError::Typst("no pages".into()))?;
+                .ok_or_else(|| CandyError::Typst("no pages".into(), None))?;
             Ok(typst_svg::svg(page, &SvgOptions::default()))
         }
         Err(e) => Err(e.into()),
@@ -1704,6 +1747,43 @@ fn overflowing_scene_plays_pages_in_sequence() {
     assert!(
         drawn_later > 0 && drawn_later < 6,
         "later frame should still show only one page's mobjects (drew {drawn_later} of 6)"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// Regression: an `E006` Typst render failure must carry a source location that
+/// points at the offending code in the user's `.tyx` (the `file:line:col` +
+/// caret), not just a free-text message. Here a mobject body with a type error
+/// (`circle(radius: "oops")`) fails Typst evaluation; the renderer must surface
+/// `E006` with a `SourceLoc` whose path is the real `.tyx` and whose line text
+/// is non-empty (the offending source line).
+#[test]
+fn e006_typst_error_carries_source_location() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"bad\", circle(radius: \"oops\"))\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_e006_loc.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let r = Renderer::with_root(scene, tmp.parent().unwrap().to_path_buf()).unwrap();
+    let err = r
+        .compile(&r.param_source, &Dict::new())
+        .expect_err("type error in mobject body must fail compilation");
+    assert_eq!(err.code(), "E006", "failure must be reported as E006");
+    let loc = err
+        .loc()
+        .expect("E006 must carry a source location pointing at the bad code");
+    assert_eq!(
+        loc.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+        Some("candy_test_e006_loc.tyx".to_string()),
+        "location must point at the real .tyx file"
+    );
+    assert!(
+        !loc.line_text.trim().is_empty(),
+        "location must include the offending source line"
     );
     std::fs::remove_file(&tmp).ok();
 }

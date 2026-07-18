@@ -5,6 +5,7 @@
 //! builder-time mutation inside the parser).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -590,6 +591,11 @@ pub struct Scene {
 pub struct ParseArtifacts {
     /// The original `.tyx` source text (markup, as parsed by `typst_syntax`).
     pub source: String,
+    /// Absolute path of the `.tyx` file this scene was parsed from. Empty for
+    /// hand-built / programmatic `Scene`s. Threaded into the renderer so an
+    /// `E006` Typst failure can point at the real file rather than the synthetic
+    /// `main.typ` detached source.
+    pub file_path: PathBuf,
     /// Source range `(start, end)` of each `#mobject(label, body)` call's
     /// `body` argument expression, keyed by label. Used to splice the
     /// per-frame wrapped body back into `source`.

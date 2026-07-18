@@ -51,7 +51,7 @@ impl Renderer {
             .pages()
             .get(active_page)
             .or_else(|| doc.pages().first())
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let base = typst_svg::svg(page, &SvgOptions::default());
         // Canvas background color: honors the active scene's `bg` (inheriting
         // from a parent scene) and defaults to opaque white. Used as a fallback
@@ -96,15 +96,15 @@ impl Renderer {
         // stay fixed, outside the camera group) from the mobject content.
         let open = base_svg
             .find("<svg")
-            .ok_or_else(|| CandyError::Typst("bad svg".into()))?;
+            .ok_or_else(|| CandyError::Typst("bad svg".into(), None))?;
         let after = open
             + base_svg[open..]
                 .find('>')
-                .ok_or_else(|| CandyError::Typst("bad svg".into()))?
+                .ok_or_else(|| CandyError::Typst("bad svg".into(), None))?
             + 1;
         let end = base_svg
             .rfind("</svg>")
-            .ok_or_else(|| CandyError::Typst("bad svg".into()))?;
+            .ok_or_else(|| CandyError::Typst("bad svg".into(), None))?;
         let inner = &base_svg[after..end];
         // Split the leading page-fill background element from the mobject
         // content. `typst_svg` emits the scene's page background as the *first*
@@ -248,7 +248,7 @@ impl Renderer {
         let page = doc
             .pages()
             .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+            .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let svg = typst_svg::svg(page, &SvgOptions::default());
         Ok(svg.into_bytes())
     }
@@ -320,7 +320,7 @@ impl Renderer {
         let page = doc
             .pages()
             .first()
-            .ok_or_else(|| CandyError::Typst("body produced no pages".into()))?;
+            .ok_or_else(|| CandyError::Typst("body produced no pages".into(), None))?;
         let svg = typst_svg::svg(page, &SvgOptions::default());
         let shapes = extract_shapes_from_svg(&svg);
         Ok(shapes

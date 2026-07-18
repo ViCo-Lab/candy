@@ -231,7 +231,7 @@ pub(crate) fn subtitle_doc(
         pw = page_w,
         ph = page_h,
     );
-    let source = state.detached_cached(&src);
+    let source = state.main_source(&src, std::path::Path::new(""));
     let world = CandyWorld::new(state, source, Dict::new());
     // Mirror `Renderer::compile`: a malformed body can make typst panic rather
     // than return a diagnostic — catch it so the error is always reported as
@@ -246,10 +246,19 @@ pub(crate) fn subtitle_doc(
             } else {
                 "typst panicked during compilation".to_string()
             };
-            return Err(CandyError::Typst(format!("typst panicked: {msg}")));
+            return Err(CandyError::Typst(format!("typst panicked: {msg}"), None));
         }
     };
-    warned.output.map_err(Into::into)
+    match warned.output {
+        Ok(doc) => Ok(doc),
+        Err(errs) => {
+            let loc = errs.first().and_then(|d| super::typst_diag_loc(&world, d));
+            Err(CandyError::Typst(
+                crate::core::diag::format_typst_errors(&errs),
+                loc,
+            ))
+        }
+    }
 }
 
 /// Render a subtitle to an SVG string (used by the SVG frame path).
@@ -265,6 +274,6 @@ pub(crate) fn render_subtitle_svg_impl(
     let page = doc
         .pages()
         .first()
-        .ok_or_else(|| CandyError::Typst("document produced no pages".into()))?;
+        .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
     Ok(svg(page, &SvgOptions::default()))
 }

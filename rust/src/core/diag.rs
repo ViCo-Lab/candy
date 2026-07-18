@@ -158,8 +158,13 @@ pub enum CandyError {
     LabelNotFound(Label, Option<SourceLoc>),
     /// E005 — Invalid interpolation range (clamped, not fatal).
     Interp(String),
-    /// E006 — Typst render failure.
-    Typst(String),
+    /// E006 — Typst render failure. Carries the offending source location
+    /// (file:line:col + the offending line) when the failure can be tied to a
+    /// specific span in the compiled Typst source, so the user is pointed at the
+    /// exact code that failed to compile — just like the parser-level errors
+    /// (E002/E004/…). Without a resolvable span (e.g. an internal Typst panic)
+    /// the location is `None`.
+    Typst(String, Option<SourceLoc>),
     /// E007 — Rav1e / codec / mux encoding failure.
     Encode(String),
     /// E008 — The `.tyx` does not import the candy package, so its static
@@ -203,7 +208,7 @@ impl CandyError {
             CandyError::Svg(_) => "E003",
             CandyError::LabelNotFound(_, _) => "E004",
             CandyError::Interp(_) => "E005",
-            CandyError::Typst(_) => "E006",
+            CandyError::Typst(_, _) => "E006",
             CandyError::Encode(_) => "E007",
             CandyError::NoCandyImport(_, _) => "E008",
             CandyError::Libva(_) => "E009",
@@ -223,7 +228,7 @@ impl CandyError {
             CandyError::Svg(_) => 3,
             CandyError::LabelNotFound(_, _) => 4,
             CandyError::Interp(_) => 5,
-            CandyError::Typst(_) => 6,
+            CandyError::Typst(_, _) => 6,
             CandyError::Encode(_) => 7,
             CandyError::NoCandyImport(_, _) => 8,
             CandyError::Libva(_) => 9,
@@ -258,7 +263,7 @@ impl CandyError {
                 format!("label @{} not found in Typst layout", l.0)
             }
             CandyError::Interp(e) => format!("interpolation range: {e}"),
-            CandyError::Typst(e) => format!("Typst render failure: {e}"),
+            CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
             CandyError::NoCandyImport(e, _) => format!("candy package not imported: {e}"),
             CandyError::Libva(e) => format!("libva encode failure: {e}"),
@@ -281,6 +286,7 @@ impl CandyError {
             CandyError::NoCandyImport(_, l) => l.as_ref(),
             CandyError::UnknownKey(_, _, l) => l.as_ref(),
             CandyError::InvalidKey(_, l) => l.as_ref(),
+            CandyError::Typst(_, l) => l.as_ref(),
             _ => None,
         }
     }
@@ -320,13 +326,13 @@ pub type TypstErrors = typst::ecow::EcoVec<typst::diag::SourceDiagnostic>;
 
 impl From<TypstErrors> for CandyError {
     fn from(errs: TypstErrors) -> Self {
-        CandyError::Typst(format_typst_errors(&errs))
+        CandyError::Typst(format_typst_errors(&errs), None)
     }
 }
 
 /// Render a collection of Typst [`typst::diag::SourceDiagnostic`] into a
 /// single human-readable message (message + any `hint:` lines).
-fn format_typst_errors(errs: &TypstErrors) -> String {
+pub(crate) fn format_typst_errors(errs: &TypstErrors) -> String {
     errs.iter()
         .map(|d| {
             let mut s = d.message.to_string();
