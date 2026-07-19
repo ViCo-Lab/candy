@@ -16,10 +16,12 @@
 
 /// Define a scene (a "slide") with a specific page size and background.
 ///
-/// In standard Typst, `scene` sets the page and renders the body. In candy's
-/// animation pipeline, `scene` is a semantic marker that groups content into
-/// a slide; the page size is also used by the renderer as the canvas size for
-/// every frame in this scene.
+/// In candy's animation pipeline, `scene` is a semantic marker that groups
+/// content into a slide. Under a plain `typst compile` it renders `body` at
+/// the default page; candy's whole-document renderer injects the real
+/// `page(width, height, fill, …)` (with the canvas size used for every frame)
+/// and the active-scene gating *around* this call, so this function stays a
+/// clean, standard-Typst placeholder.
 ///
 /// - `name`: optional human-readable name for scene switching (e.g., `"intro"`,
 ///   `"demo"`). Named scenes can be targeted directly via `#scene-switch(target: "name")`.
@@ -64,11 +66,15 @@
   }
   _assert_length(width, "scene width")
   _assert_length(height, "scene height")
-  // Under candy's whole-document renderer the gating (which scene is active
-  // each frame) is injected *around* this call by the Rust toolchain — this
-  // function stays a clean, standard-Typst `page()` so it renders the first
-  // frame correctly under a plain `typst compile` too. See
-  // `rust/src/renderer/typst/source.rs` for the gating wrapper.
+  // Under a plain `typst compile` this renders `body` on a page of the given
+  // size + background, so `.tyx` files preview correctly as standalone
+  // documents. Under candy's whole-document renderer the *entire* `#scene(…)`
+  // call is replaced (textually, by `rust/src/renderer/typst/source.rs`) with a
+  // gating block that reads `sys.inputs.at("candy:active_scene")` and injects
+  // the real `page(…)` — so candy never actually invokes this `page()` (no
+  // double page, and nested scenes avoid an illegal page-in-page). The page
+  // size / background come from the Rust-known `SceneInfo`, keeping the renderer
+  // the single source of truth for the canvas.
   page(width: width, height: height, margin: 0pt, fill: bg, body)
 }
 
@@ -115,11 +121,18 @@
 ///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
 ///
 /// Under standard Typst this simply renders `body` at its natural position.
+///
+/// The body is emitted directly (not wrapped in a `block`): candy's renderer
+/// positions every mobject absolutely via an out-of-flow `place(top + left, …)`
+/// wrapper, and a surrounding `block` would make that `place` resolve relative
+/// to the block's *flow slot* instead of the page, pushing positioned /
+/// tracked mobjects off-canvas. Rendering `body` directly keeps `place`
+/// page-relative so absolute coordinates land correctly.
 #let mobject(name, body) = {
   if type(name) != str {
     panic("Mobject name must be a string")
   }
-  block(body)
+  body
 }
 
 /// Animate an object to a new placement / scale / rotation / opacity over
