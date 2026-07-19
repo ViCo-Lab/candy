@@ -156,7 +156,6 @@ impl Renderer {
         let _ = cur
             .replace("#import \"candy\":", "#import \"@preview/candy:0.1.0\":")
             .replace("#import \"candy\"", "#import \"@preview/candy:0.1.0\"");
-        std::fs::write("/tmp/candy_param_source.typ", &cur).ok();
         cur
     }
 
@@ -437,20 +436,6 @@ impl Renderer {
         }
         for (label, st) in states {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
-            if label.0 == "ball" {
-                let th = self.transform_hidden(label, time_ms);
-                let nat = self.nat.get(label).copied();
-                let (dx, dy) = match nat {
-                    Some((nx, ny)) if st.x.abs() < 1e-9 && st.y.abs() < 1e-9 => {
-                        (nx / PT_PER_CM, ny / PT_PER_CM)
-                    }
-                    _ => (st.x, st.y),
-                };
-                eprintln!(
-                    "DBG ball: active={active} owner={owner} st=({},{}) th={th} nat={:?} dx={:.3} dy={:.3}",
-                    st.x, st.y, nat, dx, dy
-                );
-            }
             if owner != active {
                 // A mobject owned by a non-active scene (e.g. a parent scene
                 // whose child is currently active) must be hidden so the active

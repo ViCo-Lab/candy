@@ -1,4 +1,4 @@
-# Error model (E001–E011, EYEE)
+# Error model (E001–E010, EYEE)
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic.
 `CandyError::code()` maps each variant to a mandatory error code:
@@ -6,7 +6,7 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 > **Source location:** diagnostics that originate from a specific piece of user
 > source point at it. When a warning/error carries a location, the reporter
 > prints `path:line:col`, the offending source line, and a `^` caret under the
-> exact span — e.g. `W015` (duplicate mobject/ecnew name) and `E004`
+> exact span — e.g. `W014` (duplicate mobject/ecnew name) and `E004`
 > (LabelNotFound) both do. This lets you jump straight to the problematic code
 > instead of guessing from the message alone.
 
@@ -21,16 +21,17 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 | E006 | `Typst` | Typst render failure — the full `typst::diag::SourceDiagnostic` (message + any `hint:` lines) is captured and surfaced. |
 | E007 | `Encode` | Rav1e/openh264 encoding failure. |
 | E008 | `NoCandyImport` | The `.tyx` does not `#import "@preview/candy"` (or `candy` under any alias). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
-| E009 | `Libva` | libva / VAAPI hardware encoding failure (the direct libva path): `/dev/dri/renderD128` is missing, ffmpeg lacks VAAPI support, or the ffmpeg subprocess fails mid-encode. |
+| E009 | `UnknownKey` | A key reference (`@label`, `target:`, `animate(target:)`, etc.) points to a mobject that was never registered via `#mobject`. Also used when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`, …) reference an unknown counter name. |
+| E010 | `InvalidKey` | A key parameter evaluated to a non-string type (e.g., number, boolean, array). Keys must always resolve to strings. |
 
 ## Process exit codes
 
 The terminal `error!` reporter prints `error: [Exxx] <message>` to **stderr** and terminates
 the process with `CandyError::exit_code()`:
 
-- **E001–E011** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
-  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`, `E011` → `74`. This keeps all
-  Candy fatal codes in a dedicated `64–78` segment that does not collide with `0` (success),
+- **E001–E010** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`. This keeps all
+  Candy fatal codes in a dedicated `64–73` segment that does not collide with `0` (success),
   `1` (generic), `2` (clap usage), or `101` (Rust panic).
 - **EYEE is the one exception**: it deliberately does **not** use the `64` rule. Its exit code
   is the dedicated `BATCH_ERROR_EXIT = 111`. A batch is run to completion (no fail-fast) so
@@ -45,7 +46,7 @@ marker through the diag pipeline as `error: [EYEE] yee~ Batch failed` before exi
 `111`. A **single** failed input keeps its specific `E00x` code (e.g. `69` for `E006`) rather
 than `111`.
 
-## Warnings (W001–W016)
+## Warnings (W001–W015)
 
 Warnings are **non-fatal**: they are printed to **stderr** as `warn: [Wxxx] …` and the render
 continues. They describe recoverable or merely undesirable conditions. `CandyWarn::code()` maps
@@ -66,6 +67,5 @@ each variant to its `W` code.
 | W011 | `CleanupFailed` | An intermediate directory could not be removed after a build. |
 | W012 | `OutputNameCountMismatch` | The number of `--output` names does not match the number of inputs; custom names ignored, default `dist/<stem>.<ext>` used. |
 | W013 | `OutputNameInvalid` | An `--output` name contains a path separator / multi-level directory; default `dist/<stem>.<ext>` used. |
-| W014 | `LibvaFallback` | VA-API (libva) hardware encoding was requested but unavailable or failed; candy transparently fell back to a software codec. |
-| W015 | `DuplicateName` | A mobject label or ecnew name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |
-| W016 | `CallingPrivate` | The user called a Candy private function (name starts with `_`). These are internal helpers, not part of the public API. |
+| W014 | `DuplicateName` | A mobject label or ecnew name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |
+| W015 | `CallingPrivate` | The user called a Candy private function (name starts with `_`). These are internal helpers, not part of the public API. |

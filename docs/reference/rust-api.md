@@ -55,7 +55,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W016) + macros
+│   ├── diag.rs        # CandyError (E001–E010) + CandyWarn (W001–W015) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
 │   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
@@ -72,8 +72,6 @@ rust/src/
     ├── h264.rs        # openh264 H.264 encoder
     ├── ffmpeg.rs      # find_ffmpeg / encode_via_ffmpeg (system ffmpeg shell-out)
     ├── container.rs   # hand-written MP4 / Matroska / WebM muxers
-    ├── libva.rs       # Direct VAAPI hardware encoding (no ffmpeg subprocess, Linux-only)
-    │   └── imp.rs     # Real libva FFI implementation (feature "libva")
     └── audio.rs       # Opus/AAC audio demuxers
 ```
 
@@ -197,13 +195,6 @@ pub enum Codec {
     #[cfg(target_os = "windows")]
     H265Qsv,
     Vp9, Vp8,
-    // Linux-only, direct VAAPI hardware encoders (no ffmpeg subprocess):
-    #[cfg(target_os = "linux")]
-    H264Libva,
-    #[cfg(target_os = "linux")]
-    H265Libva,
-    #[cfg(target_os = "linux")]
-    Av1Libva,
 }
 ```
 
@@ -216,9 +207,6 @@ pub enum Codec {
   are only compiled on their native platform, so they are absent from `Codec` — and from the
   `--codec` CLI selection interface / `--help` — elsewhere. `Codec::uses_ffmpeg()` reports
   whether a codec shells out to ffmpeg.
-- `H264Libva` / `H265Libva` / `Av1Libva` are Linux-only direct VAAPI encoders with **no**
-  ffmpeg subprocess; `Codec::uses_libva()` is `true` for them (always `false` on non-Linux).
-
 ## Core modules
 
 ### `core::ast`

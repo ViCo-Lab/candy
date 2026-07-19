@@ -182,10 +182,6 @@
     memmap2 = { version = "0.9", optional = true }
 
 [build-dependencies]
-    # Generates the raw `libva` FFI from the system libva 1.x headers when the
-    # `libva` feature is enabled. Only used at build time (no runtime dep); the
-    # generated bindings are `include!`d by `src/renderer/encode/libva.rs`.
-    bindgen = "0.71"
 
 [features]
     # AV1/H.264 video encoding. The build is fully self-contained: encoders run
@@ -201,14 +197,5 @@
     # with `--no-default-features` for a fully offline build (packages must then
     # be pre-cached).
     system-downloader = []
-    # Direct VAAPI (libva) hardware encoding — bypasses FFmpeg entirely. Off by
-    # default because it is a *build-time* binding: `build.rs` runs `bindgen`
-    # against the system libva 1.x headers (via `libclang`) and links `libva`,
-    # so a Linux build with this feature needs `libva-devel` (or equivalent) and
-    # a C compiler. At runtime it needs a VAAPI-capable GPU (`/dev/dri/renderD128`);
-    # without one candy transparently falls back to the self-contained software
-    # codec. Kept off by default so the standard `cargo build` / CI stays
-    # self-contained (no libva dev headers, no GPU required).
-    libva = []
     # Enable zero-copy audio file loading on Linux (memmap2).
     zero-copy-audio = ["dep:memmap2"]

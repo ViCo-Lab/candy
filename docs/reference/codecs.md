@@ -31,19 +31,6 @@ The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding.
 | `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware. |
 | `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video (**Windows**). |
 
-## VAAPI / libva (Linux-only, independent group)
-
-| `--codec` | Notes |
-|---|---|
-| `h264-libva` | Direct VAAPI H.264, no ffmpeg subprocess (Linux Intel/AMD GPU). |
-| `h265-libva` | Direct VAAPI HEVC. |
-| `av1-libva` | Direct VAAPI AV1. |
-
-These are `#[cfg(target_os = "linux")]` gated — they only appear in `--help`
-on Linux. They require `/dev/dri/renderD128` (Intel/AMD GPU) and use
-`LibvaStream` with a 1MB BufWriter and `-low_power 1` for minimal latency. If
-VAAPI is unavailable, `LibvaStream::new` returns E007.
-
 If ffmpeg is not found, Candy falls back to the self-contained codecs or returns E007
 (`h265`/`x264`/`x265` without ffmpeg).
 

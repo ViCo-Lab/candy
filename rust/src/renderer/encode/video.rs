@@ -92,18 +92,6 @@ pub enum Codec {
     Vp9,
     /// VP8 via libvpx (system ffmpeg).
     Vp8,
-    /// H.264 via direct libva (Linux hardware). Falls back to openh264 if the
-    /// VAAPI device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    H264Libva,
-    /// H.265 via direct libva (Linux hardware). Falls back to AV1 (rav1e) if the
-    /// VAAPI device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    H265Libva,
-    /// AV1 via direct libva (Linux hardware). Falls back to rav1e if the VAAPI
-    /// device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    Av1Libva,
 }
 
 /// An encoded video ready for container muxing.
@@ -275,34 +263,6 @@ impl Codec {
     pub fn is_self_contained(self) -> bool {
         matches!(self, Codec::Av1 | Codec::H264 | Codec::H265)
     }
-
-    /// Returns `true` if this codec uses the direct libva path (Linux only,
-    /// no ffmpeg subprocess).
-    #[cfg(target_os = "linux")]
-    pub fn uses_libva(self) -> bool {
-        matches!(self, Codec::H264Libva | Codec::H265Libva | Codec::Av1Libva)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn uses_libva(self) -> bool {
-        false
-    }
-
-    /// Map a libva (direct VAAPI) codec to the self-contained software codec
-    /// used when the hardware encoder is unavailable. `H264Libva` → `H264`
-    /// (openh264), `Av1Libva` → `Av1` (rav1e); `H265Libva` has no pure-Rust
-    /// encoder, so it falls back to `Av1` (rav1e, always self-contained) to
-    /// avoid requiring ffmpeg.
-    #[cfg(target_os = "linux")]
-    pub fn libva_fallback(self) -> Codec {
-        match self {
-            Codec::H264Libva => Codec::H264,
-            Codec::H265Libva => Codec::Av1,
-            Codec::Av1Libva => Codec::Av1,
-            // Defensive: any non-libva codec maps to the default software codec.
-            _ => Codec::H264,
-        }
-    }
 }
 
 /// On Linux, ffmpeg frame input uses an anonymous `memfd` per frame (zero-copy,
@@ -325,8 +285,6 @@ pub(crate) struct StreamingVideo {
     frame_count: usize,
     rav1e: Option<crate::renderer::encode::rav1e::Rav1eStream>,
     h264: Option<crate::renderer::encode::h264::H264Stream>,
-    #[cfg(all(target_os = "linux", feature = "libva"))]
-    libva: Option<crate::renderer::encode::libva::LibvaStream>,
 }
 
 impl StreamingVideo {
@@ -373,8 +331,6 @@ impl StreamingVideo {
                     frame_count: 0,
                     rav1e: None,
                     h264: None,
-                    #[cfg(all(target_os = "linux", feature = "libva"))]
-                    libva: None,
                 })
             }
             #[cfg(not(target_os = "linux"))]
@@ -398,8 +354,6 @@ impl StreamingVideo {
                     frame_count: 0,
                     rav1e: None,
                     h264: None,
-                    #[cfg(all(target_os = "linux", feature = "libva"))]
-                    libva: None,
                 })
             }
         } else if codec == Codec::H264 {
@@ -413,8 +367,6 @@ impl StreamingVideo {
                 frame_count: 0,
                 rav1e: None,
                 h264: Some(crate::renderer::encode::h264::H264Stream::new(tw, th, fps)?),
-                #[cfg(all(target_os = "linux", feature = "libva"))]
-                libva: None,
             })
         } else if codec == Codec::Av1 {
             Ok(Self {
@@ -434,54 +386,7 @@ impl StreamingVideo {
                     tw, th, fps, true,
                 )?),
                 h264: None,
-                #[cfg(all(target_os = "linux", feature = "libva"))]
-                libva: None,
             })
-        } else if codec.uses_libva() {
-            // Direct VAAPI (libva) hardware encoder (Linux-only). The libva
-            // codecs are only defined on Linux, so `uses_libva()` is always
-            // `false` on other platforms and this branch is unreachable there.
-            #[cfg(all(target_os = "linux", feature = "libva"))]
-            {
-                if !crate::renderer::encode::libva::is_available()
-                    || crate::renderer::encode::ffmpeg::find_ffmpeg().is_none()
-                {
-                    // Hardware encoder unavailable: warn and transparently fall
-                    // back to the equivalent self-contained software codec so a
-                    // valid video is still produced. Mirrors the documented
-                    // fallback behavior of the sibling `*-vaapi` ffmpeg codecs.
-                    let fb = codec.libva_fallback();
-                    warn!(CandyWarn::LibvaFallback(format!(
-                        "{codec:?} unavailable (no VAAPI device or ffmpeg); \
-                         falling back to {fb:?}"
-                    )));
-                    return Self::new(fps, fb, container, meta, tw, th, audio);
-                }
-                let lv = crate::renderer::encode::libva::LibvaStream::new(
-                    codec, tw, th, fps, container, meta,
-                )?;
-                Ok(Self {
-                    container,
-                    meta: meta.clone(),
-                    tw,
-                    th,
-                    audio,
-                    ffmpeg: None,
-                    frame_count: 0,
-                    rav1e: None,
-                    h264: None,
-                    libva: Some(lv),
-                })
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                unreachable!("libva codecs are only defined on Linux")
-            }
-            #[cfg(all(target_os = "linux", not(feature = "libva")))]
-            {
-                // When libva feature is disabled, uses_libva() should return false
-                unreachable!("libva codecs should not reach here without libva feature")
-            }
         } else {
             // H265 without ffmpeg, or any other unsupported codec.
             Err(CandyError::Encode(
@@ -537,12 +442,6 @@ impl StreamingVideo {
             self.frame_count += 1;
             return Ok(());
         }
-        #[cfg(all(target_os = "linux", feature = "libva"))]
-        if let Some(lv) = self.libva.as_mut() {
-            lv.push(&composed)?;
-            self.frame_count += 1;
-            return Ok(());
-        }
         if let Some(r) = self.rav1e.as_mut() {
             // Safety net: rav1e 0.8.1 can still panic in rare geometries even in
             // all-intra mode. Convert that to a clean error (no process abort).
@@ -575,12 +474,6 @@ impl StreamingVideo {
             return crate::renderer::encode::ffmpeg::finish_ffmpeg_to_file(
                 child, mux, output, err_log,
             );
-        }
-        #[cfg(all(target_os = "linux", feature = "libva"))]
-        if let Some(lv) = self.libva {
-            // `LibvaStream::finish` muxes the encoded stream directly to `output`
-            // (with optional audio), returning `()`; no temp-file copy is needed.
-            return lv.finish(output, self.audio.as_ref());
         }
         let video = if let Some(r) = self.rav1e {
             r.finish_file()?

@@ -67,17 +67,6 @@ touches the content of another.
 > and `h264-qsv` / `h265-qsv` only on **Windows**. On other platforms they are
 > absent from `--help` and the `--codec` selection interface.
 
-### libva direct (Linux-only, independent codec group)
-| Codec | Notes |
-|---|---|
-| `h264-libva` | Direct VAAPI H.264, no ffmpeg subprocess |
-| `h265-libva` | Direct VAAPI HEVC |
-| `av1-libva` | Direct VAAPI AV1 |
-
-These are `#[cfg(target_os = "linux")]` gated — they only appear in
-`--help` on Linux. They use `LibvaStream` with 1MB BufWriter and
-`-low_power 1` for minimal latency.
-
 ## Performance Optimizations
 
 ### Zero-copy rasterization

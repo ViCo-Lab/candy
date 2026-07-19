@@ -66,7 +66,7 @@ pub(crate) fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> (String
 ///
 /// Returns `(substituted_body, unknown_counters)` where `unknown_counters` is a
 /// list of counter names that were referenced but not declared (to be reported
-/// as E010 errors).
+/// as E009 errors).
 ///
 /// Expansion is **AST-driven**, not naive string replacement: `body` is parsed
 /// into a Typst `SyntaxNode` tree and every *real* `ecval(..)` function-call
@@ -126,7 +126,7 @@ pub(crate) fn substitute_counters(
 
 /// Walk `node`, appending an edit that swaps each `ecval(name)` call for its
 /// current integer value (only for counters actually declared in the scene).
-/// Collects unknown counter names for E010 reporting.
+/// Collects unknown counter names for E009 reporting.
 fn collect_ecval_edits(
     node: &LinkedNode,
     scene: &Scene,
@@ -136,7 +136,7 @@ fn collect_ecval_edits(
 ) {
     if let Some(call) = node.get().cast::<ast::FuncCall>() {
         if let Some(name) = ecval_counter_name(&call) {
-            // Only substitute declared counters; collect unknown ones for E010.
+            // Only substitute declared counters; collect unknown ones for E009.
             if !scene.counters.iter().any(|c| c.name == name) {
                 if !unknown_counters.contains(&name) {
                     unknown_counters.push(name);

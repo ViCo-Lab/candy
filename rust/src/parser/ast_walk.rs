@@ -418,7 +418,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                         if let Expr::Str(s) = n.expr() {
                             scene_name = Some(s.get().to_string());
                         } else {
-                            // Scene name is not a string — warn (W015).
+                            // Scene name is not a string — warn (W014).
                             use crate::core::diag::SourceLoc;
                             let cr = node.range();
                             let loc = SourceLoc::at(&ctx.file_path, raw, cr);

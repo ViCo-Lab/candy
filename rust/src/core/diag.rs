@@ -143,7 +143,7 @@ impl SourceLoc {
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E011.
+/// variant to the mandatory error codes E001–E010.
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
@@ -174,19 +174,14 @@ pub enum CandyError {
     /// run through `candy build` without importing candy is therefore rejected
     /// with this dedicated code rather than producing an empty / garbage output.
     NoCandyImport(String, Option<SourceLoc>),
-    /// E009 — libva / VAAPI hardware encoding failure (the direct libva path).
-    /// Returned when `/dev/dri/renderD128` is missing, ffmpeg lacks VAAPI
-    /// support, or the ffmpeg subprocess fails mid-encode. Distinct from the
-    /// generic `Encode` (E007) so libva-specific failures are diagnosable.
-    Libva(String),
-    /// E010 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
+    /// E009 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used
     /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
     /// …) reference an unknown counter name. The first field is the kind
     /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
     /// key name.
     UnknownKey(String, String, Option<SourceLoc>),
-    /// E011 — A key parameter evaluated to a non-string type (e.g., number,
+    /// E010 — A key parameter evaluated to a non-string type (e.g., number,
     /// boolean, array). Keys must always resolve to strings.
     InvalidKey(String, Option<SourceLoc>),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
@@ -199,7 +194,7 @@ pub enum CandyError {
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E011).
+    /// Mandatory error code (E001–E010).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
@@ -211,14 +206,13 @@ impl CandyError {
             CandyError::Typst(_, _) => "E006",
             CandyError::Encode(_) => "E007",
             CandyError::NoCandyImport(_, _) => "E008",
-            CandyError::Libva(_) => "E009",
-            CandyError::UnknownKey(_, _, _) => "E010",
-            CandyError::InvalidKey(_, _) => "E011",
+            CandyError::UnknownKey(_, _, _) => "E009",
+            CandyError::InvalidKey(_, _) => "E010",
         }
     }
 
     /// Numeric part of the code (1–11), used to build the process exit code for
-    /// the E001–E011 family. `EYEE` is excluded here on purpose — it carries no
+    /// the E001–E010 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
         match self {
@@ -231,15 +225,14 @@ impl CandyError {
             CandyError::Typst(_, _) => 6,
             CandyError::Encode(_) => 7,
             CandyError::NoCandyImport(_, _) => 8,
-            CandyError::Libva(_) => 9,
-            CandyError::UnknownKey(_, _, _) => 10,
-            CandyError::InvalidKey(_, _) => 11,
+            CandyError::UnknownKey(_, _, _) => 9,
+            CandyError::InvalidKey(_, _) => 10,
         }
     }
 
     /// Process exit code for this error.
     ///
-    /// The E001–E011 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
+    /// The E001–E010 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
     /// `E007` → `70`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
     /// partial-failure marker ("yee~ Batch failed") must not be re-encoded into
@@ -266,7 +259,6 @@ impl CandyError {
             CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
             CandyError::NoCandyImport(e, _) => format!("candy package not imported: {e}"),
-            CandyError::Libva(e) => format!("libva encode failure: {e}"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!("{kind} \"{key}\" does not exist (never declared or already destroyed)")
             }
@@ -388,10 +380,7 @@ pub enum CandyWarn {
     /// directory path) or is otherwise not a plain file name, so it is ignored
     /// for that input and the default `dist/<stem>.<ext>` name is used instead.
     OutputNameInvalid(String),
-    /// W014 — Hardware VA-API (libva) encoding was requested but unavailable or
-    /// failed; candy transparently fell back to a software codec.
-    LibvaFallback(String),
-    /// W015 — A mobject label, ecnew, or scene name was redefined in the
+    /// W014 — A mobject label, ecnew, or scene name was redefined in the
     /// *same* lexical scope. Candy keeps the later definition (it shadows the
     /// earlier one) but warns, because an accidental duplicate usually indicates
     /// a typo. Redefining a name inside a *nested* scope is legitimate Typst
@@ -401,7 +390,7 @@ pub enum CandyWarn {
     /// pointed at the exact code.
     DuplicateName(String, String, SourceLoc),
 
-    /// W016 — The user called a Candy private function (name starts with `_`).
+    /// W015 — The user called a Candy private function (name starts with `_`).
     /// These are internal helpers, not part of the public API.
     ///
     /// Field: the private function name (e.g. `"_assert_str"`).
@@ -409,7 +398,7 @@ pub enum CandyWarn {
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W016).
+    /// Mandatory warning code (W001–W015).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",
@@ -425,9 +414,8 @@ impl CandyWarn {
             CandyWarn::CleanupFailed(_) => "W011",
             CandyWarn::OutputNameCountMismatch(_) => "W012",
             CandyWarn::OutputNameInvalid(_) => "W013",
-            CandyWarn::LibvaFallback(_) => "W014",
-            CandyWarn::DuplicateName(_, _, _) => "W015",
-            CandyWarn::CallingPrivate(_) => "W016",
+            CandyWarn::DuplicateName(_, _, _) => "W014",
+            CandyWarn::CallingPrivate(_) => "W015",
         }
     }
 
@@ -478,9 +466,6 @@ impl CandyWarn {
                      separator / multi-level directory); using the default \
                      dist/<stem>.<ext>"
                 )
-            }
-            CandyWarn::LibvaFallback(d) => {
-                format!("VA-API (libva) encoding unavailable, falling back: {d}")
             }
             CandyWarn::DuplicateName(kind, name, _) => {
                 format!(

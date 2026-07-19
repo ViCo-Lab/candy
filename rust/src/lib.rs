@@ -30,9 +30,9 @@ pub mod core;
 pub mod parser;
 pub mod renderer;
 
-/// Unified error type (E001–E011 → exit code 64–74; `EYEE` → exit code 111, a
+/// Unified error type (E001–E010 → exit code 64–73; `EYEE` → exit code 111, a
 /// batch partial-failure marker that deliberately bypasses the `64` rule) and
-/// non-fatal warning type (W001–W016); see `core::diag::{CandyError, CandyWarn}`
+/// non-fatal warning type (W001–W015); see `core::diag::{CandyError, CandyWarn}`
 /// and the `core::diag::{error, warn, debug, info}` reporters.
 pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
@@ -268,13 +268,6 @@ pub fn build_input_with_gpu(
         std::fs::create_dir_all(intermediate_dir)?;
         for (i, &t_ms) in sample_times.iter().enumerate() {
             let svg = renderer.render_frame_at(t_ms, &frames)?; // Step 5
-            if (3000..=3100).contains(&t_ms) {
-                std::fs::write(format!("/tmp/disk_dbg_{t_ms}.svg"), svg.as_bytes()).ok();
-                eprintln!(
-                    "DBG disk: i={i} t_ms={t_ms} has_ff4136={}",
-                    svg.contains("ff4136")
-                );
-            }
             std::fs::write(
                 intermediate_dir.join(format!("frame_{:016}.svg", i)),
                 svg.as_bytes(),

@@ -194,21 +194,6 @@ enum CodecArg {
     /// VP8 via libvpx (system ffmpeg).
     #[value(name = "vp8")]
     Vp8,
-    /// H.264 via direct libva (Linux hardware). Falls back to openh264 if the
-    /// VAAPI device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    #[value(name = "h264-libva")]
-    H264Libva,
-    /// H.265 via direct libva (Linux hardware). Falls back to AV1 (rav1e) if the
-    /// VAAPI device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    #[value(name = "h265-libva")]
-    H265Libva,
-    /// AV1 via direct libva (Linux hardware). Falls back to rav1e if the VAAPI
-    /// device or ffmpeg is unavailable (W014).
-    #[cfg(target_os = "linux")]
-    #[value(name = "av1-libva")]
-    Av1Libva,
 }
 
 fn main() {
@@ -326,12 +311,6 @@ fn run() -> Result<(), CandyError> {
                         CodecArg::Av1Vaapi => Codec::Av1Vaapi,
                         CodecArg::Vp9 => Codec::Vp9,
                         CodecArg::Vp8 => Codec::Vp8,
-                        #[cfg(target_os = "linux")]
-                        CodecArg::H264Libva => Codec::H264Libva,
-                        #[cfg(target_os = "linux")]
-                        CodecArg::H265Libva => Codec::H265Libva,
-                        #[cfg(target_os = "linux")]
-                        CodecArg::Av1Libva => Codec::Av1Libva,
                     };
 
                     let input_kind = if from_svg {

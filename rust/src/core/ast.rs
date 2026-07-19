@@ -805,7 +805,7 @@ impl Scene {
         for ev in &self.counter_events {
             if !counter_names.contains(ev.name.as_str()) {
                 return Err(format!(
-                    "E010: counter \"{name}\" does not exist (never declared or already destroyed)",
+                    "E009: counter \"{name}\" does not exist (never declared or already destroyed)",
                     name = ev.name
                 ));
             }
@@ -819,7 +819,7 @@ impl Scene {
                 if let Some(target) = action.target() {
                     if !mobject_names.contains(target.0.as_str()) {
                         return Err(format!(
-                            "E010: mobject \"@{label}\" not found in Typst layout",
+                            "E009: mobject \"@{label}\" not found in Typst layout",
                             label = target.0
                         ));
                     }
