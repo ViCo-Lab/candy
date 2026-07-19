@@ -222,16 +222,25 @@ fn compose(frame: &RenderedFrame, tw: usize, th: usize) -> RenderedFrame {
     };
     #[cfg(not(target_os = "linux"))]
     let mut rgba = vec![255u8; frame_bytes];
-    // Clamp to the target canvas: a frame wider/taller than `tw`/`th` (e.g. an
-    // object moved past the page edge, or a mismatched page size) must not
-    // overrun `rgba`. The uniform canvas is the max page size, so clipping is
-    // safe and only trims overflow that would otherwise panic on copy.
+    // Fast path: the frame already matches the target canvas exactly (the
+    // common case — the uniform canvas is sized to the scene's page). A single
+    // bulk copy is faster than the per-row loop below and lets the compiler
+    // emit a single optimized memcpy.
     let cw = frame.width.min(tw);
     let ch = frame.height.min(th);
-    for y in 0..ch {
-        let src = y * frame.width * 4;
-        let dst = y * tw * 4;
-        rgba[dst..dst + cw * 4].copy_from_slice(&frame.rgba[src..src + cw * 4]);
+    if frame.width == tw && frame.height == th {
+        rgba[..frame_bytes].copy_from_slice(&frame.rgba[..frame_bytes]);
+    } else {
+        // Clamp to the target canvas: a frame wider/taller than `tw`/`th` (e.g.
+        // an object moved past the page edge, or a mismatched page size) must
+        // not overrun `rgba`. The uniform canvas is the max page size, so
+        // clipping is safe and only trims overflow that would otherwise panic
+        // on copy.
+        for y in 0..ch {
+            let src = y * frame.width * 4;
+            let dst = y * tw * 4;
+            rgba[dst..dst + cw * 4].copy_from_slice(&frame.rgba[src..src + cw * 4]);
+        }
     }
     RenderedFrame {
         width: tw,
