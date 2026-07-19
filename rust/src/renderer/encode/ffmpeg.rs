@@ -367,16 +367,69 @@ pub(crate) fn spawn_ffmpeg(
     Ok((child, stdin, mux, err_log))
 }
 
-/// Spawn an ffmpeg child on Linux that reads raw RGBA frames from a memfd.
+/// Spawn an ffmpeg child on Linux that reads raw RGBA frames from a **pipe**.
 ///
-/// This is the Linux-optimized variant of [`spawn_ffmpeg`]: instead of piping
-/// frames through a bounded OS pipe (~64 KiB), we create an anonymous memfd
-/// for each frame, write the frame pixels into it, and tell ffmpeg to read
-/// from `/proc/self/fd/N`. The memfd lives in tmpfs (RAM-backed, unbounded),
-/// so there is **zero copy** overhead beyond the single write into the memfd.
+/// # Why a pipe, not a memfd
 ///
-/// Returns `(Child, File, MuxSink, ErrLog)` where the `File` is the writable
-/// handle to the memfd (caller writes one frame then drops it).
+/// A previous version used a `memfd` for frame input and told ffmpeg to read
+/// from `/proc/self/fd/N`. That approach has a fundamental race: ffmpeg opens
+/// the memfd as a *regular file* and its `read()` returns 0 (EOF) the instant
+/// its read offset catches up to the file size — it does **not** block waiting
+/// for the producer to append more data (unlike a pipe, whose `read()` blocks
+/// until data is available or the write end is closed). On a fast multi-core
+/// machine ffmpeg routinely drains the memfd faster than the producer can
+/// render the next frame, hits EOF, and finalises the container with only a
+/// handful of frames encoded — producing a video that is a fraction of the
+/// expected duration (e.g. 5 frames out of 61 for `preview_demo`).
+///
+/// The fix is to feed ffmpeg through a **pipe** (`pipe2(2)`). A pipe's `read()`
+/// blocks on the read end until the producer writes more data (or closes the
+/// write end → real EOF), which is exactly the streaming contract ffmpeg
+/// expects from `-i -` / stdin input. The pipe is still entirely kernel-buffered
+/// (no disk I/O), so it retains the "intermediate never touches disk" property
+/// the memfd was after.
+///
+/// # Zero-copy frame feed via `vmsplice`
+///
+/// To avoid the `write()` syscall's user→kernel copy on the producer side, the
+/// caller ([`crate::renderer::encode::video::StreamingVideo::push`]) writes each
+/// frame's RGBA buffer into the pipe with `vmsplice(2)` + `SPLICE_F_GIFT`. This
+/// transfers ownership of the buffer's physical pages to the kernel pipe buffer
+/// without copying a single byte — true zero-copy on the producer side. ffmpeg's
+/// `read()` then copies the data out of the pipe buffer as usual (one copy,
+/// unavoidable: the kernel must hand the bytes to userspace).
+///
+/// `vmsplice` with `SPLICE_F_GIFT` requires the buffer to be page-aligned and a
+/// multiple of the page size. The caller is responsible for padding the RGBA
+/// buffer accordingly; `compose()` in `video.rs` does this by sizing the canvas
+/// to an even width/height (already required by the encoder) and rounding the
+/// buffer length up to a page multiple, zero-padding the tail.
+///
+/// # Pipe capacity
+///
+/// The default pipe capacity is 64 KiB — far too small for a single HD frame
+/// (~1.85 MiB at 907×510×4). We grow the pipe with `fcntl(F_SETPIPE_SZ)` to at
+/// least one frame plus one page, so a single `vmsplice` never deadlocks (the
+/// producer's gift fits in one shot). The kernel caps the requested size to a
+/// power of two and may round up; on systems where the unprivileged pipe size
+/// cap (`/proc/sys/fs/pipe-max-size`) is too low the `F_SETPIPE_SZ` call fails
+/// and we fall back to a plain `write()` — still correct, just not zero-copy.
+///
+/// # Why we still use memfds elsewhere
+///
+/// The mux **output** sink (see [`make_mux_sink`]) and the stderr redirection
+/// (see [`make_err_log`]) still use memfds, and that is correct: ffmpeg writes
+/// the whole container to the output sink and seeks back for the `faststart`
+/// moov rewrite, so it needs a *seekable* file (a pipe would not work). The
+/// stderr sink needs an unbounded buffer so a long encode cannot deadlock on a
+/// full stderr pipe. Both of those are write-only-from-ffmpeg, read-once-by-us,
+/// so the EOF race does not apply.
+///
+/// Returns `(Child, File, MuxSink, ErrLog)` where the `File` is the **write end
+/// of the pipe** (caller writes one frame at a time, then drops it to signal
+/// EOF). The read end is handed to ffmpeg via `-i /proc/self/fd/N` (ffmpeg
+/// inherits the fd across `exec`, so the path stays valid even though our own
+/// `File` only owns the write end).
 #[cfg(target_os = "linux")]
 pub(crate) fn spawn_ffmpeg_with_memfd(
     codec: Codec,
@@ -393,31 +446,81 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
         .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
     let format = container_format(container);
 
-    // Create the seekable sink for ffmpeg's output.
+    // Create the seekable sink for ffmpeg's output (memfd — needs to be seekable).
     let mux = make_mux_sink(container)?;
 
-    // Create stderr redirection.
+    // Create stderr redirection (memfd — needs to be unbounded).
     let (err_for_ffmpeg, err_log) = make_err_log()?;
 
-    // Create a memfd for frame input.
-    let frame_fd = memfd_create_named("candy-ffmpeg-frame")
-        .map_err(|e| CandyError::Encode(format!("create frame memfd: {e}")))?;
-    let frame_file = std::fs::File::from(frame_fd);
-    let frame_path = format!("/proc/self/fd/{}", frame_file.as_raw_fd());
+    // Create a **pipe** for frame input. The read end is inherited by ffmpeg
+    // across `exec` (we pass it as `-i /proc/self/fd/N`); the write end is
+    // returned to the caller. A pipe's read() blocks until data is available
+    // or the write end is closed, which is the streaming contract ffmpeg
+    // expects — unlike a memfd (regular file), whose read() returns EOF the
+    // moment it catches up to the file size, causing ffmpeg to finalise early.
+    let (read_fd, write_fd) = {
+        let mut fds = [0i32; 2];
+        // We create the pipe WITHOUT `O_CLOEXEC` on the read end so ffmpeg can
+        // re-open it via `/proc/self/fd/N` after `exec`. The write end gets
+        // `O_CLOEXEC` so it does not leak into the ffmpeg child (the child only
+        // needs its own read-end reference; if it inherited the write end the
+        // pipe would never signal EOF to ffmpeg when we close our write end).
+        // `pipe2(O_CLOEXEC)` sets CLOEXEC on both ends, so we use `pipe()` and
+        // then set CLOEXEC only on the write end via `fcntl(F_SETFD)`.
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        if rc < 0 {
+            return Err(CandyError::Encode(format!(
+                "pipe for ffmpeg frame input: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        // Set CLOEXEC on the write end only (so it closes in the child on exec).
+        unsafe {
+            let flags = libc::fcntl(fds[1], libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fds[1], libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+        // Grow the pipe to at least one frame, so a single `vmsplice` of a
+        // full frame never deadlocks waiting for ffmpeg to drain.
+        // `F_SETPIPE_SZ` rounds up to a power of two; the kernel may cap this
+        // for unprivileged users — on failure we silently keep the default
+        // 64 KiB and the caller falls back to chunked `write()`.
+        let frame_bytes = (w as usize) * (h as usize) * 4;
+        let want = frame_bytes.next_power_of_two().max(1 << 16);
+        unsafe {
+            let got = libc::fcntl(fds[0], libc::F_SETPIPE_SZ, want as libc::c_int);
+            if got < 0 {
+                // Best-effort: keep the default pipe size. The caller's
+                // `vmsplice` will then write in chunks, blocking as needed.
+            }
+        }
+        let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        (read_fd, write_fd)
+    };
+    // `read_file` owns the read end. We hand ffmpeg `/proc/self/fd/N` (where N
+    // is the read fd's raw fd) so ffmpeg opens its own reference to the same
+    // pipe. After `Command::spawn` returns, ffmpeg has inherited the fd (via
+    // the `/proc/self/fd/N` open in the child) and we can drop `read_file`
+    // — the write end staying open is what keeps the pipe from signalling EOF.
+    let read_file = std::fs::File::from(read_fd);
+    let write_file = std::fs::File::from(write_fd);
+    let frame_path = format!("/proc/self/fd/{}", read_file.as_raw_fd());
 
     let mut cmd = Command::new(&ffmpeg);
     if matches!(codec, Codec::H264Vaapi | Codec::H265Vaapi | Codec::Av1Vaapi) {
         cmd.arg("-vaapi_device").arg("/dev/dri/renderD128");
     }
 
-    cmd.stdin(Stdio::null()) // no stdin needed
+    cmd.stdin(Stdio::null()) // frame input is via the pipe, not stdin
         .stdout(Stdio::null())
         .stderr(err_for_ffmpeg)
         .args(["-f", "rawvideo"])
         .args(["-pix_fmt", "rgba"])
         .args(["-s", &format!("{w}x{h}")])
         .args(["-r", &fps.to_string()])
-        .args(["-i", &frame_path]) // read from memfd
+        .args(["-i", &frame_path]) // read from the pipe
         .args(["-c:v", encoder]);
 
     match codec {
@@ -460,15 +563,88 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
     let child = cmd
         .spawn()
         .map_err(|e| CandyError::Encode(format!("failed to spawn ffmpeg: {e}")))?;
+    // ffmpeg has now opened its own reference to the read end (via the
+    // `/proc/self/fd/N` path). Drop our read-end handle so the only thing
+    // keeping the pipe alive is the write end (which the caller holds). When
+    // the caller drops the write end, ffmpeg sees the real EOF and finalises.
+    drop(read_file);
 
-    // Re-open the memfd for writing (ffmpeg already has it open via /proc path).
-    let writer = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&frame_path)
-        .map_err(|e| CandyError::Encode(format!("open frame memfd for write: {e}")))?;
+    info!("spawned ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)");
+    Ok((child, write_file, mux, err_log))
+}
 
-    info!("spawned ffmpeg -c:v {encoder} -f {format} (memfd input)");
-    Ok((child, writer, mux, err_log))
+/// Write `data` to `writer` using `vmsplice(2)` with `SPLICE_F_GIFT` for true
+/// zero-copy (the buffer's physical pages are gifted to the kernel pipe buffer
+/// without a `write()`-style copy). Falls back to a plain `write()` if the
+/// buffer is not page-aligned, not a page-size multiple, or `vmsplice` fails
+/// (e.g. the pipe is too small to accept the whole gift at once).
+///
+/// # Safety contract
+///
+/// After a successful `vmsplice` with `SPLICE_F_GIFT`, the gifted pages must
+/// not be modified by the caller until ffmpeg has drained them from the pipe.
+/// In practice the caller (`StreamingVideo::push`) drops the RGBA buffer
+/// immediately after this call returns, so the contract holds: the `Vec`'s
+/// allocation is freed (the pages are now owned by the kernel), and even if
+/// the allocator reuses them, the kernel still holds its reference until
+/// ffmpeg reads the data.
+///
+/// Returns the number of bytes written (always `data.len()` on success).
+#[cfg(target_os = "linux")]
+pub(crate) fn vmsplice_frame(writer: &mut std::fs::File, data: &[u8]) -> std::io::Result<usize> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // `vmsplice` with `SPLICE_F_GIFT` requires page-aligned address and a
+    // length that is a multiple of the page size. The caller pads the RGBA
+    // buffer to satisfy this; if it does not, we fall back to `write()`.
+    let page_size = 4096usize;
+    let ptr = data.as_ptr() as usize;
+    let len = data.len();
+    let aligned = ptr % page_size == 0 && len % page_size == 0 && len > 0;
+    if !aligned {
+        // Use the standard write() — one user→kernel copy, but correct.
+        // A retry loop handles short writes (the pipe may be smaller than
+        // the frame, so the producer blocks until ffmpeg drains it).
+        return writer.write_all(data).map(|()| len);
+    }
+
+    // `vmsplice` may write less than requested if the pipe is full (the kernel
+    // pipe buffer has a bounded capacity, default 64 KiB, grown via
+    // F_SETPIPE_SZ in `spawn_ffmpeg_with_memfd`). Retry until all bytes are
+    // gifted, blocking in between (the kernel blocks `vmsplice` on a full pipe,
+    // just like `write`). Each retry passes the remaining slice — but the
+    // pointer must stay page-aligned, so we advance in page multiples.
+    let mut off = 0usize;
+    while off < len {
+        let remaining = len - off;
+        let iov = libc::iovec {
+            iov_base: (ptr + off) as *mut libc::c_void,
+            iov_len: remaining,
+        };
+        let written = unsafe {
+            libc::vmsplice(
+                writer.as_raw_fd(),
+                &iov,
+                1,
+                libc::SPLICE_F_GIFT,
+            )
+        };
+        if written < 0 {
+            let err = std::io::Error::last_os_error();
+            // `EINVAL` from `vmsplice` typically means the kernel rejected the
+            // gift (e.g. the fd is not a pipe, or alignment is wrong despite
+            // our checks). Fall back to `write()` for the remainder so the
+            // frame is not lost. Use a `static` flag so we warn once per
+            // process, not once per frame.
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!("candy: vmsplice failed ({err}); falling back to write() for subsequent frames");
+            }
+            return writer.write_all(&data[off..]).map(|()| len);
+        }
+        off += written as usize;
+    }
+    Ok(len)
 }
 
 /// Read the last ~20 lines of ffmpeg's stderr log for error reporting. On

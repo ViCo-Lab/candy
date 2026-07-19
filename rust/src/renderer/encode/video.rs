@@ -34,6 +34,7 @@
 //! seen (the `move` offset is already baked into the pixels), then encode.
 
 use std::fs;
+#[cfg(not(target_os = "linux"))]
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -190,8 +191,37 @@ pub enum Container {
 
 /// Compose `frame` onto a `tw × th` opaque-white canvas, copying the source
 /// pixels to the top-left. Returns a fresh `RenderedFrame`.
+///
+/// On Linux the returned `rgba` buffer is **page-aligned and padded to a page
+/// multiple** so the caller can feed it to ffmpeg via `vmsplice(SPLICE_F_GIFT)`
+/// for true zero-copy (the buffer's physical pages are gifted to the kernel
+/// pipe buffer without a `write()`-style copy). The padding bytes (at most one
+/// page of zero-fill at the tail) are never read by ffmpeg: the rawvideo
+/// demuxer consumes exactly `tw*th*4` bytes per frame and ignores the rest of
+/// the pipe buffer until the next frame's worth of data arrives.
 fn compose(frame: &RenderedFrame, tw: usize, th: usize) -> RenderedFrame {
-    let mut rgba = vec![255u8; tw * th * 4];
+    let frame_bytes = tw * th * 4;
+    // On Linux, pad the buffer to a page multiple so `vmsplice_frame` can
+    // attempt a true zero-copy `vmsplice(SPLICE_F_GIFT)` gift of the buffer's
+    // pages to the kernel pipe. Whether the gift is actually taken depends on
+    // the base pointer being page-aligned: the global `Vec` allocator only
+    // guarantees 16-byte alignment, but for large allocations (≥ ~128 KiB on
+    // glibc) it delegates to `mmap`, which *does* return page-aligned
+    // pointers — so HD/4K frames (≥ ~1.85 MiB) typically get the zero-copy
+    // path for free. `vmsplice_frame` checks alignment at runtime and silently
+    // falls back to `write()` if it is not satisfied. ffmpeg's rawvideo
+    // demuxer reads exactly `tw*th*4` bytes per frame and ignores the tail
+    // padding.
+    #[cfg(target_os = "linux")]
+    let mut rgba: Vec<u8> = {
+        const PAGE: usize = 4096;
+        let padded = (frame_bytes + PAGE - 1) & !(PAGE - 1);
+        let mut v: Vec<u8> = Vec::with_capacity(padded);
+        v.resize(padded, 255);
+        v
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut rgba = vec![255u8; frame_bytes];
     // Clamp to the target canvas: a frame wider/taller than `tw`/`th` (e.g. an
     // object moved past the page edge, or a mismatched page size) must not
     // overrun `rgba`. The uniform canvas is the max page size, so clipping is
@@ -454,15 +484,28 @@ impl StreamingVideo {
     pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
         let composed = compose(frame, self.tw, self.th);
         if let Some((_, stdin, _, _)) = self.ffmpeg.as_mut() {
-            stdin
-                .write_all(&composed.rgba)
-                .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
-            // Periodic flush to prevent unbounded buffer growth while keeping
-            // write() syscall count low (1MB buffer batches ~120 frames at 1080p).
-            if self.frame_count % 16 == 0 {
+            // On Linux, `stdin` is the write end of a pipe whose read end feeds
+            // ffmpeg. Use `vmsplice(SPLICE_F_GIFT)` for true zero-copy when the
+            // RGBA buffer is page-aligned (the `compose()` helper pads it so);
+            // otherwise fall back to a plain `write()`. Either way the pipe's
+            // read() blocks ffmpeg until data is available — no premature EOF.
+            #[cfg(target_os = "linux")]
+            {
+                crate::renderer::encode::ffmpeg::vmsplice_frame(stdin, &composed.rgba)
+                    .map_err(|e| CandyError::Encode(format!("ffmpeg vmsplice/write: {e}")))?;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
                 stdin
-                    .flush()
-                    .map_err(|e| CandyError::Encode(format!("ffmpeg stdin flush: {e}")))?;
+                    .write_all(&composed.rgba)
+                    .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
+                // Periodic flush to prevent unbounded buffer growth while keeping
+                // write() syscall count low (1MB buffer batches ~120 frames at 1080p).
+                if self.frame_count % 16 == 0 {
+                    stdin
+                        .flush()
+                        .map_err(|e| CandyError::Encode(format!("ffmpeg stdin flush: {e}")))?;
+                }
             }
             self.frame_count += 1;
             return Ok(());
@@ -788,7 +831,10 @@ impl GifStream {
     /// Encode and write one composited frame.
     pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
         let composed = compose(frame, self.tw as usize, self.th as usize);
-        let mut rgba = composed.rgba;
+        // `compose` may page-pad the buffer for `vmsplice` on Linux, but the
+        // GIF encoder needs exactly `tw*th*4` bytes — slice down to the frame.
+        let frame_bytes = self.tw as usize * self.th as usize * 4;
+        let mut rgba = composed.rgba[..frame_bytes].to_vec();
         let mut f = gif::Frame::from_rgba_speed(self.tw, self.th, &mut rgba, 10);
         f.delay = self.delay_cs;
         self.encoder
