@@ -503,7 +503,7 @@ impl Renderer {
         if time_ms < p.start_ms || time_ms > p.end_ms {
             return None;
         }
-        let nat = self.nat.get(&p.target).cloned().unwrap_or((0.0, 0.0));
+        let nat = self.nat.get(&p.target).copied().unwrap_or((0.0, 0.0));
         let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
         let (sx, sy, scale, rot) = match states.get(&p.target) {
             Some(s) => (nat_cm.0 + s.x, nat_cm.1 + s.y, s.scale, s.rotation),
@@ -667,7 +667,7 @@ impl Renderer {
             // transform (natural position + animate offset + scale + rotation).
             let st = states.get(&pair.to);
             let (tx, ty, scale, rot) = if let Some(st) = st {
-                let nat = self.nat.get(&pair.to).cloned().unwrap_or((0.0, 0.0));
+                let nat = self.nat.get(&pair.to).copied().unwrap_or((0.0, 0.0));
                 let nat_cm = (nat.0 / super::PT_PER_CM, nat.1 / super::PT_PER_CM);
                 (
                     (nat_cm.0 + st.x) * super::PT_PER_CM,
@@ -676,7 +676,7 @@ impl Renderer {
                     st.rotation,
                 )
             } else {
-                let nat = self.nat.get(&pair.to).cloned().unwrap_or((0.0, 0.0));
+                let nat = self.nat.get(&pair.to).copied().unwrap_or((0.0, 0.0));
                 (nat.0, nat.1, 1.0, 0.0)
             };
             // Build a proper SVG <path> element from the interpolated ring.
