@@ -831,7 +831,11 @@ impl Scene {
 
     /// Total duration in milliseconds across all slides.
     pub fn total_ms(&self) -> u32 {
-        self.slides.iter().map(|s| s.duration_ms).sum()
+        self.slides
+            .iter()
+            .map(|s| s.start_ms.saturating_add(s.duration_ms))
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -1307,7 +1311,7 @@ mod tests {
                     }],
                 },
                 Slide {
-                    start_ms: 0,
+                    start_ms: 10000,
                     duration_ms: 5000,
                     actions: vec![Action::Scale {
                         target: Label("a".into()),

@@ -679,12 +679,16 @@ impl Renderer {
                 let nat = self.nat.get(&pair.to).cloned().unwrap_or((0.0, 0.0));
                 (nat.0, nat.1, 1.0, 0.0)
             };
-            let path = super::polygon_svg(&ring, &plan.fill, &plan.stroke);
-            // The morph polygon is always fully visible during the morph window.
-            // The crossfade is handled by the `from` object's FadeOut + ScaleBy
-            // actions, not by the morph polygon's opacity. Using the `to`
-            // object's state opacity would make the morph nearly invisible
-            // (the `to` object is Hidden at morph start and FadeIn's from 0).
+            // Build a proper SVG <path> element from the interpolated ring.
+            // Previously this called polygon_svg() which returns a Typst
+            // polygon(...) expression — invalid SVG that viewers ignore.
+            let path_d = crate::core::morph::ring_to_path_string(&ring);
+            let fill = plan.fill.clone().unwrap_or_else(|| "black".to_string());
+            let stroke_attr = match &plan.stroke {
+                Some(s) => format!(" stroke=\"{s}\" stroke-width=\"1\""),
+                None => String::new(),
+            };
+            let path = format!("<path d=\"{path_d}\" fill=\"{fill}\"{stroke_attr}/>");
             if rot.abs() < 0.01 {
                 out.push_str(&format!(
                     "<g transform=\"translate({tx:.4},{ty:.4}) scale({scale:.4})\">\n{path}\n</g>\n",
