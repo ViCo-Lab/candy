@@ -29,11 +29,30 @@ impl Renderer {
         all_frames: &[FrameData],
     ) -> Result<String, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
+        if time_ms >= 3000 && time_ms <= 3100 {
+            let ball_frames: Vec<_> = all_frames.iter().filter(|f| f.target.0 == "ball").collect();
+            let n = ball_frames.len();
+            let maxxy = ball_frames.iter().map(|f| (f.x, f.y)).fold((0.0f64,0.0f64), |a,(x,y)| (a.0.max(x), a.1.max(y)));
+            let tmin = ball_frames.iter().map(|f| f.time_ms).min().unwrap_or(0);
+            let tmax = ball_frames.iter().map(|f| f.time_ms).max().unwrap_or(0);
+            eprintln!("DBG allframes: ball entries={n} tmin={tmin} tmax={tmax} maxxy=({:.2},{:.2}) states_ball={:?}", maxxy.0, maxxy.1, states.get(&Label("ball".into())).map(|s| (s.x, s.y)));
+        }
         let active = if self.scene.scenes.is_empty() {
             0
         } else {
             self.scene.active_scene_at(time_ms)
         };
+        if (3000..=3100).contains(&time_ms) {
+            eprintln!(
+                "DBG scenes: {:?}",
+                self.scene
+                    .scenes
+                    .iter()
+                    .map(|s| (s.id, s.start_ms, s.end_ms, s.parent))
+                    .collect::<Vec<_>>()
+            );
+            eprintln!("DBG active={active}");
+        }
         let active_page = self.pages.active_page_of(active, time_ms);
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
@@ -53,6 +72,11 @@ impl Renderer {
             .or_else(|| doc.pages().first())
             .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let base = typst_svg::svg(page, &SvgOptions::default());
+        if (3000..=3100).contains(&time_ms) {
+            std::fs::write(format!("/tmp/base_dbg_{time_ms}.svg"), &base).ok();
+            eprintln!("DBG base: time={time_ms} active={active} pages={} has_ff4136={} has_ball_circle={}",
+                doc.pages().len(), base.contains("ff4136"), base.contains("circle") || base.contains("path"));
+        }
         // Canvas background color: honors the active scene's `bg` (inheriting
         // from a parent scene) and defaults to opaque white. Used as a fallback
         // in `compose_frame_svg` when `typst_svg` emits no recognizable page-fill
@@ -163,6 +187,10 @@ impl Renderer {
             }
         }
         out.push_str("</svg>\n");
+        if (3000..=3100).contains(&time_ms) {
+            std::fs::write(format!("/tmp/out_dbg_{time_ms}.svg"), &out).ok();
+            eprintln!("DBG out: time={time_ms} has_ff4136={}", out.contains("ff4136"));
+        }
         Ok(out)
     }
 

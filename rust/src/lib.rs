@@ -268,6 +268,13 @@ pub fn build_input_with_gpu(
         std::fs::create_dir_all(intermediate_dir)?;
         for (i, &t_ms) in sample_times.iter().enumerate() {
             let svg = renderer.render_frame_at(t_ms, &frames)?; // Step 5
+            if (3000..=3100).contains(&t_ms) {
+                std::fs::write(format!("/tmp/disk_dbg_{t_ms}.svg"), svg.as_bytes()).ok();
+                eprintln!(
+                    "DBG disk: i={i} t_ms={t_ms} has_ff4136={}",
+                    svg.contains("ff4136")
+                );
+            }
             std::fs::write(
                 intermediate_dir.join(format!("frame_{:016}.svg", i)),
                 svg.as_bytes(),
