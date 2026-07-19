@@ -153,7 +153,7 @@ impl Renderer {
         }
         // Rewrite the bare `#import "candy"` form to the `@preview/candy` package
         // form so the World can resolve it in-process (see `WorldState::candy_local`).
-        let _ = cur
+        cur = cur
             .replace("#import \"candy\":", "#import \"@preview/candy:0.1.0\":")
             .replace("#import \"candy\"", "#import \"@preview/candy:0.1.0\"");
         cur
