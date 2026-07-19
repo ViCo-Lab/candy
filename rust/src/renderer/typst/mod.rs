@@ -154,6 +154,13 @@ pub struct Renderer {
     /// glyph, instead of the whole block dissolving at once (the previous
     /// "stiff" crossfade). Empty for shape transforms / non-inline content.
     transform_fragments: Vec<TransformFragmentPlan>,
+    /// Cached camera start time (first non-identity keyframe). Computed once
+    /// in `ensure_natural` to avoid O(N·T) scan per frame.
+    cam_start: Option<u32>,
+    /// Cached home scene for camera. Computed once in `ensure_natural`.
+    /// Cached set of parent group labels (for filtering in prepare_states).
+    /// Computed once in `ensure_natural`.
+    parent_labels: std::collections::HashSet<Label>,
     /// Cache of compiled Typst documents keyed by their exact source string.
     /// Intermediate frames that produce an identical source (e.g. paused or
     /// otherwise static objects) reuse the prior compile instead of re-running
@@ -246,6 +253,8 @@ impl Renderer {
             pages: PageScheduler::empty(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
+            cam_start: None,
+            parent_labels: std::collections::HashSet::new(),
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
             param_source,

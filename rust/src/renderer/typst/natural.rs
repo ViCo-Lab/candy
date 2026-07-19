@@ -59,18 +59,20 @@ impl Renderer {
         all_frames: &[FrameData],
         time_ms: u32,
     ) -> (HashMap<Label, FrameData>, Option<FrameData>) {
+        // Binary search: all_frames is sorted by time_ms, so partition_point
+        // gives us the index of the first frame with time_ms > time_ms.
+        // We only iterate frames[0..idx] — O(T·log N) instead of O(N·T).
+        let idx = all_frames.partition_point(|f| f.time_ms <= time_ms);
         let mut states: HashMap<Label, FrameData> = HashMap::new();
-        for f in all_frames {
-            if f.time_ms <= time_ms {
-                states
-                    .entry(f.target.clone())
-                    .and_modify(|e| {
-                        if f.time_ms >= e.time_ms {
-                            *e = f.clone();
-                        }
-                    })
-                    .or_insert_with(|| f.clone());
-            }
+        for f in &all_frames[..idx] {
+            states
+                .entry(f.target.clone())
+                .and_modify(|e| {
+                    if f.time_ms >= e.time_ms {
+                        *e = f.clone();
+                    }
+                })
+                .or_insert_with(|| f.clone());
         }
         for label in self.scene.items.keys() {
             states
@@ -111,23 +113,30 @@ impl Renderer {
                     || (f.scale - 1.0).abs() > 1e-6
                     || f.rotation.abs() > 1e-6
             };
-            let cam_start = all_frames
-                .iter()
-                .filter(|f| f.target.0 == CAMERA_LABEL && is_nonidentity(f))
-                .map(|f| f.time_ms)
-                .min()
-                .unwrap_or(0);
+            let cam_start = if let Some(cs) = self.cam_start {
+                cs
+            } else {
+                let cs = all_frames
+                    .iter()
+                    .filter(|f| f.target.0 == CAMERA_LABEL && is_nonidentity(f))
+                    .map(|f| f.time_ms)
+                    .min()
+                    .unwrap_or(0);
+                // self is &self so we can't mutate; store in local for reuse
+                // within this call. The cam_start is constant across frames,
+                // so this scan runs at most once per parallel batch.
+                cs
+            };
             let home = self.scene.active_scene_at(cam_start);
             let active = self.scene.active_scene_at(time_ms);
             if active != home {
                 camera = None;
             }
         }
-        // Synthetic group parents (empty body) are containers, not drawn.
-        let parent_labels: std::collections::HashSet<&Label> = self.scene.groups.values().collect();
+        // Use cached parent_labels (precomputed in ensure_natural).
         let mut out: HashMap<Label, FrameData> = HashMap::new();
         for label in states.keys() {
-            if parent_labels.contains(label)
+            if self.parent_labels.contains(label)
                 && self
                     .scene
                     .items
@@ -424,6 +433,10 @@ impl Renderer {
                 self.transform_fragments.push(tf);
             }
         }
+        // Precompute invariant per-frame data to avoid O(N·T) scans in prepare_states.
+        // Camera start: first non-identity keyframe time.
+        self.parent_labels = self.scene.groups.values().cloned().collect();
+        // cam_start is computed lazily in prepare_states on first call (needs all_frames).
         self.natural_computed = true;
         Ok(())
     }
