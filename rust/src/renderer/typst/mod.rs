@@ -685,8 +685,7 @@ fn subtitle_stays_in_viewport() {
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    let svg = r.render_frame_at(50, &[]).unwrap();
-    let s = String::from_utf8(svg).unwrap();
+    let s = r.render_frame_at(50, &[]).unwrap();
     // Find the maximum y in any translate() transform; it must stay within the
     // page height (captions anchored by edge, not their top-left).
     let mut max_y = 0.0f64;
@@ -1076,7 +1075,7 @@ fn transform_target_renders_after_window() {
     r.ensure_natural_public().unwrap();
     // Mid-window: fragments present.
     let mid = 30u32;
-    let svg_mid = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    let svg_mid = r.render_frame_at(mid, &frames).unwrap();
     assert!(svg_mid.contains("<svg"), "mid-window svg empty");
     // After window (past the transform's end_ms, still inside the document): the
     // target shows its NEW content — the whole-document render must therefore
@@ -1086,9 +1085,9 @@ fn transform_target_renders_after_window() {
     // `$a + b + d = c$` has 6. A snap-back to the original would leave
     // the two counts equal (regression for bug 1).
     let before = 0u32;
-    let svg_before = String::from_utf8(r.render_frame_at(before, &frames).unwrap()).unwrap();
+    let svg_before = r.render_frame_at(before, &frames).unwrap();
     let after = 90u32;
-    let svg_after = String::from_utf8(r.render_frame_at(after, &frames).unwrap()).unwrap();
+    let svg_after = r.render_frame_at(after, &frames).unwrap();
     // Collect the SET of glyph symbols each frame references (order/content
     // independent of position). The original `$a + b = c$` is a strict
     // subset of the new `$a + b + d = c$` (which adds the `d`
@@ -1188,13 +1187,13 @@ fn chained_transform_persists_intermediate() {
             })
             .collect()
     };
-    let before = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    let before = r.render_frame_at(0, &frames).unwrap();
     let before_set = set_of(&before);
     // During the pause after the FIRST transform: base must show the
     // intermediate `$a + b + d = c$` — a strict superset of the original
     // (adds the `d` glyph, and a second `+`).
     let mid_pause = 90u32;
-    let svg = String::from_utf8(r.render_frame_at(mid_pause, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(mid_pause, &frames).unwrap();
     let mid_set = set_of(&svg);
     assert!(
         before_set.is_subset(&mid_set) && before_set != mid_set,
@@ -1205,7 +1204,7 @@ fn chained_transform_persists_intermediate() {
     // After BOTH transforms: base must show the final formula `$a + b + d + e = c$`
     // — a strict superset of the intermediate (adds the `e` glyph).
     let after_all = 210u32;
-    let svg2 = String::from_utf8(r.render_frame_at(after_all, &frames).unwrap()).unwrap();
+    let svg2 = r.render_frame_at(after_all, &frames).unwrap();
     let after_set = set_of(&svg2);
     assert!(
         mid_set.is_subset(&after_set) && mid_set != after_set,
@@ -1239,7 +1238,7 @@ fn camera_background_stays_fixed_outside_camera_group() {
     }];
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
-    let svg = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(0, &frames).unwrap();
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={}",
         svg.len(),
@@ -1374,7 +1373,7 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
     r.ensure_natural_public().unwrap();
     // Mid window: the transform is active, so fragments must be drawn.
     let mid = 30u32;
-    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(mid, &frames).unwrap();
     // The formula is embedded once per plan as a `<g id="tf_eq_0_old">` /
     // `<g id="tf_eq_0_new">` inside `<defs>`.
     assert!(
@@ -1445,7 +1444,7 @@ fn transform_composes_with_concurrent_animate() {
     // part-way through, so every fragment group must carry both transforms
     // (the transform inherits the target's live scale/rotation, not just x/y).
     let mid = 30u32;
-    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(mid, &frames).unwrap();
     let groups = svg.matches("<g opacity=").count();
     assert!(groups > 0, "expected fragment groups in overlay");
     let scaled = svg.matches("scale(").count();
@@ -1492,7 +1491,7 @@ fn transform_translation_animate_shifts_all_fragments() {
         );
         let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
         r.ensure_natural_public().unwrap();
-        let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+        let svg = r.render_frame_at(mid, &frames).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Each fragment group is `<g opacity="…" transform="translate(px, py) …">`.
         // (Camera/object groups either lack `opacity=` or lack a transform on
@@ -1605,7 +1604,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
     // Midpoint of the FIRST transform window: animate 0-60, first transform 61-120,
     // second transform 121-180. Mid of first window = 90.
     let mid = 90u32;
-    let svg = String::from_utf8(r.render_frame_at(mid, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(mid, &frames).unwrap();
     std::fs::remove_file(&tmp).ok();
 
     // Fragment groups are single-line `<g opacity="..." transform="translate(...) ...">`.
@@ -1700,7 +1699,7 @@ fn overflowing_scene_plays_pages_in_sequence() {
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
-    let svg = String::from_utf8(r.render_frame_at(0, &frames).unwrap()).unwrap();
+    let svg = r.render_frame_at(0, &frames).unwrap();
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={}",
         svg.len(),
@@ -1754,7 +1753,7 @@ fn overflowing_scene_plays_pages_in_sequence() {
     // Sequential playback: a frame deep into the playback (well past the first
     // page) must also show only the current page's mobjects — never all six
     // stacked on one canvas, and never blank.
-    let svg_later = String::from_utf8(r.render_frame_at(4500, &frames).unwrap()).unwrap();
+    let svg_later = r.render_frame_at(4500, &frames).unwrap();
     let drawn_later = svg_later.matches("fill=\"none\"").count();
     assert!(
         drawn_later > 0 && drawn_later < 6,

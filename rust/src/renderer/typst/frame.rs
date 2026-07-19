@@ -27,7 +27,7 @@ impl Renderer {
         &self,
         time_ms: u32,
         all_frames: &[FrameData],
-    ) -> Result<Vec<u8>, CandyError> {
+    ) -> Result<String, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
         let active = if self.scene.scenes.is_empty() {
             0
@@ -68,7 +68,7 @@ impl Renderer {
         // overlay is the "new" SVG path — the formula is embedded once in `<defs>`
         // and reused via `<use>`, so it is never copied many times.
         let out = self.compose_frame_svg(&base, &states, time_ms, &camera, pw, ph, &bg_hex)?;
-        Ok(out.into_bytes())
+        Ok(out)
     }
 
     /// Compose the full draft SVG for one frame: the base document (typst_svg
@@ -206,7 +206,7 @@ impl Renderer {
         &mut self,
         time_ms: u32,
         all_frames: &[FrameData],
-    ) -> Result<Vec<u8>, CandyError> {
+    ) -> Result<String, CandyError> {
         self.ensure_natural()?;
         self.render_frame_at_par(time_ms, all_frames)
     }
@@ -226,11 +226,11 @@ impl Renderer {
         &self,
         time_ms: u32,
         all_frames: &[FrameData],
-    ) -> Result<Vec<u8>, CandyError> {
+    ) -> Result<String, CandyError> {
         self.render_frame_at_whole_doc(time_ms, all_frames)
     }
     /// Render a single target's frame as an isolated SVG (spec §4.4 style).
-    pub fn render_frame(&mut self, frame: &FrameData) -> Result<Vec<u8>, CandyError> {
+    pub fn render_frame(&mut self, frame: &FrameData) -> Result<String, CandyError> {
         if !self.scene.items.contains_key(&frame.target)
             && !self.scene.content_timeline.contains_key(&frame.target)
         {
@@ -247,7 +247,7 @@ impl Renderer {
             .first()
             .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let svg = typst_svg::svg(page, &SvgOptions::default());
-        Ok(svg.into_bytes())
+        Ok(svg)
     }
     /// Build the isolated per-object source for a single target.
     fn object_source(&self, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {

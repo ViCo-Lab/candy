@@ -268,7 +268,10 @@ pub fn build_input_with_gpu(
         std::fs::create_dir_all(intermediate_dir)?;
         for (i, &t_ms) in sample_times.iter().enumerate() {
             let svg = renderer.render_frame_at(t_ms, &frames)?; // Step 5
-            std::fs::write(intermediate_dir.join(format!("frame_{:016}.svg", i)), svg)?;
+            std::fs::write(
+                intermediate_dir.join(format!("frame_{:016}.svg", i)),
+                svg.as_bytes(),
+            )?;
         }
         return Ok(());
     }
@@ -706,9 +709,7 @@ fn stream_encode_cpu(
     // single source of truth — the same SVG the draft path writes to `.candy/`.
     let render = |t: u32| -> Result<RenderedFrame, CandyError> {
         let svg = renderer.render_frame_at_par(t, frames)?;
-        let svg_str =
-            std::str::from_utf8(&svg).map_err(|e| CandyError::Encode(format!("svg utf8: {e}")))?;
-        crate::renderer::raster::cpu::rasterize_svg(svg_str, tw as u32, th as u32)
+        crate::renderer::raster::cpu::rasterize_svg(&svg, tw as u32, th as u32)
     };
     let run_windows = || {
         for (wi, chunk) in sample_times.chunks(window).enumerate() {
