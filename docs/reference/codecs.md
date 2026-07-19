@@ -49,10 +49,30 @@ If ffmpeg is not found, Candy falls back to the self-contained codecs or returns
 
 ## The ffmpeg path
 
-The ffmpeg path pipes raw RGBA frames to ffmpeg's stdin and writes the muxed container to a
-unique temp file (ffmpeg muxers need a seekable output), then reads the bytes back. Hardware
-encoders (VAAPI / VideoToolbox / QSV) upload the RGBA frames to a `nv12` hardware surface
-with codec-appropriate rate control.
+The ffmpeg path feeds raw RGBA frames to ffmpeg and writes the muxed container to a
+seekable sink (ffmpeg muxers need a seekable output for the MP4 `faststart` moov
+rewrite), then reads the bytes back. Hardware encoders (VAAPI / VideoToolbox / QSV)
+upload the RGBA frames to a `nv12` hardware surface with codec-appropriate rate
+control.
+
+**Frame input transport** (platform-dependent):
+
+- **Linux**: a `pipe(2)` whose read end is handed to ffmpeg via
+  `-i /proc/self/fd/N`. The pipe capacity is grown to ≥ one full frame via
+  `fcntl(F_SETPIPE_SZ)` so a single frame always fits. Each frame's RGBA
+  buffer is fed to the pipe via `vmsplice(2)` with `SPLICE_F_GIFT` for true
+  zero-copy (the buffer's physical pages are gifted to the kernel pipe
+  buffer without a `write()`-style user→kernel copy). A pipe's `read()`
+  blocks until data is available or the write end is closed — this is the
+  streaming contract ffmpeg expects and prevents the premature-EOF race
+  that a `memfd`-as-file input would have.
+- **Other platforms**: ffmpeg's stdin is a regular OS pipe wrapped in a 1MB
+  `BufWriter` that batches ~120 frames per `write()` syscall at 1080p RGBA.
+
+**Mux output sink** (always seekable): on Linux an anonymous `memfd`
+(tmpfs-resident, seekable, never touches disk); elsewhere a unique temp file.
+ffmpeg writes the whole container to this sink and seeks back for the
+`faststart` moov rewrite, then Candy reads the bytes back.
 
 ```sh
 # Software H.264 via system ffmpeg + libx264

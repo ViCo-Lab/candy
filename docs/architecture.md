@@ -84,9 +84,35 @@ These are `#[cfg(target_os = "linux")]` gated — they only appear in
 `Pixmap::take()` consumes the tiny_skia pixmap's inner Vec instead of
 cloning, saving one full-frame memcpy per rasterized frame (~8MB at 1080p).
 
-### BufWriter on ffmpeg stdin
-1MB BufWriter batches ~120 frames per write() syscall (at 1080p RGBA),
-reducing syscall count by ~125x. Flushes every 16 frames.
+### Zero-copy frame feed to ffmpeg (Linux)
+On Linux the ffmpeg frame input is a **pipe** (not a bounded OS pipe — the
+pipe capacity is grown to ≥ one full frame via `fcntl(F_SETPIPE_SZ)` so a
+single frame always fits). Each frame's RGBA buffer is fed to the pipe via
+`vmsplice(2)` with `SPLICE_F_GIFT`, which transfers the buffer's physical
+pages to the kernel pipe buffer **without a `write()`-style user→kernel
+copy** — true zero-copy on the producer side. The buffer is padded to a
+page multiple (zero-filled tail that ffmpeg never reads) so the `vmsplice`
+alignment contract holds; large allocations (≥ ~128 KiB) go through glibc's
+`mmap` path, which returns page-aligned pointers for free, so HD/4K frames
+take the zero-copy path automatically. Small frames fall back to `write()`
+silently (still correct, one extra copy).
+
+The pipe's read end blocks ffmpeg's `read()` until data is available or the
+write end is closed — this is the streaming contract ffmpeg expects and
+prevents the premature-EOF race that a `memfd`-as-file input would have
+(ffmpeg reading a regular file sees EOF the instant it catches up to the
+file size, finalising the container with only a handful of frames encoded).
+
+The mux **output** sink and the stderr redirection still use `memfd`s —
+ffmpeg's MP4 muxer needs a seekable output for the `faststart` moov rewrite,
+and the stderr sink needs an unbounded buffer so a long encode cannot
+deadlock on a full stderr pipe. Both are write-only-from-ffmpeg so the EOF
+race does not apply.
+
+### BufWriter on ffmpeg stdin (non-Linux)
+On non-Linux platforms the ffmpeg frame input is a regular stdin pipe
+wrapped in a 1MB `BufWriter`, batching ~120 frames per `write()` syscall at
+1080p RGBA and reducing syscall count by ~125x. Flushes every 16 frames.
 
 ### x86-64-v3 ISA
 Native x86_64 builds enable AVX2 + BMI1/2 + FMA + MOVBE + F16C via
@@ -100,7 +126,7 @@ total frame count. The reorder buffer is window-bounded to prevent O(N)
 memory growth.
 
 ### Typst cache reuse
-- `WorldState::detached_cached()`: LRU cache of parsed Typst sources (1024 cap)
+- `WorldState::main_source()`: LRU cache of parsed Typst sources (1024 cap)
 - `WorldState::library_with_inputs()`: memoized Library per sys.inputs set (16 cap)
 - comemo memoization: frames sharing the same inputs reuse compiled output
 

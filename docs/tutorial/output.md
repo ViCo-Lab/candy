@@ -106,12 +106,15 @@ cargo run -- build anim.tyx --codec h265-vaapi
 cargo run -- build anim.tyx --codec h264-videotoolbox
 ```
 
-The ffmpeg path pipes raw RGBA frames to ffmpeg's stdin and writes the muxed container to
-a unique temp file (ffmpeg muxers require a seekable output), then reads the bytes back.
-Hardware encoders (VAAPI / VideoToolbox / QSV) upload the RGBA frames to a hardware
-surface (`format=nv12,hwupload`) and use codec-appropriate rate control. If ffmpeg is not
-found, Candy falls back to the self-contained codecs (av1/h264) or returns E007
-(`h265`/`x264`/`x265` without ffmpeg).
+The ffmpeg path feeds raw RGBA frames to ffmpeg and writes the muxed container to a
+seekable sink (on Linux an anonymous `memfd` in tmpfs; elsewhere a unique temp file —
+ffmpeg muxers require a seekable output for the MP4 `faststart` moov rewrite), then reads
+the bytes back. On Linux the frame input is a `pipe(2)` (grown to ≥ one frame via
+`F_SETPIPE_SZ`) fed via `vmsplice(SPLICE_F_GIFT)` for zero-copy; on other platforms it is
+ffmpeg's stdin wrapped in a 1MB `BufWriter`. Hardware encoders (VAAPI / VideoToolbox /
+QSV) upload the RGBA frames to a hardware surface (`format=nv12,hwupload`) and use
+codec-appropriate rate control. If ffmpeg is not found, Candy falls back to the
+self-contained codecs (av1/h264) or returns E007 (`h265`/`x264`/`x265` without ffmpeg).
 
 > **Encoding fallback.** `rav1e` 0.8.1 can panic during inter-prediction on certain frame
 > geometries. Candy first tries full-quality AV1, and on that panic automatically retries
