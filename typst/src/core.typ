@@ -64,6 +64,11 @@
   }
   _assert_length(width, "scene width")
   _assert_length(height, "scene height")
+  // Under candy's whole-document renderer the gating (which scene is active
+  // each frame) is injected *around* this call by the Rust toolchain — this
+  // function stays a clean, standard-Typst `page()` so it renders the first
+  // frame correctly under a plain `typst compile` too. See
+  // `rust/src/renderer/typst/source.rs` for the gating wrapper.
   page(width: width, height: height, margin: 0pt, fill: bg, body)
 }
 

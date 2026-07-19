@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ast::SceneInfo;
 
 impl Renderer {
     /// Build the stable, *parameterized* whole-document source from the parsed
@@ -11,7 +12,10 @@ impl Renderer {
     ///
     /// * Every animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
     ///   so its transform (dx/dy/scale/rotation, opacity) is read from
-    ///   `sys.inputs`.
+    ///   `sys.inputs`. Each mobject is pinned at the page origin with
+    ///   `place(top + left)` and then shifted by the per-frame `dx`/`dy`, so all
+    ///   mobjects share a single reference point (the origin) regardless of how
+    ///   many there are — they never overflow the canvas into extra pages.
     /// * `ecval("name")` counter reads inside mobject bodies are rewritten to
     ///   `sys.inputs.at("candy:counter:name", default: 0)` (see [`ecval_to_inputs`])
     ///   so the live counter value is also an input.
@@ -22,9 +26,17 @@ impl Renderer {
     /// * Every `#subtitle(...)` call is blanked to `#none` so the caption is NOT
     ///   rendered as part of the base document (it is drawn as a separate,
     ///   camera-independent overlay — leaving it in the base double-renders it).
-    /// * Every `#scene` call is gated by `sys.inputs.at("candy:active_scene")` so
-    ///   only the active scene emits a page — keeping every Typst invocation to a
-    ///   single page and the `body_cache` hit rate high.
+    /// * Every `#scene` call is wrapped by **Rust-generated** gating source (no
+    ///   weird parameters are added to the Typst `scene` function): a code block
+    ///   that reads `sys.inputs.at("candy:active_scene")` and, using the scene's
+    ///   (Rust-known) id and descendant set as literal values, decides whether to
+    ///   render the scene's `page()` (active == 0 or == its id), emit just the
+    ///   scene *body* with **no** `page()` (so a nested descendant scene inside
+    ///   it can render — a `page()` inside another `page()` is illegal in Typst),
+    ///   or emit `none`. This is what makes *nested* scenes work while still
+    ///   emitting exactly one page per frame and keeping the `body_cache` hit
+    ///   rate high. Scenes are processed innermost-first so a parent's gated body
+    ///   already contains its (wrapped) child scene.
     ///
     /// Edits are applied in **character space** (not raw bytes) so a cumulative
     /// shift can never land inside a multi-byte character — this is what made
@@ -66,26 +78,45 @@ impl Renderer {
             let ce = src[..be].chars().count();
             edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, &inner)));
         }
-        // 2. Gate each `#scene` call so only the active scene emits a page.
-        //    Insert the opening guard *before* the call and the closing brace
-        //    *after* it; insertions (`start == end`) splice into `out`. The
-        //    `scene_call` range excludes the leading `#` (markup prefix), so
-        //    prepending `open` (which starts with `{`, not `#`) yields
-        //    `#{ if <cond> { scene(…) } }`: the original `#` becomes the
-        //    code-block entry `#{`, and `scene(…)` is a *code-mode* call (Typst
-        //    calls functions without `#` inside code). The scene body `[…]` is
-        //    markup, so the `#mobject` calls inside it stay valid. A false
-        //    condition yields `none` (no page), so the compile emits exactly one
-        //    page (the active scene).
+        // 2. Inject per-scene identity into each `#scene(...)` call so the
+        //    `scene` Typst function can self-gate against the active scene (see
+        //    `typst/src/core.typ`). We insert `__sid: <id>, __desc: (<desc…>), `
+        //    right after the call's opening `(` — an *insertion* (`start == end`)
+        //    so it stays compatible with the mobject / child-scene edits below
+        //    (those land inside the body, at higher positions, and are applied
+        //    first by the right-to-left splice order). The `scene` function then
+        //    opens its `page()` only when active, returns its `body` (no page)
+        //    when a descendant is active, and `none` otherwise — which is exactly
+        //    what makes nested scenes render a single page per frame.
+        let descendants = Self::build_descendants(&scene.scenes);
         for (&sid, &(cs_b, ce_b)) in &scene.artifacts.scene_call {
-            let cs = src[..cs_b].chars().count();
-            let ce = src[..ce_b].chars().count();
-            let open = format!(
-                "{{ if sys.inputs.at(\"candy:active_scene\", default: 0) == {} {{ ",
-                sid
-            );
-            edits.push((cs, cs, open));
-            edits.push((ce, ce, " } }".to_string()));
+            let call_text = &src[cs_b..ce_b];
+            // Insert right after the opening `(` of `scene(…)`.
+            let Some(rel) = call_text.find('(') else {
+                continue;
+            };
+            let paren_byte = cs_b + rel;
+            // Insert *after* the `(`, i.e. just inside the call's argument list.
+            let paren_char = src[..paren_byte].chars().count() + 1;
+            let desc = descendants
+                .get(&sid)
+                .map(|v| {
+                    v.iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            // `__desc` must be a Typst *array* (so `__active in __desc` is valid).
+            // A single descendant must be written `(2,)` (not `(2)`, which Typst
+            // parses as the bare integer `2`), and an empty set as `()`.
+            let desc_arg = if desc.is_empty() {
+                "()".to_string()
+            } else {
+                format!("({desc},)")
+            };
+            let inject = format!("__sid: {sid}, __desc: {desc_arg}, ");
+            edits.push((paren_char, paren_char, inject));
         }
         // 3. Blank each `#subtitle(...)` call out of the base document (it is
         //    drawn as a separate, camera-independent overlay). The `subtitle_call`
@@ -239,7 +270,7 @@ impl Renderer {
     /// code-mode block.
     fn wrap_mobject_inputs(label: &str, inner: &str) -> String {
         format!(
-            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__b) }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
+            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm, scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%, rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg, __b))) }} }}",
             inner = inner,
             label = label,
         )
@@ -285,6 +316,35 @@ impl Renderer {
         Some(s)
     }
 
+    /// Build the set of descendant scene ids for every scene, from the scene
+    /// tree (`SceneInfo.parent` links). Used to inject `__desc` into each
+    /// `#scene` call so nested scenes self-gate correctly: a parent scene must
+    /// stay present (its body evaluated) when a descendant is the active scene,
+    /// but must not open a competing `page()`.
+    fn build_descendants(scenes: &[SceneInfo]) -> HashMap<usize, Vec<usize>> {
+        let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+        for s in scenes {
+            if let Some(p) = s.parent {
+                children.entry(p).or_default().push(s.id);
+            }
+        }
+        let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+        for s in scenes {
+            let mut stack = children.get(&s.id).cloned().unwrap_or_default();
+            let mut acc = Vec::new();
+            while let Some(id) = stack.pop() {
+                acc.push(id);
+                if let Some(c) = children.get(&id) {
+                    stack.extend(c.iter().copied());
+                }
+            }
+            if !acc.is_empty() {
+                out.insert(s.id, acc);
+            }
+        }
+        out
+    }
+
     /// Build the per-frame `sys.inputs` dictionary for the whole-document path.
     ///
     /// `hide_fading` controls whether opacity < 1 objects get a `…:hide` flag
@@ -305,6 +365,15 @@ impl Renderer {
         for (label, st) in states {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
             if owner != active {
+                // A mobject owned by a non-active scene (e.g. a parent scene
+                // whose child is currently active) must be hidden so the active
+                // scene visually replaces it ("parent auto-hide"). We emit
+                // `hide` (resolved to `none` by `wrap_mobject_inputs`) rather
+                // than skipping the input entirely, because the mobject's body
+                // is still reached when an ancestor scene is rendered — leaving
+                // it at its default transform would show it on top of the
+                // active scene.
+                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
                 continue;
             }
             if let Some(p) = self.pages.page_of(label) {
@@ -316,7 +385,7 @@ impl Renderer {
             if self.transform_hidden(label, time_ms) {
                 // The target/old mobjects are replaced by the interpolated
                 // per-glyph fragments, so hide them in the base document.
-                inputs.insert(format!("candy:{l}:hide").into(), Value::Bool(true));
+                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
                 continue;
             }
             inputs.insert(format!("candy:{l}:dx").into(), Value::Float(st.x));
@@ -327,7 +396,7 @@ impl Renderer {
             );
             inputs.insert(format!("candy:{l}:r").into(), Value::Float(st.rotation));
             if hide_fading && st.opacity < 1.0 - 1e-4 {
-                inputs.insert(format!("candy:{l}:hide").into(), Value::Bool(true));
+                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
             }
         }
         // Easing-counter values: each declared counter's live value at this

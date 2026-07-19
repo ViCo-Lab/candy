@@ -1,0 +1,276 @@
+// Candy — ultimate showcase reel.
+//
+// A long, cinematic tour that exercises essentially every Candy directive in
+// one continuous timeline. Each scene's subtitle names the directives used in
+// that scene, so the reel doubles as a live API reference.
+//
+// Run:
+//   candy build examples/showcase.tyx
+//   candy build examples/showcase.tyx --format mp4 --codec h264   (with audio)
+//
+// Directives demonstrated across the reel:
+//   scene · scene-switch · transition · mobject · animate · appear · disappear
+//   pause · play · audio · video · subtitle · save-state · restore · indicate
+//   flash · wiggle · set-color · blink · spiral-in · focus-on · fade-transform
+//   move-along-path · zoom-to · track · camera · group · reveal · typewriter
+//   morph · transform · ecnew · ecval · ecpause · ecresume · ecdestroy
+#import "@preview/candy:0.1.0": *
+#scene(name: "intro", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+  // Title card: spiral in from a scaled / rotated / invisible state.
+  #mobject("title", text(34pt, weight: "bold", fill: rgb("#7fe3ff"))[Candy — directive showcase])
+  #spiral-in("title", scale: 2.2, rotate: 360deg, duration: 900, easing: "cubic-out")
+  #subtitle([scene · intro — scene · subtitle · spiral-in · pause], position: "bottom")
+  #pause(duration: 1400)
+
+  // A gentle drift of the title before the next scene.
+  #animate("title", to: (4cm, 3.5cm), duration: 800, easing: "smooth")
+  #pause(duration: 600)
+]
+
+#scene(name: "motion", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+  #subtitle(
+    [scene · motion — mobject · animate: to / dx·dy / scale·scale-by / rotate·rotate-by / opacity · easing · timing · delay],
+    position: "bottom",
+  )
+
+  // Three shapes, each snapped to a starting slot (duration: 1 == instant).
+  #mobject("a", circle(radius: 0.9cm, fill: rgb("#7fe3ff")))
+  #mobject("b", rect(width: 1.8cm, height: 1.8cm, fill: rgb("#ffd166")))
+  #mobject("c", polygon((0cm, 0.9cm), (0.9cm, -0.6cm), (-0.9cm, -0.6cm), fill: rgb("#ef476f")))
+  #animate("a", to: (3cm, 4.5cm), duration: 1)
+  #animate("b", to: (8cm, 4.5cm), duration: 1)
+  #animate("c", to: (13cm, 4.5cm), duration: 1)
+
+  // Absolute move + scale + rotate with different easings.
+  #animate("a", to: (8cm, 4.5cm), duration: 800, easing: "linear")
+  #animate("b", scale: 1.5, duration: 600, easing: "smooth")
+  #animate("c", rotate: 90deg, duration: 600, easing: "cubic-in-out")
+
+  // Relative moves (dx/dy) and relative scale/rotate (scale-by / rotate-by).
+  #animate("a", dx: 2cm, dy: -1.5cm, duration: 700, easing: "sin")
+  #animate("b", scale-by: 1.3, duration: 500, easing: "there-and-back")
+  #animate("c", rotate-by: -45deg, duration: 500, easing: "wiggle")
+
+  // Opacity fade, then a parallel restore + a delayed restart.
+  #animate("a", opacity: 40%, duration: 500, easing: "smooth")
+  #animate("b", scale: 1.0, duration: 500, timing: "with", easing: "smooth")
+  #animate("c", rotate: 0deg, duration: 500, timing: "with", easing: "smooth")
+  #animate("a", to: (3cm, 4.5cm), duration: 700, timing: "after", delay: 250, easing: "cubic-out")
+  #pause(duration: 700)
+]
+
+#scene(name: "attention", width: 16cm, height: 9cm, bg: rgb("#102a2b"))[
+  #subtitle([scene · attention — indicate · flash · wiggle · focus-on · blink], position: "bottom")
+
+  #mobject("x", circle(radius: 1.4cm, fill: rgb("#06d6a0")))
+  #animate("x", to: (8cm, 4.5cm), duration: 1)
+
+  // Brief "look here" pulse.
+  #indicate("x", factor: 1.4, dx: 0cm, dy: 0cm, duration: 500, easing: "smooth")
+  #pause(duration: 300)
+
+  // Flash: scale up + fade, then snap back.
+  #flash("x", factor: 2.0, duration: 300, easing: "smooth")
+  #pause(duration: 300)
+
+  // Wiggle: oscillate rotation.
+  #wiggle("x", degrees: 20deg, duration: 600, easing: "wiggle")
+  #pause(duration: 300)
+
+  // Focus-on: shrink + dim to spotlight.
+  #focus-on("x", factor: 0.6, duration: 400, easing: "smooth")
+  #pause(duration: 300)
+
+  // Blink: alternate opacity a few times.
+  #blink("x", blinks: 3, duration: 900, easing: "smooth")
+  #pause(duration: 400)
+]
+
+#scene(name: "state", width: 16cm, height: 9cm, bg: rgb("#1a1230"))[
+  #subtitle([scene · state — save-state · restore · transform · morph · fade-transform], position: "bottom")
+
+  #mobject("box", rect(width: 1.8cm, height: 1.8cm, fill: rgb("#ffd166")))
+  #mobject("ball", circle(radius: 0.9cm, fill: rgb("#7fe3ff")))
+  #animate("box", to: (4cm, 4.5cm), duration: 1)
+  #animate("ball", to: (8cm, 4.5cm), duration: 1)
+
+  // Snapshot, move far, then restore to the snapshot.
+  #save-state("box", slot: "home")
+  #animate("box", to: (11cm, 4.5cm), scale: 1.6, duration: 700, easing: "smooth")
+  #pause(duration: 400)
+  #restore("box", slot: "home", duration: 600, easing: "smooth")
+
+  // Transform the box's content into a formula (label keeps the new body).
+  #transform("box", to: [$a^2 + b^2 = c^2$], duration: 1000, easing: "smooth")
+  #pause(duration: 500)
+
+  // Morph one shape into another (crossfade + scale).
+  #mobject("shp1", circle(radius: 1.0cm, fill: rgb("#ef476f")))
+  #mobject("shp2", rect(width: 2.0cm, height: 2.0cm, fill: rgb("#06d6a0")))
+  #animate("shp1", to: (4cm, 2.0cm), duration: 1)
+  #animate("shp2", to: (12cm, 2.0cm), duration: 1)
+  #morph("shp1", "shp2", duration: 1000, easing: "smooth")
+  #pause(duration: 400)
+
+  // Fade-transform: crossfade two distinct mobjects.
+  #mobject("fa", square(size: 1.4cm, fill: rgb("#ffd166")))
+  #mobject("fb", circle(radius: 0.9cm, fill: rgb("#7fe3ff")))
+  #animate("fa", to: (4cm, 6.8cm), duration: 1)
+  #animate("fb", to: (12cm, 6.8cm), duration: 1)
+  #fade-transform("fa", "fb", duration: 800, easing: "smooth")
+  #pause(duration: 500)
+]
+
+#scene(name: "camera", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+  #subtitle([scene · camera — move-along-path · camera · zoom-to · track], position: "bottom")
+
+  // A star that flies a bezier path, oriented to its travel direction.
+  #mobject("comet", polygon(
+    (0cm, -1cm),
+    (0.3cm, -0.3cm),
+    (1cm, -0.3cm),
+    (0.5cm, 0.2cm),
+    (0.7cm, 1cm),
+    (0cm, 0.5cm),
+    (-0.7cm, 1cm),
+    (-0.5cm, 0.2cm),
+    (-1cm, -0.3cm),
+    (-0.3cm, -0.3cm),
+    fill: rgb("#ffd166"),
+  ))
+  #animate("comet", to: (8cm, 4.5cm), duration: 1)
+  #move-along-path(
+    "comet",
+    ((-6cm, -2cm), (0cm, 3cm), (6cm, -2cm), (0cm, 0cm)),
+    mode: "bezier",
+    orient: true,
+    duration: 2500,
+    easing: "smooth",
+  )
+  #pause(duration: 400)
+
+  // Global camera: pan + zoom + tilt.
+  #camera(x: -2, y: 1, zoom: 1.6, rotate: 8deg, duration: 2000, easing: "smooth")
+  #pause(duration: 500)
+
+  // Region zoom into the lower-right cluster.
+  #zoom-to((8, 2, 6, 5), duration: 1500, easing: "smooth")
+  #pause(duration: 500)
+
+  // Track: one target driven through multi-property keyframes.
+  #mobject("kite", circle(radius: 0.8cm, fill: rgb("#06d6a0")))
+  #track(
+    "kite",
+    keys: (
+      (0, -5cm, -2cm, 0.5, 0.0, 0deg),
+      (600, 0cm, 0cm, 1.5, 1.0, 0deg),
+      (1200, 5cm, -2cm, 1.0, 0.8, 90deg),
+      (1800, 0cm, 2cm, 1.0, 1.0, 180deg),
+      (2400, 0cm, 0cm, 1.0, 1.0, 360deg),
+    ),
+    duration: 2400,
+    easing: "smooth",
+  )
+  #pause(duration: 500)
+]
+
+#scene(name: "text", width: 16cm, height: 9cm, bg: rgb("#102a2b"))[
+  #subtitle([scene · text — reveal · typewriter · play · group], position: "bottom")
+
+  // A string mobject for progressive reveal.
+  #mobject("t1", "Manim-style text reveal, in pure Typst.")
+  #animate("t1", to: (3cm, 2.5cm), duration: 1)
+
+  // A play block as its own animation unit.
+  #play([#text(20pt, weight: "bold", fill: rgb("#7fe3ff"))[Play block]], duration: 700)
+  #pause(duration: 300)
+
+  // Reveal word-by-word, then re-type character-by-character.
+  #reveal("t1", by: "word", duration: 1500, easing: "smooth")
+  #pause(duration: 400)
+  #typewriter("t1", duration: 1500, easing: "smooth")
+  #pause(duration: 500)
+
+  // Group three shapes and move / rotate them as one.
+  #mobject("g1", circle(radius: 0.6cm, fill: rgb("#ef476f")))
+  #mobject("g2", rect(width: 1.2cm, height: 1.2cm, fill: rgb("#ffd166")))
+  #mobject("g3", polygon((0cm, 0cm), (0.9cm, 1.1cm), (1.8cm, 0cm), fill: rgb("#06d6a0")))
+  #animate("g1", to: (4cm, 6.5cm), duration: 1)
+  #animate("g2", to: (8cm, 6.5cm), duration: 1)
+  #animate("g3", to: (12cm, 6.5cm), duration: 1)
+  #group("grp", members: ("g1", "g2", "g3"))
+  #animate("grp", to: (0cm, -1.5cm), duration: 800, easing: "smooth")
+  #animate("grp", rotate: 180deg, duration: 800, easing: "smooth")
+  #pause(duration: 500)
+]
+
+#scene(name: "counters", width: 16cm, height: 9cm, bg: rgb("#1a1230"))[
+  #subtitle(
+    [scene · counters — ecnew · ecval · ecpause · ecresume · ecdestroy · appear · disappear · video · audio],
+    position: "top",
+  )
+
+  // A live counting counter, displayed as text and as a growing bar.
+  #ecnew("n", seed: 0, step: 1, duration: 7000, easing: "linear")
+  #mobject("num", text(44pt, weight: "bold", fill: rgb("#7fe3ff"))[#ecval("n")])
+  #animate("num", to: (6.5cm, 3.2cm), duration: 1)
+  #mobject("bar", rect(width: 0.3cm, height: 1.4cm, fill: rgb("#06d6a0")))
+  #animate("bar", to: (4cm, 5.2cm), duration: 1)
+  #track(
+    "bar",
+    keys: (
+      (0, 4cm, 5.2cm, 0.4, 1.0, 0deg),
+      (7000, 12cm, 5.2cm, 3.0, 1.0, 0deg),
+    ),
+    duration: 7000,
+    easing: "linear",
+  )
+  #pause(duration: 2600)
+
+  // Freeze and resume the counter to show lifecycle control.
+  #ecpause("n")
+  #subtitle([ecpause freezes the counter…], position: "top")
+  #pause(duration: 1300)
+  #ecresume("n")
+  #pause(duration: 1600)
+
+  // Appear / disappear a caption.
+  #mobject("note", text(18pt, fill: white)[appears, then disappears])
+  #appear("note")
+  #animate("note", to: (6cm, 7.2cm), duration: 1)
+  #pause(duration: 700)
+  #disappear("note")
+  #pause(duration: 500)
+
+  // A video placeholder mobject (renders a labelled box) + an audio track.
+  #mobject("vid", video("demo.mp4", width: 5.5cm, height: 3.2cm))
+  #animate("vid", to: (10.5cm, 6.6cm), duration: 600, easing: "smooth")
+  // `#audio` is inert without a real file; it records a track on the timeline.
+  #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
+
+  // Destroy the counter (stops it permanently).
+  #ecdestroy("n")
+  #pause(duration: 600)
+]
+
+#scene(name: "finale", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+  #subtitle([scene · finale — set-color · scene-switch], position: "bottom")
+
+  #mobject("end", text(30pt, weight: "bold", fill: white)[Candy — code-oriented animation])
+  #spiral-in("end", scale: 2.0, rotate: 360deg, duration: 1000, easing: "cubic-out")
+  #pause(duration: 500)
+
+  // set-color records a color change on the timeline (no-op in the renderer).
+  #set-color("end", color: rgb("#7fe3ff"), duration: 30, easing: "smooth")
+  #pause(duration: 600)
+
+  // scene-switch forward to the (immediately next) credits scene with a fade.
+  #scene-switch("credits", duration: 600, easing: "smooth")
+]
+
+#scene(name: "credits", width: 16cm, height: 9cm, bg: black)[
+  #subtitle([credits — thanks for watching], position: "bottom")
+  #mobject("cr", text(20pt, fill: rgb("#7fe3ff"))[Built with Candy · every directive, one reel])
+  #spiral-in("cr", scale: 1.6, rotate: 360deg, duration: 800, easing: "cubic-out")
+  #pause(duration: 1600)
+]

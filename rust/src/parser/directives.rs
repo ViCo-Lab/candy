@@ -422,6 +422,9 @@ fn process_play(
             easing: Easing::Linear,
         }],
     );
+    // Hide the block at the end of its window so sequential `play` steps don't
+    // overlap — the block is only visible during [start, start+duration].
+    emit_slide(ctx, None, 0, 1, vec![Action::Hide { target: label }]);
 }
 
 /// `save_state(target, slot: "name")` — snapshot the target's current state.

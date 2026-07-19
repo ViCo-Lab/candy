@@ -1007,8 +1007,15 @@ mod tests {
             .filter(|l| l.0.starts_with("__block_"))
             .count();
         assert_eq!(blocks, 1);
-        assert_eq!(scene.slides.len(), 1);
+        // A `play` block emits two slides: the play window itself, then a 1ms
+        // `Hide` slide so sequential `play` steps don't visually overlap.
+        assert_eq!(scene.slides.len(), 2);
         assert_eq!(scene.slides[0].duration_ms, 25);
+        assert_eq!(scene.slides[1].duration_ms, 1);
+        assert!(matches!(
+            scene.slides[1].actions.as_slice(),
+            [Action::Hide { .. }]
+        ));
         std::fs::remove_file(&tmp).ok();
     }
 

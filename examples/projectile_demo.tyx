@@ -1,7 +1,7 @@
 #import "@preview/candy:0.1.0": *
 
 // A projectile-motion explainer that chains many of Candy's features:
-//   · a nested title-card scene (auto-hidden once the main scene starts),
+//   · a title-card scene (auto-hidden once the main scene starts),
 //   · a trajectory that is "drawn" segment by segment with sequential fades,
 //   · a ball that flies the parabola via `#track` (keyframed positions),
 //   · a live `#ecnew` / `#ecval` flight timer ticking in the corner,
@@ -10,13 +10,14 @@
 //     running equation into its vertex form, closed by a `#typewriter` line.
 //
 // The parabola is y = 6 - 1/8·(x - 8)² (cm), launched from (2, 1.5) and
-// landing at (14, 1.5); the 9 keyframes below sample it evenly in time.
+// landing at (14, 1.5). Candy/Typst use a y-DOWN canvas, so every y
+// coordinate below is the vertical mirror (9cm - y_up) of the y-up math
+// above — this keeps the apex at the top and the ground at the bottom.
 //
 // Run:  candy build examples/projectile_demo.tyx
 
 #scene(width: 16cm, height: 9cm, bg: rgb("#0b1020"))[
-
-  // ── Title card (its own scene; hidden when the main scene takes over) ──
+  // ── Title card (first scene; hidden when the main scene takes over) ──
   #mobject(
     "title",
     text(26pt, weight: "bold", fill: white)[Projectile Motion]
@@ -26,39 +27,42 @@
   #spiral-in("title", scale: 2.2, rotate: 360deg, duration: 800, easing: "cubic-out")
   #pause(duration: 900)
 
-  // ── Main scene: replaces the title card (parent auto-hidden) ──
+  // ── Main scene: nested *inside* the title scene. Candy's per-frame
+  //     recompiler now gates each `#scene` via injected `__sid` / `__desc`,
+  //     so a nested scene renders correctly (the parent stays present so the
+  //     child is reachable, but only the active scene opens a page). ──
   #scene(width: 16cm, height: 9cm, bg: white)[
 
     // Ground line.
-    #mobject("ground", line(start: (0cm, 0cm), end: (16cm, 0cm), stroke: 1.5pt + gray))
-    #animate("ground", to: (8cm, 1.0cm), duration: 1)
+    #mobject("ground", line(start: (0cm, 9cm), end: (16cm, 9cm), stroke: 1.5pt + gray))
+    #animate("ground", to: (8cm, 8.0cm), duration: 1)
     #animate("ground", opacity: 100%, duration: 400, easing: "smooth")
     #pause(duration: 200)
 
     // The running equation, parked at the top.
     #mobject("eq", [$y(t) = v_y t - 1/2 g t^2$])
-    #animate("eq", to: (8cm, 8.0cm), duration: 1)
+    #animate("eq", to: (8cm, 1.0cm), duration: 1)
     #spiral-in("eq", scale: 1.4, rotate: 360deg, duration: 500, easing: "cubic-out")
     #subtitle([The height of a projectile under gravity.], position: "bottom")
     #pause(duration: 400)
 
     // The trajectory, drawn as eight segments that fade in one by one.
-    #mobject("s0", line(start: (0cm, 0cm), end: (1.5cm, 1.969cm), stroke: 1.5pt + blue))
-    #mobject("s1", line(start: (0cm, 0cm), end: (1.5cm, 1.406cm), stroke: 1.5pt + blue))
-    #mobject("s2", line(start: (0cm, 0cm), end: (1.5cm, 0.844cm), stroke: 1.5pt + blue))
-    #mobject("s3", line(start: (0cm, 0cm), end: (1.5cm, 0.281cm), stroke: 1.5pt + blue))
-    #mobject("s4", line(start: (0cm, 0cm), end: (1.5cm, -0.281cm), stroke: 1.5pt + blue))
-    #mobject("s5", line(start: (0cm, 0cm), end: (1.5cm, -0.844cm), stroke: 1.5pt + blue))
-    #mobject("s6", line(start: (0cm, 0cm), end: (1.5cm, -1.406cm), stroke: 1.5pt + blue))
-    #mobject("s7", line(start: (0cm, 0cm), end: (1.5cm, -1.969cm), stroke: 1.5pt + blue))
-    #animate("s0", to: (2.75cm, 2.48cm), duration: 1)
-    #animate("s1", to: (4.25cm, 4.17cm), duration: 1)
-    #animate("s2", to: (5.75cm, 5.30cm), duration: 1)
-    #animate("s3", to: (7.25cm, 5.86cm), duration: 1)
-    #animate("s4", to: (8.75cm, 5.86cm), duration: 1)
-    #animate("s5", to: (10.25cm, 5.30cm), duration: 1)
-    #animate("s6", to: (11.75cm, 4.17cm), duration: 1)
-    #animate("s7", to: (13.25cm, 2.48cm), duration: 1)
+    #mobject("s0", line(start: (0cm, 9cm), end: (1.5cm, 7.031cm), stroke: 1.5pt + blue))
+    #mobject("s1", line(start: (0cm, 9cm), end: (1.5cm, 7.594cm), stroke: 1.5pt + blue))
+    #mobject("s2", line(start: (0cm, 9cm), end: (1.5cm, 8.156cm), stroke: 1.5pt + blue))
+    #mobject("s3", line(start: (0cm, 9cm), end: (1.5cm, 8.719cm), stroke: 1.5pt + blue))
+    #mobject("s4", line(start: (0cm, 9cm), end: (1.5cm, 9.281cm), stroke: 1.5pt + blue))
+    #mobject("s5", line(start: (0cm, 9cm), end: (1.5cm, 9.844cm), stroke: 1.5pt + blue))
+    #mobject("s6", line(start: (0cm, 9cm), end: (1.5cm, 10.406cm), stroke: 1.5pt + blue))
+    #mobject("s7", line(start: (0cm, 9cm), end: (1.5cm, 11.969cm), stroke: 1.5pt + blue))
+    #animate("s0", to: (2.75cm, 6.52cm), duration: 1)
+    #animate("s1", to: (4.25cm, 4.83cm), duration: 1)
+    #animate("s2", to: (5.75cm, 3.70cm), duration: 1)
+    #animate("s3", to: (7.25cm, 3.14cm), duration: 1)
+    #animate("s4", to: (8.75cm, 3.14cm), duration: 1)
+    #animate("s5", to: (10.25cm, 3.70cm), duration: 1)
+    #animate("s6", to: (11.75cm, 4.83cm), duration: 1)
+    #animate("s7", to: (13.25cm, 6.52cm), duration: 1)
     #disappear("s0"); #disappear("s1"); #disappear("s2"); #disappear("s3")
     #disappear("s4"); #disappear("s5"); #disappear("s6"); #disappear("s7")
     #animate("s0", opacity: 100%, duration: 250, easing: "smooth"); #pause(duration: 150)
@@ -74,7 +78,7 @@
 
     // Apex marker.
     #mobject("apex", text(12pt, fill: red)[✕ apex])
-    #animate("apex", to: (8cm, 6.4cm), duration: 1)
+    #animate("apex", to: (8cm, 2.6cm), duration: 1)
     #spiral-in("apex", scale: 1.8, rotate: 360deg, duration: 400, easing: "cubic-out")
     #pause(duration: 300)
 
@@ -83,27 +87,27 @@
     #subtitle([flight time: #str(ecval("t")) ms], position: "bottom-right")
 
     #mobject("ball", circle(radius: 0.35cm, fill: red))
-    #animate("ball", to: (2cm, 1.5cm), duration: 1)
+    #animate("ball", to: (2cm, 7.5cm), duration: 1)
     #track(
       "ball",
       keys: (
-        (0, (2.0cm, 1.5cm, 1, 1, 0)),
-        (375, (3.5cm, 3.469cm, 1, 1, 0)),
-        (750, (5.0cm, 4.875cm, 1, 1, 0)),
-        (1125, (6.5cm, 5.719cm, 1, 1, 0)),
-        (1500, (8.0cm, 6.0cm, 1, 1, 0)),
-        (1875, (9.5cm, 5.719cm, 1, 1, 0)),
-        (2250, (11.0cm, 4.875cm, 1, 1, 0)),
-        (2625, (12.5cm, 3.469cm, 1, 1, 0)),
-        (3000, (14.0cm, 1.5cm, 1, 1, 0)),
+        (0, (2.0cm, 7.5cm, 1, 1, 0)),
+        (375, (3.5cm, 5.531cm, 1, 1, 0)),
+        (750, (5.0cm, 4.125cm, 1, 1, 0)),
+        (1125, (6.5cm, 3.281cm, 1, 1, 0)),
+        (1500, (8.0cm, 3.0cm, 1, 1, 0)),
+        (1875, (9.5cm, 3.281cm, 1, 1, 0)),
+        (2250, (11.0cm, 4.125cm, 1, 1, 0)),
+        (2625, (12.5cm, 5.531cm, 1, 1, 0)),
+        (3000, (14.0cm, 7.5cm, 1, 1, 0)),
       ),
       duration: 3000,
       easing: "linear",
     )
 
     // Cinematic camera: push in toward the apex, then pull back to landing.
-    #camera(zoom: 1.35, x: 0cm, y: 1.5cm, duration: 1500, easing: "smooth")
-    #camera(zoom: 1.0, x: 0cm, y: 0cm, duration: 1500, easing: "smooth")
+    #camera(zoom: 1.35, x: 0cm, y: 7.5cm, duration: 1500, easing: "smooth")
+    #camera(zoom: 1.0, x: 0cm, y: 9cm, duration: 1500, easing: "smooth")
     #pause(duration: 300)
 
     // Landing: flash the impact, then rewrite the equation into vertex form.

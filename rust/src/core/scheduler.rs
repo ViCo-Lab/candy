@@ -100,14 +100,56 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
         let end = slide.start_ms + slide.duration_ms;
         last_end = last_end.max(end);
 
+        // Core transforms are accumulated per target and emitted as a single
+        // start/end keyframe pair so that multiple axes (scale/rotation/
+        // opacity/position) on the same target animate *simultaneously* over
+        // this slide's window. The previous per-action keyframes caused axes to
+        // animate sequentially, and because the interpolator keeps only the last
+        // keyframe per timestamp, earlier axes snapped to their final value at
+        // the slide start (only opacity actually eased). This is the root cause
+        // of multi-axis directives like `spiral-in`/`animate` looking wrong.
+        let mut pending_core: Vec<&Action> = Vec::new();
+        let mut pending_target: Option<Label> = None;
+
         for action in &slide.actions {
             let Some(target) = action.target() else {
                 // SceneSwitch doesn't target a mobject — handled by timeline logic.
                 continue;
             };
             let t = target.clone();
-            let s = *state.get(&t).unwrap_or(&State::default());
             let easing = action.easing();
+
+            // Core transforms: accumulate (grouped by target) and defer emission.
+            if is_core(action) {
+                if pending_target.as_ref() != Some(&t) {
+                    flush_core(
+                        &mut pending_core,
+                        &mut pending_target,
+                        &mut state,
+                        &mut per_item,
+                        start,
+                        end,
+                    );
+                }
+                pending_core.push(action);
+                pending_target = Some(t.clone());
+                continue;
+            }
+            // Non-core action: finalize any pending core group first.
+            flush_core(
+                &mut pending_core,
+                &mut pending_target,
+                &mut state,
+                &mut per_item,
+                start,
+                end,
+            );
+            // Re-read the latest state: `flush_core` may have mutated it for core
+            // transforms emitted earlier in this slide. A non-core action such as
+            // `Hide` that follows `ScaleBy`/`RotateBy` must preserve the
+            // scaled/rotated initial state, not the pre-flush default — otherwise
+            // the whole spiral animation collapses to scale 1 / rotation 0.
+            let s = *state.get(&t).unwrap_or(&State::default());
 
             match action {
                 // ---- Instantaneous actions: no keyframes, just state change ----
@@ -554,9 +596,20 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     continue;
                 }
 
-                // ---- Core transforms: start keyframe + end keyframe ----
+                // ---- Core transforms (fallback): start keyframe + end keyframe ----
+                // Core actions are normally accumulated via `is_core` above and
+                // emitted together by `flush_core`; this arm is a defensive
+                // fallback for any action not caught by `is_core`.
                 _ => {
-                    // Keyframe at the slide start = current state.
+                    flush_core(
+                        &mut pending_core,
+                        &mut pending_target,
+                        &mut state,
+                        &mut per_item,
+                        start,
+                        end,
+                    );
+                    let s = *state.get(&t).unwrap_or(&State::default());
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: start,
                         target: t.clone(),
@@ -567,26 +620,31 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         rotation: s.rotation,
                         easing: easing.clone(),
                     });
-
-                    apply(&mut state, &t, action);
-
-                    let s = state[&t];
-                    // Keyframe at the slide end = new state, carrying the action's
-                    // easing so the interpolator knows how to shape the curve from
-                    // `start` to `end`.
+                    let ns = apply_state(s, action);
+                    state.insert(t.clone(), ns);
                     per_item.entry(t.clone()).or_default().push(FrameData {
                         time_ms: end,
                         target: t.clone(),
-                        x: s.x,
-                        y: s.y,
-                        scale: s.scale,
-                        opacity: s.opacity,
-                        rotation: s.rotation,
+                        x: ns.x,
+                        y: ns.y,
+                        scale: ns.scale,
+                        opacity: ns.opacity,
+                        rotation: ns.rotation,
                         easing: easing.clone(),
                     });
                 }
             }
         }
+        // Flush any remaining core transforms accumulated for this slide so they
+        // are emitted as a single simultaneous start/end keyframe pair.
+        flush_core(
+            &mut pending_core,
+            &mut pending_target,
+            &mut state,
+            &mut per_item,
+            start,
+            end,
+        );
 
         // Scene switching no longer needs a cursor jump here: `finalize_scene_switching`
         // remaps every slide's `start_ms` so the switched playback order is already
@@ -618,15 +676,31 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
     Ok(all)
 }
 
-/// Apply a single action to a target's state.
-///
-/// Only called for core transform actions (MoveTo/Scale/Rotate/FadeIn/
-/// FadeOut/FadeTo). Indication animations, SaveState/Restore, Show/Hide, and
-/// SetColor are handled directly in `schedule` because they need custom
-/// keyframe logic.
-fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
-    let s = *state.get(t).unwrap_or(&State::default());
-    let ns = match action {
+/// Whether `action` is a "core transform" — an action whose effect can be
+/// expressed as a single start/end keyframe pair on a target's transform state
+/// (position, scale, rotation, opacity). These are accumulated per target
+/// within a slide and emitted together so multiple axes animate
+/// simultaneously.
+fn is_core(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::MoveTo { .. }
+            | Action::MoveBy { .. }
+            | Action::Scale { .. }
+            | Action::ScaleBy { .. }
+            | Action::Rotate { .. }
+            | Action::RotateBy { .. }
+            | Action::FadeIn { .. }
+            | Action::FadeOut { .. }
+            | Action::FadeTo { .. }
+    )
+}
+
+/// Pure core-transform application: returns the `State` obtained by applying
+/// `action` to `s`. Only core transforms are handled; any other action returns
+/// `s` unchanged.
+fn apply_state(s: State, action: &Action) -> State {
+    match action {
         Action::MoveTo { to, .. } => State {
             x: to.0,
             y: to.1,
@@ -656,23 +730,61 @@ fn apply(state: &mut HashMap<Label, State>, t: &Label, action: &Action) {
             opacity: *opacity,
             ..s
         },
-        // The following actions are handled directly in `schedule` and never
-        // reach apply(). Listed here so the match is exhaustive.
-        Action::SaveState { .. }
-        | Action::Restore { .. }
-        | Action::MoveAlongPath { .. }
-        | Action::Indicate { .. }
-        | Action::Flash { .. }
-        | Action::Wiggle { .. }
-        | Action::Show { .. }
-        | Action::Hide { .. }
-        | Action::SetColor { .. }
-        | Action::Transform { .. }
-        | Action::Track { .. }
-        | Action::Camera { .. }
-        | Action::SceneSwitch { .. } => s,
+        _ => s,
+    }
+}
+
+/// Emit a single start/end keyframe pair for all `pending` core transforms on
+/// `pending_target`, animating every axis simultaneously over `[start, end]`.
+///
+/// Must be called before handling a non-core action (so the core transforms are
+/// finalized into `state`) and at the end of each slide (to flush the last
+/// group). Clears `pending` and resets `pending_target`.
+fn flush_core(
+    pending: &mut Vec<&Action>,
+    pending_target: &mut Option<Label>,
+    state: &mut HashMap<Label, State>,
+    per_item: &mut HashMap<Label, Vec<FrameData>>,
+    start: u32,
+    end: u32,
+) {
+    let Some(t) = pending_target.take() else {
+        pending.clear();
+        return;
     };
+    if pending.is_empty() {
+        return;
+    }
+    let s = *state.get(&t).unwrap_or(&State::default());
+    // Single start keyframe = current state (all axes preserved).
+    per_item.entry(t.clone()).or_default().push(FrameData {
+        time_ms: start,
+        target: t.clone(),
+        x: s.x,
+        y: s.y,
+        scale: s.scale,
+        opacity: s.opacity,
+        rotation: s.rotation,
+        easing: pending.last().unwrap().easing().clone(),
+    });
+    // Apply every pending core action in order to reach the end state; the
+    // interpolator eases all axes from `s` to `ns` across the whole window.
+    let mut ns = s;
+    for a in pending.iter() {
+        ns = apply_state(ns, a);
+    }
     state.insert(t.clone(), ns);
+    per_item.entry(t.clone()).or_default().push(FrameData {
+        time_ms: end,
+        target: t.clone(),
+        x: ns.x,
+        y: ns.y,
+        scale: ns.scale,
+        opacity: ns.opacity,
+        rotation: ns.rotation,
+        easing: pending.last().unwrap().easing().clone(),
+    });
+    pending.clear();
 }
 
 /// Validation helper: within each target's keyframe list, `time_ms` must be

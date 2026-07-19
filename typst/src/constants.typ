@@ -14,14 +14,14 @@
 #let dir-down-left = (dir-left.at(0) + dir-down.at(0), dir-left.at(1) + dir-down.at(1))
 #let dir-down-right = (dir-right.at(0) + dir-down.at(0), dir-right.at(1) + dir-down.at(1))
 
-#let grow = 1.5
-#let shrink = 0.5
-#let original = 1.0
+#let grow = 150%
+#let shrink = 50%
+#let original = 100%
 
-#let quarter-turn = 90.0
-#let half-turn = 180.0
-#let full-turn = 360.0
+#let quarter-turn = 90deg
+#let half-turn = 180deg
+#let full-turn = 360deg
 
-#let visible = 1.0
-#let half-visible = 0.5
-#let invisible = 0.0
+#let visible = 100%
+#let half-visible = 50%
+#let invisible = 0%
