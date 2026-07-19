@@ -773,9 +773,7 @@ fn stream_encode_gpu(
         // Same single source of truth as the CPU path: one standard SVG per
         // frame, rasterized on the GPU at the uniform canvas size.
         let svg = renderer.render_frame_at(t, frames)?;
-        let svg_str =
-            std::str::from_utf8(&svg).map_err(|e| CandyError::Encode(format!("svg utf8: {e}")))?;
-        let f = gpu.render_svg(svg_str, tw as u32, th as u32)?;
+        let f = gpu.render_svg(&svg, tw as u32, th as u32)?;
         if let Some(d) = draft.as_mut() {
             d.write_all(&(f.width as u32).to_le_bytes())?;
             d.write_all(&(f.height as u32).to_le_bytes())?;
