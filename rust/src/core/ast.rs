@@ -13,7 +13,7 @@ use crate::core::diag::SourceLoc;
 use crate::core::easing::Easing;
 use crate::core::meta::PrivateMeta;
 
-/// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
+/// Typst points per centimeter (1cm = 28.346pt = 72/2.54 pt).
 pub const PT_PER_CM: f64 = 28.346_456_692_913_385;
 
 /// Default canvas size in Typst points: 16 cm × 9 cm (16:9 slide).

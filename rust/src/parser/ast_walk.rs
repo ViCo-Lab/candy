@@ -32,8 +32,8 @@ use crate::core::meta::PrivateMeta;
 use crate::parser::directives::process_call;
 use crate::parser::expr::{CANDY, call_symbol};
 
-/// Centimeters per Typst point. Must match renderer::typst::PT_PER_CM.
-pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
+/// Typst points per centimeter — re-exported from core::ast for convenience.
+use crate::core::ast::PT_PER_CM;
 
 /// Parse `.tyx` file into a `Scene` AST.
 ///

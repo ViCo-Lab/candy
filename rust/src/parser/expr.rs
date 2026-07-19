@@ -216,7 +216,7 @@ pub(crate) fn unit_to_cm(val: f64, unit: ast::Unit) -> Option<f64> {
     match unit {
         ast::Unit::Cm => Some(val),
         ast::Unit::Mm => Some(val * 0.1),
-        ast::Unit::Pt => Some(val / crate::parser::ast_walk::PT_PER_CM),
+        ast::Unit::Pt => Some(val / crate::core::ast::PT_PER_CM),
         ast::Unit::In => Some(val * 2.54),
         _ => None,
     }

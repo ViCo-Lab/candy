@@ -73,6 +73,8 @@ pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
+/// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
+use crate::core::ast::PT_PER_CM;
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
@@ -98,8 +100,6 @@ use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse_code};
 #[cfg(test)]
 use typst_syntax::{RootedPath, VirtualPath, VirtualRoot};
-/// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
-pub(crate) const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// Maximum segment length (in Typst points) when bisecting morph outline rings.
 /// Smaller = smoother morph but more points (the plan is sampled per frame, so
 /// the per-frame cost is linear in the point count — 3pt is a good balance).
