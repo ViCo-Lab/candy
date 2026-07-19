@@ -145,10 +145,10 @@ shadowing, auto-destroy on scope exit.
 
 ## CI / Multi-Architecture Builds
 
-8 Rust Tier-1 non-wasm targets, each with its own job and artifact:
+10 Rust Tier-1 non-wasm targets, each with its own job and artifact:
 - x86_64/aarch64 Linux (gnu)
 - x86_64/aarch64 macOS (darwin)
-- x86_64/aarch64 Windows (msvc)
+- x86_64/aarch64 Windows (msvc) + x86_64 Windows (gnu) + i686 Windows (msvc)
 - i686 Linux, armv7 Linux
 
 Build cache via `actions/cache@v4` (keyed by target + Cargo.lock).

@@ -105,7 +105,7 @@
 
 /// Register an animatable object ("mobject").
 ///
-/// - `label`: unique string id, referenced later by `animate` / `play`.
+/// - `name`: unique string id, referenced later by `animate` / `play`.
 /// - `body`: the object's content — a bare block or element (e.g.
 ///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
 ///

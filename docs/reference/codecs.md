@@ -25,7 +25,9 @@ The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding.
 |---|---|---|
 | `x264` | libx264 | Higher-quality H.264 than openh264. |
 | `x265` | libx265 | H.265/HEVC. |
-| `h264-vaapi` / `h265-vaapi` | h264_vaapi / hevc_vaapi | Linux Intel/AMD GPU. |
+| `h264-vaapi` / `h265-vaapi` / `av1-vaapi` | h264_vaapi / hevc_vaapi / av1_vaapi | Linux Intel/AMD GPU. |
+| `vp9` | libvpx-vp9 | VP9 (WebM/MKV). |
+| `vp8` | libvpx | VP8 (WebM/MKV). |
 | `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware. |
 | `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video (**Windows**). |
 

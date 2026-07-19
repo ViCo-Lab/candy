@@ -16,12 +16,15 @@ candy build <input> [--format FMT] [--codec CODEC] [-f FPS] [-p PIXELS_PER_PT]
 |---|---|---|
 | `<input>` (positional) | required | Path to the `.tyx` X-sheet, or an SVG with a `candy-json` block (see `--from-svg`). |
 | `--from-svg` | off | Force the input to be parsed as an SVG rendered by `@preview/candy`. Without this flag, the parser is selected by file extension (`.svg` → SVG round-trip, anything else → `.tyx`). |
-| `-o, --output` | `out` | Output name hint under `dist/` for videos; ignored for SVG drafts. |
+| `-o, --output` (repeatable) | — | One plain file name per input — no path separators. Mismatched counts fall back to `dist/<stem>.<ext>` with a warning. |
 | `--format` | `mp4` | `mp4` / `mkv` / `webm` / `gif` / `png` / `svg` (SVG draft → `.candy/`). The `--codec` flag is ignored for `gif` / `png`. |
-| `--codec` | `x264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv` / `h264-libva` / `h265-libva` / `av1-libva`. The first two (`h264`, `av1`) are self-contained (rav1e/openh264); `x264` is the default but requires system ffmpeg; the `*-libva` variants are Linux-only direct VAAPI (no ffmpeg subprocess). See [Codecs](codecs.md). The hardware `*-vaapi` / `*-videotoolbox` / `*-qsv` / `*-libva` variants are conditionally compiled and appear in `--help` only on their native platform (VAAPI/libva → Linux, VideoToolbox → macOS, QSV → Windows). |
+| `--codec` | `x264` | `av1` / `h264` / `h265` / `x264` / `x265` / `h264-vaapi` / `h265-vaapi` / `h264-videotoolbox` / `h265-videotoolbox` / `h264-qsv` / `h265-qsv` / `av1-vaapi` / `vp9` / `vp8` / `h264-libva` / `h265-libva` / `av1-libva`. The first two (`h264`, `av1`) are self-contained (rav1e/openh264); `x264` is the default but requires system ffmpeg; the `*-libva` variants are Linux-only direct VAAPI (no ffmpeg subprocess). See [Codecs](codecs.md). The hardware `*-vaapi` / `*-videotoolbox` / `*-qsv` / `*-libva` variants are conditionally compiled and appear in `--help` only on their native platform (VAAPI/libva → Linux, VideoToolbox → macOS, QSV → Windows). |
 | `-f, --fps` | `30` | Frames per second (video path). |
 | `-p, --pixel-per-pt` | `2.0` | Rasterization resolution (pixels per Typst point). |
+| `--width <px>` | — | Pin output width in pixels. |
+| `--height <px>` | — | Pin output height in pixels. |
 | `--gpu` | off | Use GPU rasterization (vello + wgpu) for the video path. Requires `cargo build --features gpu`. Falls back to CPU if the feature is off or no GPU adapter is available. |
+| `--jobs <n>` | `0` (= #CPUs) | Parallel rasterization jobs. |
 | `--keep-intermediates` | off | Keep the `.candy/<stem>/` intermediate directory after a successful build (e.g. `frames.rgba`). By default Candy deletes it once the final video is written. Has no effect on `--format svg`. |
 | `--output-dir <dir>` | `dist/` | Redirect every output file into a single directory. |
 | `--output <name>` (repeatable) | — | One plain file name per input — no path separators. Mismatched counts or directory paths fall back to `dist/<stem>.<ext>` with a warning (W012 / W013). |

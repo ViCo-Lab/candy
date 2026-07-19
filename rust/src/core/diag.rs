@@ -143,7 +143,7 @@ impl SourceLoc {
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E009.
+/// variant to the mandatory error codes E001–E011.
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
@@ -217,7 +217,7 @@ impl CandyError {
         }
     }
 
-    /// Numeric part of the code (1–9), used to build the process exit code for
+    /// Numeric part of the code (1–11), used to build the process exit code for
     /// the E001–E011 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
@@ -239,7 +239,7 @@ impl CandyError {
 
     /// Process exit code for this error.
     ///
-    /// The E001–E009 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
+    /// The E001–E011 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
     /// `E007` → `70`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
     /// partial-failure marker ("yee~ Batch failed") must not be re-encoded into
@@ -409,7 +409,7 @@ pub enum CandyWarn {
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W015).
+    /// Mandatory warning code (W001–W016).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",

@@ -75,7 +75,7 @@ transforms the scene active when the `#camera` directive runs.
 
 ## `#track` — a keyframe timeline
 
-`#track(target, keys: (), duration: 1000, easing: "linear")` drives a single target
+`#track(target, keys: (), duration: 1000, easing: "smooth")` drives a single target
 through several keyframes, each controlling a subset of its properties — a timeline track
 that removes the need for many sequential `#animate`s. `keys` is an array of
 `(t, (x, y, scale, opacity, rotation))` tuples, where `t` is the time offset (ms) from the

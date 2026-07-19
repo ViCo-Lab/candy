@@ -67,7 +67,7 @@ a scale + translate on all mobjects. Inert under standard Typst.
 
 These register or group animatable content; they are not animations.
 
-### `#mobject(label, body)`
+### `#mobject(name, body)`
 
 Register an animatable object. `label` is a unique string id; `body` is a bare block or
 element (never a string). Under standard Typst this simply renders `body` at its natural
@@ -196,7 +196,7 @@ Crossfade two pre-registered mobjects: fade out `from` while fading in `to`. Mir
 
 ### `#move-along-path(target, path, duration: 500, easing: "smooth", mode: "polyline", orient: false, timing: "after", delay: 0)`
 
-Move `target` along a polyline through `path` (array of `(x, y)` points in cm, absolute).
+Move `target` along a polyline through `path` (array of `(x, y)` points in cm, **relative to the object's natural layout position**).
 The scheduler generates a keyframe at each point, distributed across `duration`. Mirrors
 `MoveAlongPath` (linear paths; arcs/beziers approximated as polylines).
 

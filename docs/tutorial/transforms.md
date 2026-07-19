@@ -42,7 +42,7 @@ fade out `from` while fading in `to`.
 
 ## `#reveal` / `#typewriter` — progressive text
 
-`#reveal(target, by: "word", duration: 1000, easing: "linear")` progressively reveals a
+`#reveal(target, by: "word", duration: 1000, easing: "smooth")` progressively reveals a
 *string* mobject by swapping its body to longer and longer prefixes over `duration`.
 `by: "word"` reveals word-by-word; `by: "char"` reveals character-by-character. Non-string
 bodies fall back to a plain `FadeIn` with a warning. The body must be a string literal
@@ -51,7 +51,7 @@ Candy keeps its layout box reserved (see
 [Tutorial · first clip](../tutorial/first-clip.md#mobjects--actions--the-core-idea)), so
 later content does not jump as it types in.
 
-`#typewriter(target, duration: 1000, easing: "linear")` is a convenience alias for
+`#typewriter(target, duration: 1000, easing: "smooth")` is a convenience alias for
 `#reveal(.., by: "char")`.
 
 ```typst
@@ -75,7 +75,7 @@ These mirror Manim Community Edition primitives. Each is inert under standard Ty
 | `#blink(target, blinks: 3, duration: 500, easing: "smooth")` | alternate opacity 1↔0 `blinks` times. |
 | `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
 | `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")` | shrink a "spotlight" onto the target. |
-| `#move-along-path(target, path, duration: 500, easing: "smooth")` | move along a polyline of `(x, y)` points (cm, absolute). |
+| `#move-along-path(target, path, duration: 500, easing: "smooth")` | move along a polyline of `(x, y)` points (cm, **relative to the object's natural layout position**). |
 
 ```typst
 #save-state("dot", slot: "home")

@@ -234,7 +234,7 @@ as a scale + translate on all mobjects. Inert under standard Typst.
 These register or group animatable content. They are not animations, so they have no
 `timing` / `duration`.
 
-#### `#mobject(label, body)` {#mobject}
+#### `#mobject(name, body)` {#mobject}
 
 Register an animatable object. `label` is a unique string id; `body` is a bare block or
 element (never a string). Under standard Typst this simply renders `body` at its natural

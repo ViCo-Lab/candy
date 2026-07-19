@@ -1,4 +1,4 @@
-# Error model (E001–E009, EYEE)
+# Error model (E001–E011, EYEE)
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic.
 `CandyError::code()` maps each variant to a mandatory error code:
@@ -28,8 +28,8 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 The terminal `error!` reporter prints `error: [Exxx] <message>` to **stderr** and terminates
 the process with `CandyError::exit_code()`:
 
-- **E001–E009** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
-  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`, `E008` → `71`, `E009` → `72`. This keeps all
+- **E001–E011** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`, `E011` → `74`. This keeps all
   Candy fatal codes in a dedicated `64–78` segment that does not collide with `0` (success),
   `1` (generic), `2` (clap usage), or `101` (Rust panic).
 - **EYEE is the one exception**: it deliberately does **not** use the `64` rule. Its exit code
