@@ -222,8 +222,8 @@ fn process_mobject(
 fn process_animate(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
-    node: &LinkedNode,
-    raw: &str,
+    _node: &LinkedNode,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let target_expr = pos.first().or_else(|| named.get("target"));
@@ -261,7 +261,7 @@ fn process_animate(
     let mut actions = Vec::new();
     // Absolute move: `to: (x, y)`.
     if let Some(to_e) = named.get("to") {
-        if let Some((x, y)) = tuple_cm(to_e, raw, node) {
+        if let Some((x, y)) = tuple_cm(to_e) {
             actions.push(Action::MoveTo {
                 target: label.clone(),
                 to: (x, y),
@@ -344,8 +344,8 @@ fn process_pause(named: &std::collections::HashMap<String, Expr>, ctx: &mut Pars
 fn process_audio(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
-    node: &LinkedNode,
-    raw: &str,
+    _node: &LinkedNode,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let path = match pos.first() {
@@ -358,7 +358,7 @@ fn process_audio(
         .unwrap_or(false);
     let loop_track = named.get("loop").and_then(expr_to_bool).unwrap_or(false);
     let volume = named.get("volume").and_then(expr_to_f64).unwrap_or(1.0);
-    let slice = named.get("slice").and_then(|e| tuple_cm(e, raw, node));
+    let slice = named.get("slice").and_then(|e| tuple_cm(e));
     ctx.audio.push(AudioTrack {
         path,
         start_ms: ctx.audio_start(parse_timing(named), parse_delay(named)),
@@ -854,8 +854,8 @@ fn process_fade_transform(
 fn process_move_along_path(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
-    node: &LinkedNode,
-    raw: &str,
+    _node: &LinkedNode,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let Some(label) = target_arg(pos, named) else {
@@ -876,7 +876,7 @@ fn process_move_along_path(
         Some(Expr::Array(arr)) => arr
             .items()
             .filter_map(|item| match item {
-                ast::ArrayItem::Pos(e) => tuple_cm(&e, raw, node),
+                ast::ArrayItem::Pos(e) => tuple_cm(&e),
                 ast::ArrayItem::Spread(_) => None,
             })
             .collect(),

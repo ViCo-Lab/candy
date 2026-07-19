@@ -151,12 +151,9 @@ impl Renderer {
         if camera.is_some() {
             out.push_str("</g>\n");
         }
+        let vis_subs = self.scene.visible_subtitle_ids_at(time_ms);
         for sub in &self.scene.subtitles {
-            if self
-                .scene
-                .visible_subtitle_ids_at(time_ms)
-                .contains(&sub.id)
-            {
+            if vis_subs.contains(&sub.id) {
                 let svg = self.render_subtitle_svg(sub, time_ms)?;
                 // The subtitle SVG is a complete <svg>...</svg> document;
                 // extract only the inner content to avoid nested <svg> tags.

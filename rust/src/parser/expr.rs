@@ -312,7 +312,7 @@ pub(crate) fn as_array<'a>(e: &'a Expr<'a>) -> Option<ast::Array<'a>> {
 }
 
 /// Evaluate a `(x, y)` length tuple to centimeters.
-pub(crate) fn tuple_cm(e: &Expr, _raw: &str, _node: &LinkedNode) -> Option<(f64, f64)> {
+pub(crate) fn tuple_cm(e: &Expr) -> Option<(f64, f64)> {
     let arr: ast::Array = match e {
         Expr::Array(a) => *a,
         Expr::Parenthesized(p) => match p.expr() {
@@ -449,7 +449,7 @@ pub(crate) fn parse_sub_pos(named: &HashMap<String, Expr>) -> crate::core::ast::
             _ => crate::core::ast::SubPos::Bottom,
         },
         // Absolute `(x, y)` in cm.
-        _ => match tuple_cm(e, "", &LinkedNode::new(&typst_syntax::parse(""))) {
+        _ => match tuple_cm(e) {
             Some((x, y)) => crate::core::ast::SubPos::Absolute(x, y),
             None => crate::core::ast::SubPos::Bottom,
         },
