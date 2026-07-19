@@ -621,14 +621,7 @@ pub(crate) fn vmsplice_frame(writer: &mut std::fs::File, data: &[u8]) -> std::io
             iov_base: (ptr + off) as *mut libc::c_void,
             iov_len: remaining,
         };
-        let written = unsafe {
-            libc::vmsplice(
-                writer.as_raw_fd(),
-                &iov,
-                1,
-                libc::SPLICE_F_GIFT,
-            )
-        };
+        let written = unsafe { libc::vmsplice(writer.as_raw_fd(), &iov, 1, libc::SPLICE_F_GIFT) };
         if written < 0 {
             let err = std::io::Error::last_os_error();
             // `EINVAL` from `vmsplice` typically means the kernel rejected the
@@ -638,7 +631,9 @@ pub(crate) fn vmsplice_frame(writer: &mut std::fs::File, data: &[u8]) -> std::io
             // process, not once per frame.
             static WARNED: AtomicBool = AtomicBool::new(false);
             if !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("candy: vmsplice failed ({err}); falling back to write() for subsequent frames");
+                eprintln!(
+                    "candy: vmsplice failed ({err}); falling back to write() for subsequent frames"
+                );
             }
             return writer.write_all(&data[off..]).map(|()| len);
         }

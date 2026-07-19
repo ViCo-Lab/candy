@@ -192,13 +192,17 @@ pub enum Container {
 /// Compose `frame` onto a `tw × th` opaque-white canvas, copying the source
 /// pixels to the top-left. Returns a fresh `RenderedFrame`.
 ///
-/// On Linux the returned `rgba` buffer is **page-aligned and padded to a page
-/// multiple** so the caller can feed it to ffmpeg via `vmsplice(SPLICE_F_GIFT)`
-/// for true zero-copy (the buffer's physical pages are gifted to the kernel
-/// pipe buffer without a `write()`-style copy). The padding bytes (at most one
-/// page of zero-fill at the tail) are never read by ffmpeg: the rawvideo
-/// demuxer consumes exactly `tw*th*4` bytes per frame and ignores the rest of
-/// the pipe buffer until the next frame's worth of data arrives.
+/// On Linux the returned `rgba` buffer is **padded to a page multiple** so the
+/// caller can feed it to ffmpeg via `vmsplice(SPLICE_F_GIFT)` for true
+/// zero-copy (the buffer's physical pages are gifted to the kernel pipe buffer
+/// without a `write()`-style copy). The page-multiple length exists only to
+/// satisfy `vmsplice`'s alignment requirement; the caller (`StreamingVideo::
+/// push`) MUST write **exactly `tw*th*4` bytes** to ffmpeg and never the
+/// padding tail. ffmpeg's rawvideo demuxer reads a fixed `tw*th*4` bytes per
+/// frame and treats the pipe as one continuous stream, so any extra padding
+/// bytes would be prepended to the next frame and shift every frame — a
+/// "marquee" scroll artifact that is only invisible when `tw*th*4` is already a
+/// multiple of the page size (true for standard HD sizes, not for low res).
 fn compose(frame: &RenderedFrame, tw: usize, th: usize) -> RenderedFrame {
     let frame_bytes = tw * th * 4;
     // On Linux, pad the buffer to a page multiple so `vmsplice_frame` can
@@ -492,21 +496,35 @@ impl StreamingVideo {
     /// dropped here, so the caller is free to release it immediately.
     pub(crate) fn push(&mut self, frame: &RenderedFrame) -> Result<(), CandyError> {
         let composed = compose(frame, self.tw, self.th);
+        // ffmpeg's rawvideo demuxer reads a *fixed* `tw*th*4` bytes per frame and
+        // treats the pipe as one continuous byte stream. `compose()` pads the RGBA
+        // buffer to a page multiple (for the `vmsplice` zero-copy gift), but those
+        // trailing padding bytes must NOT be written to ffmpeg — otherwise they
+        // become the leading bytes of the next frame, shifting every frame by
+        // `padding` bytes and producing a scrolling "marquee" artifact. This only
+        // vanished at high resolution because standard HD canvases make
+        // `tw*th*4` already a multiple of the page size (padding == 0); at low
+        // resolution padding > 0 and the shift is visible. Slice to exactly
+        // `frame_bytes` before handing the data to ffmpeg.
+        let frame_bytes = self.tw * self.th * 4;
         if let Some((_, stdin, _, _)) = self.ffmpeg.as_mut() {
             // On Linux, `stdin` is the write end of a pipe whose read end feeds
             // ffmpeg. Use `vmsplice(SPLICE_F_GIFT)` for true zero-copy when the
-            // RGBA buffer is page-aligned (the `compose()` helper pads it so);
+            // RGBA buffer (pointer *and* `frame_bytes` length) is page-aligned;
             // otherwise fall back to a plain `write()`. Either way the pipe's
             // read() blocks ffmpeg until data is available — no premature EOF.
             #[cfg(target_os = "linux")]
             {
-                crate::renderer::encode::ffmpeg::vmsplice_frame(stdin, &composed.rgba)
-                    .map_err(|e| CandyError::Encode(format!("ffmpeg vmsplice/write: {e}")))?;
+                crate::renderer::encode::ffmpeg::vmsplice_frame(
+                    stdin,
+                    &composed.rgba[..frame_bytes],
+                )
+                .map_err(|e| CandyError::Encode(format!("ffmpeg vmsplice/write: {e}")))?;
             }
             #[cfg(not(target_os = "linux"))]
             {
                 stdin
-                    .write_all(&composed.rgba)
+                    .write_all(&composed.rgba[..frame_bytes])
                     .map_err(|e| CandyError::Encode(format!("ffmpeg stdin write: {e}")))?;
                 // Periodic flush to prevent unbounded buffer growth while keeping
                 // write() syscall count low (1MB buffer batches ~120 frames at 1080p).
