@@ -8,7 +8,7 @@
     # Minimum Supported Rust Version: edition 2024 requires Rust 1.85+.
     rust-version = "1.85"
     description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
-    license = "MIT"
+    license = "MIT OR Apache-2.0"
     authors = [
         "Shining Yang <97453940+ShiningYangYXN@users.noreply.github.com>",
     ]

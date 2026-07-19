@@ -104,6 +104,15 @@ cargo run -- build examples/box_anim.tyx --gpu
 - CI builds for all 10 Rust Tier-1 (with host tools) targets; GPU builds are a separate matrix
   (native only, never cross-compiled). See `.github/workflows/ci.yml`.
 
+## License
+
+Licensed under either of
+
+ * Apache License, Version 2.0 ([`LICENSE-APACHE`](../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+ * MIT license ([`LICENSE-MIT`](../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
 ## Documentation
 
 - [Backend reference (full)](docs/reference/rust-api.md) — API, modules, architecture, codecs,

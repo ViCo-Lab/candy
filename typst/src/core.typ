@@ -114,7 +114,7 @@
   if type(name) != str {
     panic("Mobject name must be a string")
   }
-  [#body]
+  block(body)
 }
 
 /// Animate an object to a new placement / scale / rotation / opacity over
@@ -229,7 +229,7 @@
 /// object, precisely controllable like a mobject).
 ///
 /// Under standard Typst the body is shown in the first frame.
-#let play(body, duration: 500) = [#body]
+#let play(body, duration: 500) = block(body)
 
 /// Insert a voice / audio track. Inert under standard Typst (does nothing).
 ///
