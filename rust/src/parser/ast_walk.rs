@@ -98,7 +98,7 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
     // order (`label_order` is recorded the first time each label is registered).
     // This keeps the natural top-to-bottom flow layout and the paint z-order
     // faithful to source order; iterating `label_scene` (a `HashMap`) directly
-    // would scramble并列 mobjects on every run.
+    // would scrambleparallel mobjects on every run.
     for label in &ctx.label_order {
         let sid = ctx.label_scene.get(label).copied().unwrap_or(0);
         if let Some(s) = ctx.scenes.iter_mut().find(|s| s.id == sid) {
@@ -287,7 +287,7 @@ pub(crate) struct ParseCtx {
     /// recorded the first time each label is registered. Used to lay out and
     /// paint mobjects in source order — `HashMap` iteration is not stable, so a
     /// deterministic order must be tracked explicitly (otherwise the vertical
-    /// arrangement / z-order of并列 mobjects comes out scrambled).
+    /// arrangement / z-order ofparallel mobjects comes out scrambled).
     pub(crate) label_order: Vec<Label>,
     /// Monotonic id for synthetic subtitles.
     pub(crate) subtitle_id: usize,
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn mobject_declaration_order_is_preserved() {
-        //并列 mobjects must keep their source declaration order. The labels are
+        //parallel mobjects must keep their source declaration order. The labels are
         // declared `zeta, alpha, mid` (deliberately NOT alphabetical) so a stray
         // `HashMap`-iteration sort is caught. `owns_labels` drives both the
         // natural top-to-bottom layout and the paint z-order.

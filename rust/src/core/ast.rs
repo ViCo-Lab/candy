@@ -558,13 +558,13 @@ pub struct Scene {
     /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide).
     #[serde(default)]
     pub page_size: Option<(f64, f64)>,
-    /// Subtitle overlays (the "字幕模块"). Each caption is shown over the
+    /// Subtitle overlays (the "subtitle module"). Each caption is shown over the
     /// animation at a fixed anchor, persists (by default) until replaced by
     /// another subtitle in the same Typst scope or until its scope exits, and
     /// is subject to parental shadowing.
     #[serde(default)]
     pub subtitles: Vec<Subtitle>,
-    /// Named integer counters (the "缓动计数器模块"). Key-value store of
+    /// Named integer counters (the "easing-counter module"). Key-value store of
     /// animatable integer values referenced from mobject/subtitle bodies.
     #[serde(default)]
     pub counters: Vec<CounterDef>,
@@ -640,7 +640,7 @@ pub struct ParseArtifacts {
     /// `#none`) so the caption is **not** rendered as part of the base document:
     /// captions are drawn as a separate, camera-independent overlay, and leaving
     /// the `#subtitle[...]` body in the base would double-render it (once warped
-    /// by the global camera, once as the fixed overlay) — the "基底未过滤字幕"
+    /// by the global camera, once as the fixed overlay) — the "base unfiltered subtitle"
     /// rendering anomaly.
     pub subtitle_call: HashMap<String, (usize, usize)>,
     /// Source location of every label's *declaration* (`#mobject("x", …)` /

@@ -786,7 +786,7 @@ fn morph_renders_interpolated_polygon() {
 ///      top-left (the coloured-block top-left), NOT shifted by the body's ink
 ///      offset. A text body has a nonzero ink offset, so this catches the
 ///      `nat = lx - ox` regression.
-///   2. Multiple并列 mobjects must keep their *declaration* order top-to-bottom.
+///   2. Multipleparallel mobjects must keep their *declaration* order top-to-bottom.
 ///      The labels below are deliberately declared as `zeta, alpha, mid` (not
 ///      alphabetical) so a stray alphabetical sort would be detected.
 ///
@@ -1247,7 +1247,6 @@ fn camera_background_stays_fixed_outside_camera_group() {
         svg.matches("<rect").count(),
         svg.matches("<path").count(),
     );
-    eprintln!("DBG svg_head={:?}", &svg[..svg.len().min(400)]);
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={} contains_candy_n_input_check",
         svg.len(),
@@ -1255,7 +1254,6 @@ fn camera_background_stays_fixed_outside_camera_group() {
         svg.matches("<rect").count(),
         svg.matches("<path").count(),
     );
-    eprintln!("DBG svg_head={:?}", &svg[..svg.len().min(400)]);
     // The canvas background is the *first* shape element in the document
     // (`<rect>` or `<path>`, as emitted by `typst_svg`).
     let rect = svg.find("<rect");
@@ -1710,7 +1708,6 @@ fn overflowing_scene_plays_pages_in_sequence() {
         svg.matches("<rect").count(),
         svg.matches("<path").count(),
     );
-    eprintln!("DBG svg_head={:?}", &svg[..svg.len().min(400)]);
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={}",
         svg.len(),
@@ -1718,7 +1715,6 @@ fn overflowing_scene_plays_pages_in_sequence() {
         svg.matches("<rect").count(),
         svg.matches("<path").count(),
     );
-    eprintln!("DBG svg_head={:?}", &svg[..svg.len().min(400)]);
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={} contains_candy_n_input_check",
         svg.len(),
@@ -1726,7 +1722,6 @@ fn overflowing_scene_plays_pages_in_sequence() {
         svg.matches("<rect").count(),
         svg.matches("<path").count(),
     );
-    eprintln!("DBG svg_head={:?}", &svg[..svg.len().min(400)]);
     // Single-page height in pt: 2cm * PT_PER_CM. Native Typst SVG emits the
     // `height` attribute with a `pt` unit suffix, so strip it before parsing.
     let page_h_pt = 2.0 * crate::renderer::typst::PT_PER_CM;

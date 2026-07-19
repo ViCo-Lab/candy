@@ -1,4 +1,4 @@
-//! Bounded LRU cache with O(1) get/insert.
+//! Bounded LRU cache with O(1) get, O(cap) eviction on insert when full.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;

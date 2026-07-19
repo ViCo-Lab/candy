@@ -72,7 +72,7 @@ fn emit_slide(
 /// Register `label` as owned by `scene`, recording its first-seen (declaration)
 /// position in `label_order` so mobjects can later be laid out / painted in
 /// source order. `HashMap` iteration is not stable, so this explicit order is
-/// what prevents并列 mobjects from coming out in a scrambled arrangement.
+/// what preventsparallel mobjects from coming out in a scrambled arrangement.
 fn register_label(ctx: &mut ParseCtx, label: Label, scene: usize) {
     if !ctx.label_scene.contains_key(&label) {
         ctx.label_order.push(label.clone());

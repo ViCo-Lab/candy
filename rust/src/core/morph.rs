@@ -340,7 +340,7 @@ fn parse_path_d(d: &str) -> Option<Ring> {
                 }
             }
             // Cubic Bézier — flatten into line segments (the heart of making
-            // circle/ellipse paths morthable). `flatten_cubic` pushes the
+            // circle/ellipse paths morphable). `flatten_cubic` pushes the
             // segment's start point, so we dedup consecutively-near points after.
             "C" => {
                 if i + 6 < tokens.len() {
@@ -973,7 +973,7 @@ pub fn regular_polygon_points(cx: f64, cy: f64, r: f64, n_sides: usize) -> Ring 
 pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
     use ab_glyph::{Font, FontArc, OutlineCurve};
 
-    let font_data: Vec<u8> = load_system_font().or_else(load_embedded_font)?;
+    let font_data: Vec<u8> = load_system_font()?;
     let font = FontArc::try_from_vec(font_data).ok()?;
 
     let glyph_id = font.glyph_id(ch);
@@ -1061,21 +1061,6 @@ fn load_system_font() -> Option<Vec<u8>> {
         if let Ok(data) = std::fs::read(path) {
             return Some(data);
         }
-    }
-    None
-}
-
-/// Load the embedded Typst fallback font (New Computer Modern) from
-/// `typst-kit`. This is always available when the `embedded-fonts` feature
-/// is on.
-fn load_embedded_font() -> Option<Vec<u8>> {
-    // typst_kit::fonts::embedded() yields (Font, FontInfo) pairs; the Font
-    // carries the raw byte data. We pick the first font.
-    for (font, _) in typst_kit::fonts::embedded() {
-        // Font implements FontSource; we can't easily extract raw bytes, so
-        // use the font directly via its data() method if available.
-        // As a fallback, skip embedded fonts and rely on system fonts.
-        let _ = font; // suppress unused warning
     }
     None
 }
