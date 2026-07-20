@@ -18,7 +18,7 @@ and encoding backend. Inspired by 3Blue1Brown's
 
 - High-performance rendering powered by the Rust [`typst`](https://crates.io/crates/typst) crate — **in-process, no CLI invocation**.
 - Code-oriented animation creation, written directly in Typst.
-- Self-contained video encoding via [`rav1e`](https://crates.io/crates/rav1e) (AV1) and [`openh264`](https://crates.io/crates/openh264) (H.264) — **no FFmpeg, no external codec CLI**.
+- Video encoding via multiple codecs: the default is `x264` (H.264 through system `ffmpeg` + libx264, transparently falling back to the self-contained [`openh264`](https://crates.io/crates/openh264) when `ffmpeg` is unavailable); the pure-Rust [`rav1e`](https://crates.io/crates/rav1e) (AV1) and `openh264` (H.264) codecs run fully in-process with no external CLI, selectable via `--codec av1` / `--codec h264`.
 - Hand-written MP4 / Matroska / WebM muxers in pure Rust.
 - **Animated GIF and static PNG output** (pure-Rust `gif` / `png`) for quick previews and posters — no codec, no container.
 - Audio muxing for Opus (`.opus`/`.ogg` → MKV/WebM) and AAC (`.aac` → MP4).

@@ -29,7 +29,7 @@ impl Renderer {
         all_frames: &[FrameData],
     ) -> Result<String, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
-        self.render_frame_svg(&states, &camera, time_ms, false)
+        self.render_frame_svg(&states, &camera, time_ms, false, false)
     }
 
     /// Build the SVG for one frame from precomputed `states` + `camera`.
@@ -38,17 +38,23 @@ impl Renderer {
     /// and, when the document declares a `#camera` directive, composed with
     /// the camera `<g>` group + per-glyph transform/morph overlays + the
     /// camera-independent subtitle overlay ([`compose_frame_svg`]). When the
-    /// document has no `#camera`, the base is returned directly (the
-    /// "no-camera direct-output" path): subtitles render natively inside the
-    /// document and there is no SVG assembly / overlay step. `hide_fading`
-    /// controls whether opacity < 1 objects are hidden in the base (the
-    /// pixel path draws them via the opacity overlay instead).
+    /// document has no `#camera`, the base is still composed through
+    /// [`compose_frame_svg`] with the transform/morph/subtitle overlays
+    /// (which are empty strings when no such effect is active, so the result
+    /// is equivalent to the native base document). `hide_fading` controls
+    /// whether opacity < 1 objects are hidden in the base (the pixel path
+    /// draws them via the opacity overlay instead). `transparent_bg`
+    /// suppresses the canvas background rect in the output — used for the
+    /// per-object opacity layers, which must stay transparent so compositing
+    /// only adds the target object rather than washing the whole frame
+    /// toward the background colour.
     fn render_frame_svg(
         &self,
         states: &HashMap<Label, FrameData>,
         camera: &Option<FrameData>,
         time_ms: u32,
         hide_fading: bool,
+        transparent_bg: bool,
     ) -> Result<String, CandyError> {
         let active = if self.scene.scenes.is_empty() {
             0
@@ -87,11 +93,20 @@ impl Renderer {
         // supplies `__camera__` through `frames` rather than a `#camera`
         // directive). The per-glyph transform/morph overlay is always
         // applied (it is needed even on no-camera documents, where the
-        // base still carries animated transforms). Only the subtitle overlay
-        // is gated on `has_camera_directive` (see `compose_frame_svg`),
-        // so on no-camera documents the caption renders natively inside the
-        // base document and is never overlaid.
-        self.compose_frame_svg(&base, states, time_ms, camera, pw, ph, &bg_hex)
+        // base still carries animated transforms). The subtitle overlay is
+        // also always applied (subtitles are blanked in the base for every
+        // document and drawn as a camera-independent overlay, so automatic
+        // switching works on no-camera documents too).
+        self.compose_frame_svg(
+            &base,
+            states,
+            time_ms,
+            camera,
+            pw,
+            ph,
+            &bg_hex,
+            transparent_bg,
+        )
     }
 
     /// Compose the full draft SVG for one frame: the base document (typst_svg
@@ -113,6 +128,7 @@ impl Renderer {
         pw: f64,
         ph: f64,
         bg_hex: &str,
+        transparent_bg: bool,
     ) -> Result<String, CandyError> {
         // Extract the inner markup of the typst_svg document (between `<svg …>`
         // and `</svg>`), then split the leading background `<rect>` (which must
@@ -144,22 +160,26 @@ impl Renderer {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{pw}\" height=\"{ph}\" viewBox=\"0 0 {pw} {ph}\">\n",
             pw = pw, ph = ph,
         ));
-        if bg.is_empty() {
-            // Defensive fallback: if `typst_svg` emitted no recognizable page-fill
-            // background (or `split_background` couldn't bound it), draw the canvas
-            // background ourselves so the frame is never transparent. `bg_hex`
-            // honors the active scene's `bg` (inheriting from a parent scene) and
-            // defaults to opaque white — exactly what the removed legacy path did
-            // with its explicit `<rect fill=bg_hex>`.
-            out.push_str(&format!(
-                "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"{bg_hex}\"/>\n",
-                pw = pw,
-                ph = ph,
-                bg_hex = bg_hex,
-            ));
-        } else {
-            out.push_str(bg);
-            out.push('\n');
+        if !transparent_bg {
+            if bg.is_empty() {
+                // Defensive fallback: if `typst_svg` emitted no recognizable
+                // page-fill background (or `split_background` couldn't bound it),
+                // draw the canvas background ourselves so the frame is never
+                // transparent. `bg_hex` honors the active scene's `bg`
+                // (inheriting from a parent scene) and defaults to opaque white —
+                // exactly what the removed legacy path did with its explicit
+                // `<rect fill=bg_hex>`. Skipped entirely for the per-object
+                // opacity layers, which must stay transparent.
+                out.push_str(&format!(
+                    "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"{bg_hex}\"/>\n",
+                    pw = pw,
+                    ph = ph,
+                    bg_hex = bg_hex,
+                ));
+            } else {
+                out.push_str(bg);
+                out.push('\n');
+            }
         }
         if let Some(cam) = camera {
             out.push_str(&format!(
@@ -174,14 +194,14 @@ impl Renderer {
         if camera.is_some() {
             out.push_str("</g>\n");
         }
-        // Subtitles are drawn as a camera-independent overlay ONLY when the
-        // document declares a `#camera` directive (in which case they were
-        // blanked in the base document by `build_parameterized_source`).
-        // On no-camera documents the caption renders natively inside the
-        // document, so it must NOT be overlaid here (that would double-draw
-        // it). `has_camera_directive` is the single source of truth for
-        // both the blanking and the overlay, keeping them in sync.
-        if self.has_camera_directive {
+        // Subtitles are ALWAYS drawn as a camera-independent overlay (they were
+        // blanked in the base document by `build_parameterized_source` for every
+        // document, camera or not). Gating on visibility here is what makes
+        // automatic subtitle switching work on no-camera documents too — only the
+        // captions active at `time_ms` are injected, so they never all stack at
+        // once. Skipped for the per-object opacity layers (`transparent_bg`),
+        // which must stay transparent.
+        if !transparent_bg {
             let vis_subs = self.scene.visible_subtitle_ids_at(time_ms);
             for sub in &self.scene.subtitles {
                 if vis_subs.contains(&sub.id) {
@@ -314,26 +334,29 @@ impl Renderer {
                 (l.clone(), s.opacity)
             })
             .collect();
-        let base_svg = self.render_frame_svg(&base_states, &camera, time_ms, true)?;
+        let base_svg = self.render_frame_svg(&base_states, &camera, time_ms, true, false)?;
         let mut out = rasterize_svg(&base_svg, tw, th)?;
         if fading.is_empty() {
             return Ok(out);
         }
+        // Per-object opacity layer template: a copy of `states` with every
+        // object hidden (opacity 0). Each fading object's layer is produced by
+        // cloning this template once and un-hiding just that object, which
+        // avoids re-zeroing the whole map for every layer. The layer is
+        // rasterized with a *transparent* background (`transparent_bg = true`)
+        // so compositing only adds the target object at `op` over the
+        // already-correct base — never the canvas colour (an opaque layer
+        // background would wash the whole frame toward the background at `op`).
+        let mut hidden = states.clone();
+        for s in hidden.values_mut() {
+            s.opacity = 0.0;
+        }
         for (label, op) in &fading {
-            // One full-opacity layer: only `label` shown, everything else
-            // (and the canvas background) hidden, so the layer is transparent
-            // except for `label` — compositing it over the base at `op`
-            // yields `label` at exactly `op` over the already-correct base.
-            let mut layer_states = states.clone();
-            for (k, s) in layer_states.iter_mut() {
-                if k != label {
-                    s.opacity = 0.0;
-                }
-            }
+            let mut layer_states = hidden.clone();
             if let Some(s) = layer_states.get_mut(label) {
                 s.opacity = 1.0;
             }
-            let layer_svg = self.render_frame_svg(&layer_states, &camera, time_ms, true)?;
+            let layer_svg = self.render_frame_svg(&layer_states, &camera, time_ms, true, true)?;
             let layer = rasterize_svg(&layer_svg, tw, th)?;
             Self::composite_over(&mut out, &layer, *op);
         }

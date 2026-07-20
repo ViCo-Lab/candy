@@ -15,7 +15,7 @@
 //!   renderer::typst::Renderer ─▶ pixel frames
 //!                         │
 //!                         ▼
-//!   renderer::video ─▶ AV1 (rav1e) / H.264 (openh264) ─▶ MP4 / Matroska
+//!   renderer::video ─▶ x264 (ffmpeg/libx264, fallback openh264) · AV1 (rav1e) · H.264 (openh264) ─▶ MP4 / Matroska
 //!                         └▶ GIF (animated) / PNG (bitmap, final frame)
 //! ```
 //!
@@ -111,7 +111,9 @@ impl From<&std::path::Path> for Input {
 pub enum OutputFormat {
     /// SVG draft written to `.candy/` (not a video, never enters `dist/`).
     Svg,
-    /// MP4 container (default), H.264 unless `--codec av1` is given.
+    /// MP4 container (default); encoded with the default `x264` codec (system
+    /// `ffmpeg` + libx264, falling back to `openh264`) unless `--codec` selects
+    /// another (e.g. `av1` for rav1e, `h264` for openh264).
     Mp4,
     /// Matroska (`.mkv`).
     Mkv,
@@ -129,7 +131,9 @@ pub enum OutputFormat {
 /// * `intermediate_dir` — directory (`.candy/<stem>`) for draft artifacts.
 /// * `output`           — final video path (under `dist`) for video formats.
 /// * `format`           — [`OutputFormat`].
-/// * `codec`            — [`Codec`] (AV1 preferred; H264 optional; HEVC errors).
+/// * `codec`            — [`Codec`] (default `x264` via system `ffmpeg`/libx264,
+///   falling back to `openh264`; `av1` (rav1e) and `h264` (openh264) are
+///   self-contained; `hevc`/`x265`/hardware codecs shell out to `ffmpeg`).
 /// * `fps`              — frames per second (video time base).
 /// * `pixel_per_pt`     — rasterization resolution for the video path.
 ///
