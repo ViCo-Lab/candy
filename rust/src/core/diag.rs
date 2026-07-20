@@ -272,7 +272,7 @@ impl CandyError {
             CandyError::Interpolation(e) => format!("interpolation range: {e}"),
             CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
-            CandyError::CandyDumpedYou(e, _) => format!("candy package not imported: {e}"),
+            CandyError::CandyDumpedYou(e, _) => format!("Candy dumped you: {e} (-_-)"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!("{kind} \"{key}\" does not exist (never declared or already destroyed)")
             }

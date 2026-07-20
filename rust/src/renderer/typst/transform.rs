@@ -20,7 +20,8 @@ use crate::core::easing::Easing;
 use crate::renderer::typst::{
     PT_PER_CM, Renderer, collect_formula_leaves, imports_preamble, localize_formula_ids,
 };
-use typst_library::foundations::Dict;
+use typst_library::foundations::{Dict, Label as TypstLabel, Str as TypstStr};
+use typst_library::introspection::Introspector;
 
 /// One animated glyph/decoration in a per-glyph `transform`. The fragment is
 /// cropped from the *whole* old or new formula render (so it keeps Typst's
@@ -71,6 +72,14 @@ pub(crate) struct TransformFragmentPlan {
     pub(crate) new_inner: String,
     /// Per-glyph animation fragments.
     pub(crate) anims: Vec<GlyphAnim>,
+    /// Label-point offset (cm) of the old / new formula in the isolated origin
+    /// render. The base document positions a mobject by its *label* point
+    /// (`flow_pos`), so the overlay shifts each fragment by this offset to land
+    /// the formula's label anchor on the animated `st` target and stay aligned
+    /// with the rest of the scene. Measured once in `build_transform_fragments`.
+    pub(crate) ref_old: (f64, f64),
+    /// See `ref_old`; used for fragments drawn from the new formula.
+    pub(crate) ref_new: (f64, f64),
 }
 
 /// Build the Typst source that renders a single mobject body at `(x_cm, y_cm)`
@@ -262,6 +271,13 @@ impl Renderer {
         if old_frags.is_empty() || new_frags.is_empty() {
             return None;
         }
+        // Measure each formula's label anchor in the isolated origin render so
+        // the overlay can align to the base document's mobject (whose `flow_pos`
+        // is the label point). Without this offset the per-glyph fragments
+        // "float" away from the formula's true position when several `#transform`
+        // steps chain on the same target.
+        let ref_old_pt = self.measure_formula_label(&plan.old_body, &preamble, "candy_tf_ref_old");
+        let ref_new_pt = self.measure_formula_label(&plan.new_body, &preamble, "candy_tf_ref_new");
 
         // Smart matching (Manim `TransformMatchingShapes` style): shapes are
         // already split per graphical unit by `extract_formula` (each glyph
@@ -378,6 +394,8 @@ impl Renderer {
             old_inner,
             new_inner,
             anims,
+            ref_old: (ref_old_pt.0 / PT_PER_CM, ref_old_pt.1 / PT_PER_CM),
+            ref_new: (ref_new_pt.0 / PT_PER_CM, ref_new_pt.1 / PT_PER_CM),
         })
     }
 
@@ -399,6 +417,41 @@ impl Renderer {
         let doc = self.compile_cached(&src, &Dict::new()).ok()?;
         let page = doc.pages().first()?;
         Some(typst_svg::svg(page, &SvgOptions::default()))
+    }
+
+    /// Render a body at the page origin with a trailing reference `#label` and
+    /// return that label's position (pt, in the isolated origin render). This is
+    /// the same anchor the base document measures as `flow_pos`, so the overlay
+    /// can align each formula to its mobject. The label is a sibling *after* the
+    /// body, mirroring `#mobject`'s `[#body#label(name)]`, so the measured point
+    /// is the formula's label anchor (not the body's top-left).
+    fn measure_formula_label(&self, body: &str, preamble: &str, ref_label: &str) -> (f64, f64) {
+        let pre = if preamble.is_empty() {
+            String::new()
+        } else {
+            format!("{preamble}\n")
+        };
+        let src = format!(
+            "{pre}#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
+             #move(dx: 0cm, dy: 0cm)[#scale(origin: center, 100%)[#{{ ({body}) }}]]#label(\"{ref_label}\")\n",
+            pw = self.page_w,
+            ph = self.page_h,
+        );
+        let doc = match self.compile_cached(&src, &Dict::new()) {
+            Ok(d) => d,
+            Err(_) => return (0.0, 0.0),
+        };
+        let intro = doc.introspector();
+        let Ok(label_val) = TypstLabel::construct(TypstStr::from(ref_label)) else {
+            return (0.0, 0.0);
+        };
+        intro
+            .query_label(label_val)
+            .ok()
+            .and_then(|c| c.location())
+            .and_then(|loc| intro.position(loc))
+            .map(|p| (p.point.x.to_pt(), p.point.y.to_pt()))
+            .unwrap_or((0.0, 0.0))
     }
 
     /// Extract every positioned glyph / decoration from a formula's SVG (as
@@ -495,16 +548,14 @@ impl Renderer {
         if time_ms < p.start_ms || time_ms > p.end_ms {
             return None;
         }
-        let flow_pos = self.flow_pos.get(&p.target).copied().unwrap_or((0.0, 0.0));
-        let nat_cm = (flow_pos.0 / PT_PER_CM, flow_pos.1 / PT_PER_CM);
+        // The target's absolute top-left (cm). The label-anchor offset that keeps
+        // the overlay aligned with the base document is applied per-fragment in
+        // `transform_overlay_svg` (it differs between the old and new formula), so
+        // here we return the raw animated target only.
         let (sx, sy, scale, rot) = match states.get(&p.target) {
             Some(s) => (s.x, s.y, s.scale, s.rotation),
             None => (0.0, 0.0, 1.0, 0.0),
         };
-        eprintln!(
-            "DBG tp target={} flow_pos_pt=({:.2},{:.2}) st=({:.4},{:.4}) sx_sy_cm=({:.4},{:.4})",
-            p.target.0, flow_pos.0, flow_pos.1, sx, sy, sx, sy
-        );
         // At the final frame (`end_ms`) the eased progress is forced to exactly
         // 1.0 so the overlay reconstructs the *target* formula pixel-for-pixel
         // (matched glyphs land on their new positions, inserted units are fully
@@ -531,8 +582,9 @@ impl Renderer {
     /// (instead of repeating the markup inside every fragment's clip) keeps the
     /// SVG small and prevents neighbouring glyphs from leaking through a
     /// slightly-off clip box (the "residual garbage" artefact). The clip + the
-    /// translate follow the target mobject (flow_pos + state) so the transform stays
-    /// aligned with the rest of the scene.
+    /// translate follow the target mobject (its animated `st` plus each formula's
+    /// measured label-anchor offset) so the transform stays aligned with the rest
+    /// of the scene even when several `#transform` steps chain on one target.
     pub(crate) fn transform_overlay_svg(
         &self,
         states: &HashMap<Label, FrameData>,
@@ -589,8 +641,15 @@ impl Renderer {
                 // transform. (Previously this subtracted the full center coordinate,
                 // shifting every fragment ~2·center toward the top-left — the
                 // "scattered fragments / ghost" artefact.)
-                let tx = (sx + lx) * PT_PER_CM;
-                let ty = (sy + ly) * PT_PER_CM;
+                // `ref` is the formula's label-anchor offset (cm) measured in the
+                // isolated origin render. The base document positions the mobject by
+                // its label point (`flow_pos`) and shifts the whole content (body +
+                // label) by `st - flow_pos`; subtracting `ref` here replicates that
+                // same shift on the isolated glyph coordinates so chained `#transform`
+                // steps no longer drift ("float") away from the formula.
+                let r = if f.src == 0 { p.ref_old } else { p.ref_new };
+                let tx = (sx - r.0 + lx) * PT_PER_CM;
+                let ty = (sy - r.1 + ly) * PT_PER_CM;
                 let cx = (bbx0 + bbx1) / 2.0;
                 let cy = (bby0 + bby1) / 2.0;
                 let r = rot.to_radians();

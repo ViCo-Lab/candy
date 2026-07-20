@@ -195,6 +195,14 @@ pub struct Renderer {
     /// collected once in [`Renderer::build_parameterized_source`]. The building
     /// block for the per-page render documents in `param_sources`.
     wrapped_bodies: HashMap<Label, String>,
+    /// Accumulated Typst context per scene id (key `0` for the no-scene-tree /
+    /// hand-built case), built once in [`Renderer::build_scene_contexts`]. Each
+    /// value is the full chain of *ancestor* contexts (root + every ancestor
+    /// scene's body context, minus `#mobject` / `#subtitle` / non-ancestor
+    /// `#scene` calls) that a scene's per-page document must prepend so its
+    /// mobjects inherit the parent scene's `#import` / `#set` / `#show` / `#let`
+    /// environment — not just the immediate parent's page size / background.
+    scene_contexts: HashMap<usize, String>,
     /// The stable, per-page render documents. Each entry is keyed by
     /// `(scene_id, page_index)` and is a standalone Typst document containing
     /// only that scene/page's mobjects, laid out from the top in raw flow
@@ -237,6 +245,7 @@ impl Renderer {
             scene.artifacts.mobject_body = mobject_body;
         }
         let (param_source, wrapped_bodies) = Self::build_parameterized_source(&scene);
+        let scene_contexts = Self::build_scene_contexts(&scene);
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -255,6 +264,7 @@ impl Renderer {
             bg_cache: Mutex::new(HashMap::new()),
             param_source,
             wrapped_bodies,
+            scene_contexts,
             param_sources: HashMap::new(),
             source_path,
         })

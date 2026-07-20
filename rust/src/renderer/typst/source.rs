@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::ast::SceneInfo;
+use std::collections::HashSet;
 
 impl Renderer {
     /// Build the stable, *parameterized* whole-document source from the parsed
@@ -190,16 +191,271 @@ impl Renderer {
         (cur, wrapped_bodies)
     }
 
+    /// Build, for every scene, the **accumulated Typst context** that the
+    /// scene's mobjects must see when rendered as a standalone per-page
+    /// document — i.e. the full chain of *ancestor* contexts, not just the
+    /// immediate parent's page size / background.
+    ///
+    /// In the old whole-document path the full `.tyx` source was compiled, so a
+    /// nested scene's mobjects naturally inherited every `#import`, `#set` /
+    /// `#show` rule, helper `#let` definition, and top-level content established
+    /// by their ancestor scenes (and the document root). The per-page path
+    /// compiles a *standalone* document containing only that page's `#mobject`
+    /// calls, so all of that context would otherwise be lost. This function
+    /// extracts it by walking the parse tree and keeping, for scene `sid`:
+    ///
+    /// * the document-root context (everything outside any `#scene` call), minus
+    ///   `#mobject` / `#subtitle` calls (those are re-emitted per page) and minus
+    ///   `#scene` calls that are *not* ancestors of `sid`;
+    /// * for each ancestor scene (root → … → immediate parent), that ancestor's
+    ///   body context (its `#set` / `#show` / `#let` / content), minus its own
+    ///   `#mobject` calls and minus any nested `#scene` call that is not on the
+    ///   ancestor chain.
+    ///
+    /// The result is keyed by scene id (`0` for the no-scene-tree / hand-built
+    /// case). Each value is a flat Typst source fragment that, prepended before
+    /// the `#set page(...)` and the `#mobject(...)` calls, reproduces exactly the
+    /// environment the mobjects had inside the whole document.
+    pub(crate) fn build_scene_contexts(scene: &Scene) -> HashMap<usize, String> {
+        let mut map: HashMap<usize, String> = HashMap::new();
+        let src = &scene.artifacts.source;
+        if src.is_empty() {
+            // Hand-built / programmatic scene: no user source → no context.
+            map.insert(0, String::new());
+            return map;
+        }
+        let root = typst_syntax::parse(src);
+        let node = LinkedNode::new(&root);
+        // `(call_start, call_end) → scene id` for every `#scene(...)` call.
+        let call_map: HashMap<(usize, usize), usize> = scene
+            .artifacts
+            .scene_call
+            .iter()
+            .map(|(id, (s, e))| ((*s, *e), *id))
+            .collect();
+        // Rewrite file-style candy imports to the canonical `@preview` form so
+        // the World resolves them in-process (mirrors `build_parameterized_source`).
+        let v = crate::CANDY_VERSION;
+        let rewrite = |mut c: String| -> String {
+            c = c.replace(
+                "#import \"candy\":",
+                &format!("#import \"@preview/candy:{v}\":"),
+            );
+            c.replace(
+                "#import \"candy\"",
+                &format!("#import \"@preview/candy:{v}\""),
+            )
+        };
+        if scene.scenes.is_empty() {
+            // No scene tree: context for sid 0 = root minus mobjects/subtitles.
+            let keep: HashSet<usize> = HashSet::new();
+            let mut skipped = Vec::new();
+            Self::collect_skipped(src, &node, &keep, &call_map, &mut skipped);
+            let ctx = Self::emit_minus_skipped(src, node.range(), &skipped);
+            map.insert(0, rewrite(ctx));
+            return map;
+        }
+        for s in &scene.scenes {
+            let keep: HashSet<usize> = Self::ancestor_chain(scene, s.id).into_iter().collect();
+            let mut skipped = Vec::new();
+            Self::collect_skipped(src, &node, &keep, &call_map, &mut skipped);
+            let ctx = Self::emit_minus_skipped(src, node.range(), &skipped);
+            map.insert(s.id, rewrite(ctx));
+        }
+        map
+    }
+
+    /// All ancestor scene ids of `id` (including `id` itself), walking `parent`
+    /// links up to the document root. Used to decide which `#scene` calls stay in
+    /// a scene's injected context.
+    fn ancestor_chain(scene: &Scene, id: usize) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            chain.push(c);
+            cur = scene
+                .scenes
+                .iter()
+                .find(|s| s.id == c)
+                .and_then(|s| s.parent);
+        }
+        chain
+    }
+
+    /// Collect the byte ranges that must be *removed* from `node`'s source to obtain
+    /// the injected context for a scene whose ancestor chain is `keep`.
+    ///
+    /// * A `#scene(...)` call **on** the ancestor chain is kept, but only its inner
+    ///   body — its `#scene(name, w, h, bg, …)` wrapper (everything outside the body)
+    ///   is subtracted, and we recurse into the body to drop any `#mobject` /
+    ///   `#subtitle` / non-ancestor `#scene` calls inside it.
+    /// * A `#scene(...)` call **not** on the chain is subtracted whole.
+    /// * `#mobject(...)` and `#subtitle(...)` calls are subtracted whole (they are
+    ///   re-emitted per page / drawn as overlays).
+    fn collect_skipped(
+        src: &str,
+        node: &LinkedNode,
+        keep: &HashSet<usize>,
+        call_map: &HashMap<(usize, usize), usize>,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        // A Typst code expression `#expr` is parsed so the `FuncCall` (etc.) node
+        // range starts at the callee identifier and *excludes* the leading `#`.
+        // When we subtract a call's range we must also back up over that `#`,
+        // otherwise the dangling `#` leaks into the context and breaks the
+        // standalone document (e.g. a `#scene` body left as `#[ … ]`).
+        let with_hash = |cs: usize| -> usize {
+            if cs > 0 && src.as_bytes().get(cs - 1) == Some(&b'#') {
+                cs - 1
+            } else {
+                cs
+            }
+        };
+        // `#scene(...)` call?
+        if let Some(id) = Self::scene_id_of(node, call_map) {
+            if keep.contains(&id) {
+                // Keep only the inner body; subtract the surrounding wrapper.
+                if let Some(body) = Self::scene_body_node(node) {
+                    let cs = with_hash(node.range().start);
+                    let ce = node.range().end;
+                    let (bs, be) = (body.range().start, body.range().end);
+                    // Strip the block delimiters so ancestor set rules apply to
+                    // the re-emitted mobjects (which live *outside* this block).
+                    // A scene body is normally a markup content block `[ … ]`,
+                    // but guard for a code block `{ … }` too.
+                    let (ibs, ibe) = if src.as_bytes().get(bs) == Some(&b'[')
+                        && src.as_bytes().get(be.wrapping_sub(1)) == Some(&b']')
+                    {
+                        (bs + 1, be - 1)
+                    } else {
+                        (bs, be)
+                    };
+                    out.push((cs, ibs));
+                    out.push((ibe, ce));
+                    for child in body.children() {
+                        Self::collect_skipped(src, &child, keep, call_map, out);
+                    }
+                }
+            } else {
+                let cs = with_hash(node.range().start);
+                out.push((cs, node.range().end));
+            }
+            return;
+        }
+        // `#mobject(...)` / `#subtitle(...)` call?
+        if Self::callee_is(node, "mobject") || Self::callee_is(node, "subtitle") {
+            let cs = with_hash(node.range().start);
+            out.push((cs, node.range().end));
+            return;
+        }
+        for child in node.children() {
+            Self::collect_skipped(src, &child, keep, call_map, out);
+        }
+    }
+
+    /// Emit `src[range]` with every `skipped` interval removed (intervals are
+    /// merged first so overlaps are handled).
+    fn emit_minus_skipped(
+        src: &str,
+        range: std::ops::Range<usize>,
+        skipped: &[(usize, usize)],
+    ) -> String {
+        let mut sk: Vec<(usize, usize)> = skipped
+            .iter()
+            .cloned()
+            .filter(|(s, e)| *e > *s && *e > range.start && *s < range.end)
+            .map(|(s, e)| (s.max(range.start), e.min(range.end)))
+            .collect();
+        sk.sort();
+        sk.dedup();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (s, e) in sk {
+            if let Some(last) = merged.last_mut() {
+                if s <= last.1 {
+                    last.1 = last.1.max(e);
+                    continue;
+                }
+            }
+            merged.push((s, e));
+        }
+        let mut out = String::new();
+        let mut cur = range.start;
+        for (s, e) in merged {
+            if s > cur {
+                out.push_str(&src[cur..s]);
+            }
+            cur = cur.max(e);
+        }
+        if cur < range.end {
+            out.push_str(&src[cur..range.end]);
+        }
+        out
+    }
+
+    /// If `node` is a `#scene(...)` call, return its registered scene id.
+    fn scene_id_of(node: &LinkedNode, call_map: &HashMap<(usize, usize), usize>) -> Option<usize> {
+        let call = node.get().cast::<ast::FuncCall>()?;
+        if let Expr::Ident(id) = call.callee() {
+            if id.as_str() == "scene" {
+                let r = node.range();
+                return call_map.get(&(r.start, r.end)).copied();
+            }
+        }
+        None
+    }
+
+    /// Whether `node` is a `#<name>(...)` call.
+    fn callee_is(node: &LinkedNode, name: &str) -> bool {
+        if let Some(call) = node.get().cast::<ast::FuncCall>() {
+            if let Expr::Ident(id) = call.callee() {
+                return id.as_str() == name;
+            }
+        }
+        false
+    }
+
+    /// The body expression node of a `#scene(...)` call (its last positional arg).
+    fn scene_body_node<'a>(node: &'a LinkedNode) -> Option<LinkedNode<'a>> {
+        let args_node = node
+            .children()
+            .find_map(|c| c.get().cast::<ast::Args>().map(|_| c))?;
+        let mut body_arg: Option<LinkedNode<'a>> = None;
+        for arg in args_node.children() {
+            if let Some(a) = arg.get().cast::<ast::Arg>() {
+                if matches!(a, ast::Arg::Pos(_)) {
+                    body_arg = Some(arg.clone());
+                }
+            }
+        }
+        let arg = body_arg?;
+        // `arg` is the `Arg::Pos` wrapping the scene's trailing content block
+        // `[ … ]`. Its range covers the *entire* block (including the `[` and
+        // `]` delimiters), so callers can strip those delimiters and re-emit the
+        // inner markup at top level. Returning `arg.children().next()` would
+        // hand back the bare `LeftBracket` token (a 1-byte node), which makes
+        // the delimiter-stripping guard fail and leaks a stray `[` into the
+        // re-emitted document (often pairing with a neighbour to form `[[`/`]]`
+        // garbage).
+        Some(arg)
+    }
+
     /// Build the candy **scene runtime context** preamble for scene `sid`: a
     /// standalone Typst document header that injects the scene's page size,
     /// background, and (implicitly, via the global `sys.inputs`) its counters
-    /// and `active_scene`.
+    /// and `active_scene` — **plus the full chain of ancestor Typst contexts**.
     ///
-    /// For a nested (sub-)scene the page size and background **inherit** the
-    /// parent scene's values when the sub-scene does not override them
-    /// (`effective_page_pt` / `scene_bg_hex` walk the scene tree), so a
-    /// sub-scene automatically renders inside its parent's canvas context — the
-    /// "sub-scene rendering injects the current scene's context" requirement.
+    /// The preamble is: `[candy import if absent] + [#set page(...)] +
+    /// [accumulated ancestor context]`. The `#set page(...)` comes *first* so the
+    /// candy canvas is established before the ancestor context is applied (an
+    /// ancestor `#set`/`#show`/`#let` rule or piece of content then lands on the
+    /// candy page, not on Typst's default A4 page). The accumulated ancestor
+    /// context (`self.scene_contexts[sid]`, built in
+    /// [`Renderer::build_scene_contexts`]) is the document-root context followed
+    /// by every ancestor scene's body context (its `#import` / `#set` / `#show` /
+    /// `#let` / content), so a nested sub-scene renders with *all* of its
+    /// parents' Typst environment — not just the immediate parent's page size /
+    /// background. This is the "sub-scene rendering injects the current scene's
+    /// (and every ancestor's) context" requirement.
     pub(crate) fn scene_context_preamble(&self, sid: usize) -> String {
         let v = crate::CANDY_VERSION;
         let (pw_pt, ph_pt) = if self.scene.scenes.is_empty() {
@@ -223,13 +479,25 @@ impl Renderer {
         } else {
             bg.clone()
         };
-        format!(
-            "#import \"@preview/candy:{v}\": *\n#set page(width: {pw_cm}cm, height: {ph_cm}cm, margin: 0pt, fill: {bg_expr})\n",
-            v = v,
+        let ctx = self.scene_contexts.get(&sid).cloned().unwrap_or_default();
+        let mut preamble = String::new();
+        // Prepend the candy import only if the accumulated context doesn't
+        // already import it (the context built in `build_scene_contexts` is
+        // rewritten to the canonical `@preview/candy:{v}` form, so check for
+        // that exact string — a bare substring `"candy"` would false-positive on
+        // user identifiers / comments and wrongly skip the import, leaving every
+        // `#mobject` undefined and the page blank).
+        if !ctx.contains(&format!("@preview/candy:{v}")) {
+            preamble.push_str(&format!("#import \"@preview/candy:{v}\": *\n"));
+        }
+        preamble.push_str(&format!(
+            "#set page(width: {pw_cm}cm, height: {ph_cm}cm, margin: 0pt, fill: {bg_expr})\n",
             pw_cm = pw_cm,
             ph_cm = ph_cm,
             bg_expr = bg_expr,
-        )
+        ));
+        preamble.push_str(&ctx);
+        preamble
     }
 
     /// Assemble the standalone per-page render document for `(sid, page)`: the
@@ -240,6 +508,9 @@ impl Renderer {
     /// rendering exactly as they did under the whole-document path.
     pub(crate) fn assemble_page_doc(&self, sid: usize, page: usize) -> String {
         let mut doc = self.scene_context_preamble(sid);
+        if std::env::var("CANDY_DBG_DOC").is_ok() {
+            eprintln!("DBG DOC sid={sid} page={page}:\n<<<\n{doc}\n>>>");
+        }
         let label_scene = self.scene.label_scene_map();
         let owns: Vec<Label> = if self.scene.scenes.is_empty() {
             self.scene.items.keys().cloned().collect()
@@ -268,6 +539,9 @@ impl Renderer {
                 continue;
             }
             doc.push_str(&format!("#mobject(\"{}\", {})\n", label.0, wrapped));
+        }
+        if std::env::var("CANDY_DBG_DOC").is_ok() {
+            eprintln!("DBG FULLDOC sid={sid} page={page}:\n<<<\n{doc}\n>>>");
         }
         doc
     }
