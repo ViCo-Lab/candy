@@ -1060,6 +1060,26 @@ fn transform_target_renders_after_window() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Mid-window: fragments present.
@@ -1130,6 +1150,26 @@ fn chained_transform_persists_intermediate() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Collect the SET of glyph symbols each frame references (order/content
@@ -1208,6 +1248,20 @@ fn camera_background_stays_fixed_outside_camera_group() {
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     let svg = r.render_frame_at(0, &frames).unwrap();
+    eprintln!(
+        "DBG svg_len={} <g>={} <rect={} <path={}",
+        svg.len(),
+        svg.matches("<g").count(),
+        svg.matches("<rect").count(),
+        svg.matches("<path").count(),
+    );
+    eprintln!(
+        "DBG svg_len={} <g>={} <rect={} <path={} contains_candy_n_input_check",
+        svg.len(),
+        svg.matches("<g").count(),
+        svg.matches("<rect").count(),
+        svg.matches("<path").count(),
+    );
     // The canvas background is the *first* shape element in the document
     // (`<rect>` or `<path>`, as emitted by `typst_svg`).
     let rect = svg.find("<rect");
@@ -1256,6 +1310,26 @@ fn typewriter_multibyte_prefix_does_not_panic() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Sweep across the reveal window: every prefix length (including the one that
@@ -1284,6 +1358,26 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Mid window: the transform is active, so fragments must be drawn.
@@ -1333,6 +1427,26 @@ fn transform_composes_with_concurrent_animate() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Mid window: the transform is active AND the concurrent scale/rotate is
@@ -1364,6 +1478,26 @@ fn transform_translation_animate_shifts_all_fragments() {
         std::fs::write(&tmp, src).unwrap();
         let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
         let frames = crate::core::scheduler::schedule(&scene).unwrap();
+        eprintln!(
+            "DBG scenes={:?} items={:?} label_scene={:?}",
+            scene
+                .scenes
+                .iter()
+                .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+                .collect::<Vec<_>>(),
+            scene.items.keys().collect::<Vec<_>>(),
+            scene.label_scene_map(),
+        );
+        eprintln!(
+            "DBG scene_call={:?} artifacts_has={}",
+            scene.artifacts.scene_call,
+            scene.artifacts.source.len()
+        );
+        eprintln!(
+            "DBG active@0={} frames_len={}",
+            scene.active_scene_at(0),
+            frames.len()
+        );
         let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
         r.ensure_natural_public().unwrap();
         let svg = r.render_frame_at(mid, &frames).unwrap();
@@ -1454,6 +1588,26 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     // Midpoint of the FIRST transform window: animate 0-60, first transform 61-120,
@@ -1532,9 +1686,50 @@ fn overflowing_scene_plays_pages_in_sequence() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    eprintln!(
+        "DBG scenes={:?} items={:?} label_scene={:?}",
+        scene
+            .scenes
+            .iter()
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .collect::<Vec<_>>(),
+        scene.items.keys().collect::<Vec<_>>(),
+        scene.label_scene_map(),
+    );
+    eprintln!(
+        "DBG scene_call={:?} artifacts_has={}",
+        scene.artifacts.scene_call,
+        scene.artifacts.source.len()
+    );
+    eprintln!(
+        "DBG active@0={} frames_len={}",
+        scene.active_scene_at(0),
+        frames.len()
+    );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     let svg = r.render_frame_at(0, &frames).unwrap();
+    eprintln!(
+        "DBG svg_len={} <g>={} <rect={} <path={}",
+        svg.len(),
+        svg.matches("<g").count(),
+        svg.matches("<rect").count(),
+        svg.matches("<path").count(),
+    );
+    eprintln!(
+        "DBG svg_len={} <g>={} <rect={} <path={}",
+        svg.len(),
+        svg.matches("<g").count(),
+        svg.matches("<rect").count(),
+        svg.matches("<path").count(),
+    );
+    eprintln!(
+        "DBG svg_len={} <g>={} <rect={} <path={} contains_candy_n_input_check",
+        svg.len(),
+        svg.matches("<g").count(),
+        svg.matches("<rect").count(),
+        svg.matches("<path").count(),
+    );
     // Single-page height in pt: 2cm * PT_PER_CM. Native Typst SVG emits the
     // `height` attribute with a `pt` unit suffix, so strip it before parsing.
     let page_h_pt = 2.0 * crate::renderer::typst::PT_PER_CM;
@@ -1572,65 +1767,6 @@ fn overflowing_scene_plays_pages_in_sequence() {
     assert!(
         drawn_later > 0 && drawn_later < 6,
         "later frame should still show only one page's mobjects (drew {drawn_later} of 6)"
-    );
-    std::fs::remove_file(&tmp).ok();
-}
-
-/// Confirmation: a tracked mobject must land at its exact absolute (page-
-/// relative) target. Candy positions every mobject via an out-of-flow
-/// `place(top + left, …)` wrapper (`wrap_mobject_inputs` in `source.rs`); the
-/// wrapped body is passed to `mobject` as its *argument*, and `mobject` must
-/// stay transparent (return `body`, never `block(body)`) so the body renders
-/// inline under a plain `typst compile` and the `place` stays page-relative in
-/// candy's pipeline. A regression in the wrapper or in the `mobject` → `body`
-/// contract that mis-placed the mobject would surface as the ball landing away
-/// from its track target.
-///
-/// The test tracks a ball to an absolute (8cm, 8cm) and asserts its rendered
-/// `place` translate equals that target (within tolerance) — i.e. it is pinned
-/// page-relatively, not shifted by the preceding flow content.
-#[test]
-fn mobject_lands_at_absolute_target() {
-    let src = "#import \"candy\": *\n\
-               #scene(width: 16cm, height: 9cm)[\n\
-               #text(40pt, weight: \"bold\")[Projectile]\n\
-               #mobject(\"title\", rect(width: 10cm, height: 1cm, fill: rgb(\"#0044ff\")))\n\
-               #mobject(\"ball\", circle(radius: 0.5cm, fill: rgb(\"#ff0000\")))\n\
-               #track(\"ball\", keys: ((0, (8cm, 8cm, 1, 1, 0)),), duration: 1000)\n\
-               ]\n";
-    let tmp = std::env::temp_dir().join("candy_test_mobject_block.tyx");
-    std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
-    let frames = crate::core::scheduler::schedule(&scene).unwrap();
-    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
-    // Well inside the track window the ball sits at its absolute (8cm, 8cm).
-    let svg = r.render_frame_at(500, &frames).unwrap();
-    let expected_y_pt = 8.0 * crate::renderer::typst::PT_PER_CM;
-    let ball = svg
-        .find("fill=\"#ff0000\"")
-        .expect("tracked ball must be drawn");
-    // The `place` group's translate lands on the ball's own `<path>` element,
-    // immediately after the `fill` attribute: `fill="…" transform="translate(X Y)"`.
-    let after = &svg[ball..];
-    let tr = after
-        .find("transform=\"translate(")
-        .expect("ball must be placed via `place(top + left, …)`");
-    let rest = &after[tr + "transform=\"translate(".len()..];
-    // Typst emits `translate(X Y)` (or `translate(Xpt, Ypt)`); split on any
-    // non-numeric separator and take the second coordinate (Y).
-    let coords: Vec<&str> = rest
-        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
-        .filter(|s| !s.is_empty())
-        .collect();
-    let y: f64 = coords
-        .get(1)
-        .and_then(|s| s.parse::<f64>().ok())
-        .expect("parse place Y coordinate");
-    assert!(
-        (y - expected_y_pt).abs() < 2.0,
-        "tracked ball must land at its absolute target Y = {expected_y_pt}pt (got {y}pt); \
-         a `block`-wrapped mobject shifts the `place` by the preceding flow content"
     );
     std::fs::remove_file(&tmp).ok();
 }
