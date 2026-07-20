@@ -83,7 +83,6 @@ use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use crate::parser::expr::strip_string_literal;
 use crate::warn;
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -179,27 +178,31 @@ pub struct Renderer {
     body_cache: Mutex<LruCache<String, Arc<PagedDocument>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
-    /// The stable, *parameterized* whole-document source used by the native
-    /// Typst render path. Built once (in [`Renderer::with_root`]) from the
+    /// The stable, *parameterized* whole-document source used by the
+    /// flow-measurement pass. Built once (in [`Renderer::with_root`]) from the
     /// parsed artifacts: every animatable mobject body is wrapped in a
     /// `sys.inputs.at("candy:<label>:…")` reader and every `#scene` call is
-    /// gated by `sys.inputs.at("candy:active_scene")`. Because this string
-    /// never changes across frames, the `source_cache` (parse) hits on every
-    /// frame — only the per-frame `inputs` dictionary varies, and that is
-    /// supplied to the World without touching the source. (The `body_cache`
-    /// (compile) is keyed by `(source, inputs)`; for animated content the
-    /// `inputs` differ every frame, so the compiled document is re-evaluated
-    /// each frame — the AST parse is what stays shared.) `String::is_empty()`
-    /// ⇒ no artifacts ⇒ the whole-document path compiles an empty `param_source`
-    /// (only used by hand-built test scenes that don't render; real scenes are
-    /// parsed from a `.tyx` and carry a non-empty `artifacts.source`).
+    /// gated by `sys.inputs.at("candy:active_scene")`. This string is compiled
+    /// once per scene during [`Renderer::ensure_flow`] to read each mobject's
+    /// flow position and which page it landed on. It is *not* used for the
+    /// per-frame render (that uses the per-page documents in `param_sources`).
+    /// `String::is_empty()` ⇒ no artifacts ⇒ the measurement path compiles an
+    /// empty `param_source` (only used by hand-built test scenes that don't
+    /// render; real scenes are parsed from a `.tyx` and carry a non-empty
+    /// `artifacts.source`).
     param_source: String,
-    /// Precomputed cache-key prefix for [`param_source`]: a 64-bit hash of the
-    /// (stable) whole-document source. [`Renderer::compile_param_source`] builds
-    /// its key by appending the inputs to this prefix, so the potentially large
-    /// source string is never copied into the cache key on every frame (the
-    /// zero-copy companion to [`Renderer::compile_cached`]).
-    param_source_key: String,
+    /// Per-mobject wrapped body (the `sys.inputs`-driven body expression),
+    /// collected once in [`Renderer::build_parameterized_source`]. The building
+    /// block for the per-page render documents in `param_sources`.
+    wrapped_bodies: HashMap<Label, String>,
+    /// The stable, per-page render documents. Each entry is keyed by
+    /// `(scene_id, page_index)` and is a standalone Typst document containing
+    /// only that scene/page's mobjects, laid out from the top in raw flow
+    /// ("裸排"), with the scene's runtime context injected via its preamble.
+    /// This replaces the old whole-document render path: each frame compiles
+    /// exactly one of these documents (the active scene's active page) instead
+    /// of recompiling the entire document and extracting a page.
+    param_sources: HashMap<(usize, usize), String>,
     /// Absolute path of the original `.tyx` source file, if known (empty for
     /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
     /// source a real `FileId` so an `E006` points the user at the actual file
@@ -233,14 +236,7 @@ impl Renderer {
             scene.artifacts.source = src;
             scene.artifacts.mobject_body = mobject_body;
         }
-        let param_source = Self::build_parameterized_source(&scene);
-        // Precompute a 64-bit hash of the (stable) whole-document source so the
-        // per-frame cache key can reference it without copying the source text.
-        let param_source_key = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            param_source.hash(&mut h);
-            format!("P{:016x}", std::hash::Hasher::finish(&h))
-        };
+        let (param_source, wrapped_bodies) = Self::build_parameterized_source(&scene);
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -258,7 +254,8 @@ impl Renderer {
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
             param_source,
-            param_source_key,
+            wrapped_bodies,
+            param_sources: HashMap::new(),
             source_path,
         })
     }
@@ -337,29 +334,30 @@ impl Renderer {
         self.body_cache.lock().unwrap().insert(key, doc.clone());
         Ok(doc)
     }
-    /// Compile the stable whole-document [`param_source`], memoized.
+    /// Compile the per-page render document for `(sid, page)`, memoized by its
+    /// exact source string + `inputs`.
     ///
-    /// This is the zero-copy twin of [`Renderer::compile_cached`] for the
-    /// native-Typst path: the cache key is built from the precomputed
-    /// [`param_source_key`] (a 64-bit source hash) plus the per-frame `inputs`,
-    /// so the (potentially large) `param_source` string is never copied into the
-    /// key on every frame. The source itself is shared via `source_cache`
-    /// (parse), so the only per-frame cost is the document evaluation, whose key
-    /// stays tiny.
-    fn compile_param_source(&self, inputs: &Dict) -> Result<Arc<PagedDocument>, CandyError> {
-        let mut k = String::with_capacity(self.param_source_key.len() + inputs.len() * 16 + 1);
-        k.push_str(&self.param_source_key);
-        k.push('\0');
-        for (key, val) in inputs.iter() {
-            use std::fmt::Write;
-            let _ = write!(k, "{key}={val:?};");
-        }
-        if let Some(doc) = self.body_cache.lock().unwrap().get(&k) {
-            return Ok(doc.clone());
-        }
-        let doc = Arc::new(self.compile(&self.param_source, inputs)?);
-        self.body_cache.lock().unwrap().insert(k, doc.clone());
-        Ok(doc)
+    /// This is the render-path twin of [`Renderer::compile_cached`]: each frame
+    /// selects exactly one `(scene_id, page_index)` document (the active scene's
+    /// active page) and compiles it with that frame's `sys.inputs`. The source
+    /// string is the standalone per-page document assembled in
+    /// [`Renderer::assemble_page_doc`], so only the active page's mobjects are
+    /// typeset — replacing the old whole-document recompile-and-extract-page
+    /// approach. Falls back to page 0 of the same scene, then to the
+    /// whole-document `param_source`, if a specific page document is missing.
+    fn compile_page_source(
+        &self,
+        sid: usize,
+        page: usize,
+        inputs: &Dict,
+    ) -> Result<Arc<PagedDocument>, CandyError> {
+        let src = self
+            .param_sources
+            .get(&(sid, page))
+            .or_else(|| self.param_sources.get(&(sid, 0)))
+            .cloned()
+            .unwrap_or_else(|| self.param_source.clone());
+        self.compile_cached(&src, inputs)
     }
     /// Build a stable cache key from a source string and its `inputs` dict.
     /// When `inputs` is empty the key is just the source (the common

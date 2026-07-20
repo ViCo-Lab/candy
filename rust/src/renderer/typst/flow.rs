@@ -238,6 +238,15 @@ impl Renderer {
             }
             let doc = self.compile(&self.param_source, &inputs)?;
             scene_page_counts.insert(sid, doc.pages().len().max(1));
+            // Page height (pt) of this scene's canvas — used to convert the
+            // continuous-flow introspector position into a *per-page* (in-page)
+            // flow position, since each page is laid out independently from the
+            // top in the per-page render path.
+            let ph_pt = if self.scene.scenes.is_empty() {
+                self.page_h
+            } else {
+                self.scene.effective_page_pt(sid).1
+            };
             let intro = doc.introspector();
             let labels: Vec<Label> = if self.scene.scenes.is_empty() {
                 self.scene.items.keys().cloned().collect()
@@ -266,8 +275,18 @@ impl Renderer {
                 let Some(pos) = intro.position(loc) else {
                     continue;
                 };
-                flow_pos.insert(label.clone(), (pos.point.x.to_pt(), pos.point.y.to_pt()));
-                page_of.insert(label.clone(), pos.page.get() - 1);
+                let page_idx = pos.page.get() - 1;
+                // Convert the continuous-flow y (which spans all overflow pages)
+                // into an in-page y relative to this page's top, so the per-page
+                // document (which lays the mobject out from the top) and the
+                // `move` delta agree and the final rendered position equals the
+                // absolute target.
+                let page_top = page_idx as f64 * ph_pt;
+                flow_pos.insert(
+                    label.clone(),
+                    (pos.point.x.to_pt(), pos.point.y.to_pt() - page_top),
+                );
+                page_of.insert(label.clone(), page_idx);
             }
         }
         // Synthetic `#transform` / `#morph` tmps inherit their target's
@@ -310,6 +329,25 @@ impl Renderer {
         // own independent timeline, and the renderer auto-advances from one page
         // to the next once the current page's content has finished playing.
         self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
+        // Assemble the per-page render documents: one standalone Typst document
+        // per (scene, page), each containing only that page's mobjects laid out
+        // from the top in raw flow ("裸排"), with the scene's runtime context
+        // injected via its preamble. This replaces the old whole-document
+        // recompile-and-extract-page render path.
+        let mut param_sources: HashMap<(usize, usize), String> = HashMap::new();
+        let assembly_ids: Vec<usize> = if self.scene.scenes.is_empty() {
+            vec![0]
+        } else {
+            self.scene.scenes.iter().map(|s| s.id).collect()
+        };
+        for sid in &assembly_ids {
+            let page_count = scene_page_counts.get(sid).copied().unwrap_or(1).max(1);
+            for page in 0..page_count {
+                let doc = self.assemble_page_doc(*sid, page);
+                param_sources.insert((*sid, page), doc);
+            }
+        }
+        self.param_sources = param_sources;
         // A cross-page scene's mobjects play out across its overflow pages, so
         // its content is "on stage" for the *entire* page-playback schedule —
         // not just its (often zero-duration) content interval. Extend each

@@ -71,11 +71,13 @@ impl Renderer {
                 .unwrap_or((self.page_w, self.page_h))
         };
         let inputs = self.build_frame_inputs(states, active, active_page, hide_fading, time_ms);
-        let doc = self.compile_param_source(&inputs)?;
+        // Compile only the active scene's active page as a standalone document
+        // (the per-page render path). Each page is laid out from the top in raw
+        // flow, so the document is single-page; take its first (only) page.
+        let doc = self.compile_page_source(active, active_page, &inputs)?;
         let page = doc
             .pages()
-            .get(active_page)
-            .or_else(|| doc.pages().first())
+            .first()
             .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let base = typst_svg::svg(page, &SvgOptions::default());
         // Canvas background color: honors the active scene's `bg` (inheriting

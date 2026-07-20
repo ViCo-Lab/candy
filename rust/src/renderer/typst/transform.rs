@@ -498,9 +498,13 @@ impl Renderer {
         let flow_pos = self.flow_pos.get(&p.target).copied().unwrap_or((0.0, 0.0));
         let nat_cm = (flow_pos.0 / PT_PER_CM, flow_pos.1 / PT_PER_CM);
         let (sx, sy, scale, rot) = match states.get(&p.target) {
-            Some(s) => (nat_cm.0 + s.x, nat_cm.1 + s.y, s.scale, s.rotation),
-            None => (nat_cm.0, nat_cm.1, 1.0, 0.0),
+            Some(s) => (s.x, s.y, s.scale, s.rotation),
+            None => (0.0, 0.0, 1.0, 0.0),
         };
+        eprintln!(
+            "DBG tp target={} flow_pos_pt=({:.2},{:.2}) st=({:.4},{:.4}) sx_sy_cm=({:.4},{:.4})",
+            p.target.0, flow_pos.0, flow_pos.1, sx, sy, sx, sy
+        );
         // At the final frame (`end_ms`) the eased progress is forced to exactly
         // 1.0 so the overlay reconstructs the *target* formula pixel-for-pixel
         // (matched glyphs land on their new positions, inserted units are fully

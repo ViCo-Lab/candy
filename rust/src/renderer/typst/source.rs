@@ -42,11 +42,26 @@ impl Renderer {
     /// shift can never land inside a multi-byte character — this is what made
     /// the old per-frame `replace_range` byte-splicing panic ("end of range
     /// should be a character boundary") impossible.
-    pub(crate) fn build_parameterized_source(scene: &Scene) -> String {
+    /// Build the stable *parameterized* whole-document source (used for the
+    /// flow-measurement pass) **and** the per-mobject wrapped-body map.
+    ///
+    /// The whole-document `String` is still compiled once per scene during
+    /// [`Renderer::ensure_flow`] to read each mobject's flow position and which
+    /// page it landed on (the "measurement" pass). The wrapped-body `HashMap`
+    /// (`label → sys.inputs`-driven body expression) is the building block for
+    /// the *per-page* render documents: [`Renderer::assemble_page_doc`] stitches
+    /// the wrapped bodies of a single (scene, page) into a standalone Typst
+    /// document that is laid out from the top in raw flow ("裸排") and compiled
+    /// independently — this is the replacement for the old whole-document
+    /// render path.
+    pub(crate) fn build_parameterized_source(scene: &Scene) -> (String, HashMap<Label, String>) {
         let src = &scene.artifacts.source;
         let chars: Vec<char> = src.chars().collect();
         // `(char_start, char_end, replacement)` — `start == end` is an insertion.
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        // Per-mobject wrapped body, collected so the per-page render documents
+        // can be assembled without re-parsing the whole source.
+        let mut wrapped_bodies: HashMap<Label, String> = HashMap::new();
         // 1. Wrap each mobject body with the `sys.inputs`-driven transform,
         //    rewriting `ecval(...)` reads and `reveal`/typewriter prefixes to
         //    inputs so the body source stays byte-stable.
@@ -76,7 +91,9 @@ impl Renderer {
             }
             let cs = src[..bs].chars().count();
             let ce = src[..be].chars().count();
-            edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, &inner)));
+            let wrapped = Self::wrap_mobject_inputs(&label.0, &inner);
+            wrapped_bodies.insert(label.clone(), wrapped.clone());
+            edits.push((cs, ce, wrapped));
         }
         // 2. Blank each `#subtitle(...)` call out of the base document. The
         //    caption is ALWAYS drawn as a separate, camera-independent overlay
@@ -170,7 +187,89 @@ impl Renderer {
                 "#import \"candy\"",
                 &format!("#import \"@preview/candy:{v}\""),
             );
-        cur
+        (cur, wrapped_bodies)
+    }
+
+    /// Build the candy **scene runtime context** preamble for scene `sid`: a
+    /// standalone Typst document header that injects the scene's page size,
+    /// background, and (implicitly, via the global `sys.inputs`) its counters
+    /// and `active_scene`.
+    ///
+    /// For a nested (sub-)scene the page size and background **inherit** the
+    /// parent scene's values when the sub-scene does not override them
+    /// (`effective_page_pt` / `scene_bg_hex` walk the scene tree), so a
+    /// sub-scene automatically renders inside its parent's canvas context — the
+    /// "sub-scene rendering injects the current scene's context" requirement.
+    pub(crate) fn scene_context_preamble(&self, sid: usize) -> String {
+        let v = crate::CANDY_VERSION;
+        let (pw_pt, ph_pt) = if self.scene.scenes.is_empty() {
+            (self.page_w, self.page_h)
+        } else {
+            self.scene.effective_page_pt(sid)
+        };
+        let pw_cm = pw_pt / PT_PER_CM;
+        let ph_cm = ph_pt / PT_PER_CM;
+        let bg = if self.scene.scenes.is_empty() {
+            "white".to_string()
+        } else {
+            self.scene_bg_hex(sid)
+                .unwrap_or_else(|_| "white".to_string())
+        };
+        // `scene_bg_hex` returns either a named colour (`white`) or a `#rrggbb(aa)`
+        // hex. A bare `#…` is invalid in code mode (the `#` is a code escape), so
+        // emit a valid Typst paint: a named colour as-is, a hex via `rgb("…")`.
+        let bg_expr = if bg.starts_with('#') {
+            format!("rgb(\"{bg}\")")
+        } else {
+            bg.clone()
+        };
+        format!(
+            "#import \"@preview/candy:{v}\": *\n#set page(width: {pw_cm}cm, height: {ph_cm}cm, margin: 0pt, fill: {bg_expr})\n",
+            v = v,
+            pw_cm = pw_cm,
+            ph_cm = ph_cm,
+            bg_expr = bg_expr,
+        )
+    }
+
+    /// Assemble the standalone per-page render document for `(sid, page)`: the
+    /// scene's injected context preamble followed by only the mobjects that
+    /// belong to `sid` and landed on `page`, each laid out from the top in raw
+    /// Typst flow ("裸排"), in declaration order. Mobjects with no recorded page
+    /// (absent from the flow layout) are emitted on every page so they keep
+    /// rendering exactly as they did under the whole-document path.
+    pub(crate) fn assemble_page_doc(&self, sid: usize, page: usize) -> String {
+        let mut doc = self.scene_context_preamble(sid);
+        let label_scene = self.scene.label_scene_map();
+        let owns: Vec<Label> = if self.scene.scenes.is_empty() {
+            self.scene.items.keys().cloned().collect()
+        } else {
+            self.scene
+                .scenes
+                .iter()
+                .find(|s| s.id == sid)
+                .map(|s| s.owns_labels.clone())
+                .unwrap_or_default()
+        };
+        for label in &owns {
+            let Some(wrapped) = self.wrapped_bodies.get(label) else {
+                continue;
+            };
+            // Page filter: skip mobjects that landed on a different page.
+            if let Some(p) = self.pages.page_of(label) {
+                if p != page {
+                    continue;
+                }
+            }
+            // Scene ownership filter (only for real scene trees; hand-built
+            // scenes have no tree and own every mobject).
+            if !self.scene.scenes.is_empty() && label_scene.get(label).copied().unwrap_or(0) != sid
+            {
+                continue;
+            }
+            doc.push_str(&format!("#mobject(\"{}\", {})\n", label.0, wrapped));
+        }
+        doc
     }
 
     /// Rewrite every `ecval("name")` / `ecval(name)` counter read in `body` to a
