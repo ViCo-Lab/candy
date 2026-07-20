@@ -40,7 +40,7 @@
 //! this file stays focused on the struct, the compile/cache core, and the
 //! body/bg resolution helpers:
 //!
-//! * [`natural`] — natural (first-frame) layout and per-frame effective-state
+//! * [`flow`] — flow (first-frame) layout and per-frame effective-state
 //!   computation (group composition, camera scoping, cross-page gating).
 //! * [`source`] — the stable *parameterized* whole-document Typst source
 //!   (mobject/ecval/reveal wrapping) and the per-frame `sys.inputs` builder.
@@ -56,11 +56,11 @@ pub(crate) mod svg;
 pub(crate) mod transform;
 pub(crate) mod world;
 // `Renderer`'s `impl` block is split across the second-level submodules below so
-// this file stays readable: `natural` (layout + per-frame state), `source`
+// this file stays readable: `flow` (layout + per-frame state), `source`
 // (parameterized whole-document source assembly), and `frame` (the actual
 // frame-render pipeline). Each re-uses `mod.rs`'s imports via `use super::*`.
+pub(crate) mod flow;
 pub(crate) mod frame;
-pub(crate) mod natural;
 pub(crate) mod source;
 // Re-export the helper items so the `Renderer` impl below can call them with
 // the same unqualified names as before the split.
@@ -126,27 +126,27 @@ pub struct Renderer {
     /// reused for every frame compile — pays the system-font-scan cost
     /// exactly once per `Renderer::new`.
     state: Arc<WorldState>,
-    /// Natural (first-frame) position of each mobject, in Typst points.
-    nat: HashMap<Label, (f64, f64)>,
-    /// Full-canvas page size in points (from the natural document).
+    /// Flow (first-frame) position of each mobject, in Typst points.
+    flow_pos: HashMap<Label, (f64, f64)>,
+    /// Full-canvas page size in points (from the flow layout).
     page_w: f64,
     page_h: f64,
-    natural_computed: bool,
+    flow_computed: bool,
     /// Effective canvas size (pt) per scene id, resolved via inheritance.
     scene_pages: HashMap<usize, (f64, f64)>,
     /// label -> owning scene id (for parent auto-hide).
     label_scene: HashMap<Label, usize>,
     /// Cross-page scene playback scheduler: maps global time to the active page
-    /// per scene and records which page each mobject's natural layout landed on.
+    /// per scene and records which page each mobject's flow layout landed on.
     /// See [`pages`].
     pages: PageScheduler,
     /// Precomputed outline interpolators for `#morph` pairs, keyed by
-    /// `(from, to)`. Built once in `ensure_natural` (the expensive part:
+    /// `(from, to)`. Built once in `ensure_flow` (the expensive part:
     /// render both bodies to SVG, extract + align their outline rings). Each
     /// frame then just samples the plan — this is the performance-first design.
     morph_cache: HashMap<(Label, Label), MorphPlan>,
     /// Precomputed per-glyph fragment layouts for `#transform` of inline content
-    /// (formulas / text). Built once in `ensure_natural`: each `TransformPlan`'s
+    /// (formulas / text). Built once in `ensure_flow`: each `TransformPlan`'s
     /// old/new bodies are split into glyph fragments, laid out at their absolute
     /// page positions, and matched (LCS). During the transform window the
     /// renderer composites the interpolated fragments *over* the target label —
@@ -155,7 +155,7 @@ pub struct Renderer {
     /// "stiff" crossfade). Empty for shape transforms / non-inline content.
     transform_fragments: Vec<TransformFragmentPlan>,
     /// Cached camera start time (first non-identity keyframe). Computed once
-    /// in `ensure_natural` to avoid O(N·T) scan per frame.
+    /// in `ensure_flow` to avoid O(N·T) scan per frame.
     cam_start: Option<u32>,
     /// Whether the document declares a `#camera` directive. When `true`,
     /// subtitles are blanked in the base document and drawn as a
@@ -164,9 +164,9 @@ pub struct Renderer {
     /// direct-output" path. (Per-frame camera *presence* is decided
     /// separately at render time via the `camera` state, not here.)
     has_camera_directive: bool,
-    /// Cached home scene for camera. Computed once in `ensure_natural`.
+    /// Cached home scene for camera. Computed once in `ensure_flow`.
     /// Cached set of parent group labels (for filtering in prepare_states).
-    /// Computed once in `ensure_natural`.
+    /// Computed once in `ensure_flow`.
     parent_labels: std::collections::HashSet<Label>,
     /// Cache of compiled Typst documents keyed by their exact source string.
     /// Intermediate frames that produce an identical source (e.g. paused or
@@ -255,10 +255,10 @@ impl Renderer {
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
-            nat: HashMap::new(),
+            flow_pos: HashMap::new(),
             page_w: 1.0,
             page_h: 1.0,
-            natural_computed: false,
+            flow_computed: false,
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
             pages: PageScheduler::empty(),
@@ -737,7 +737,7 @@ fn morph_renders_interpolated_polygon() {
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Before the window: normal body (b is just a square).
     assert!(
         r.morph_body_for(&Label("b".into()), 101).is_none(),
@@ -772,7 +772,7 @@ fn morph_renders_interpolated_polygon() {
 /// declared as `zeta, alpha, mid` (not alphabetical) so a stray alphabetical
 /// sort would be detected.
 #[test]
-fn renderer_natural_layout_matches_native_and_declaration_order() {
+fn renderer_flow_layout_matches_native_and_declaration_order() {
     use crate::core::ast::{Label, Scene, SceneInfo, Slide};
     use crate::core::meta::PrivateMeta;
     use std::collections::HashMap;
@@ -821,20 +821,20 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
     let _ = (page_w, page_h);
-    // (1) Every mobject must get a natural position from the introspector.
+    // (1) Every mobject must get a flow position from the introspector.
     for (l, _) in &ordered {
         let label = Label(l.clone());
-        r.nat_for(&label)
+        r.flow_pos_for(&label)
             .unwrap_or_else(|| panic!("candy nat present for {l}"));
     }
     // (2) Declaration order must be preserved top-to-bottom. With labels
     //     `zeta, alpha, mid`, an alphabetical sort would put `alpha` on top;
     //     assert `zeta` is highest and the order follows the source.
-    let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
+    let y = |l: &str| r.flow_pos_for(&Label(l.into())).unwrap().1;
     assert!(
         y("zeta") < y("alpha"),
         "order scrambled: zeta must sit above alpha"
@@ -845,10 +845,10 @@ fn renderer_natural_layout_matches_native_and_declaration_order() {
     );
 }
 /// Regression test for "temporarily-not-rendered mobjects use `#hide` to occupy
-/// their natural space instead of being skipped". A mobject hidden at frame 0
+/// their flow space instead of being skipped". A mobject hidden at frame 0
 /// (its content-timeline resolves to `none` at t=0, e.g. a `reveal`/`typewriter`
-/// before its start) must STILL reserve its natural box in the flow — otherwise
-/// every later mobject shifts up and the hidden mobject never gets a `nat` to be
+/// before its start) must STILL reserve its flow box in the flow — otherwise
+/// every later mobject shifts up and the hidden mobject never gets a `flow_pos` to be
 /// placed at once it appears. The layout now wraps such mobjects in `#hide[…]`.
 #[test]
 fn hidden_at_frame0_mobject_reserves_space_via_hide() {
@@ -905,16 +905,16 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         private_metadata: PrivateMeta::default(),
     };
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     let page_w = 16.0 * PT_PER_CM;
     let page_h = 9.0 * PT_PER_CM;
     let _ = (page_w, page_h);
-    // (1) The hidden mobject MUST have a natural position (it was not skipped).
+    // (1) The hidden mobject MUST have a flow position (it was not skipped).
     let _hidden = r
-        .nat_for(&Label("hidden".into()))
+        .flow_pos_for(&Label("hidden".into()))
         .expect("hidden mobject must get a nat");
     // (2) It must keep its slot in the flow: below `top`, above `bottom`.
-    let y = |l: &str| r.nat_for(&Label(l.into())).unwrap().1;
+    let y = |l: &str| r.flow_pos_for(&Label(l.into())).unwrap().1;
     assert!(y("top") < y("hidden"), "hidden must sit below top");
     assert!(
         y("hidden") < y("bottom"),
@@ -937,7 +937,7 @@ fn transform_splits_inline_content_into_glyph_fragments() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     let plans = r.transform_plans_debug();
     assert_eq!(plans.len(), 2, "expected 2 chained plans: {:?}", plans);
     // Plan 0: $a+b=c$ (5) -> $a+b+d=c$ (7): 5 matched + 2 new = 7 fragments.
@@ -998,7 +998,7 @@ fn transform_target_renders_after_window() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Mid-window: fragments present.
     let mid = 30u32;
     let svg_mid = r.render_frame_at(mid, &frames).unwrap();
@@ -1088,7 +1088,7 @@ fn chained_transform_persists_intermediate() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Collect the SET of glyph symbols each frame references (order/content
     // independent of position). Typst dedupes/orders `<symbol>` definitions by
     // content, so a raw symbol *count* is NOT a reliable content metric (the
@@ -1163,7 +1163,7 @@ fn camera_background_stays_fixed_outside_camera_group() {
         ..FrameData::new(0, Label("__camera__".into()))
     }];
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     let svg = r.render_frame_at(0, &frames).unwrap();
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={}",
@@ -1248,7 +1248,7 @@ fn typewriter_multibyte_prefix_does_not_panic() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Sweep across the reveal window: every prefix length (including the one that
     // ends right at the em-dash) must compile to a valid frame, not error.
     for t in [10u32, 30, 50, 70, 90, 120] {
@@ -1296,7 +1296,7 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Mid window: the transform is active, so fragments must be drawn.
     let mid = 30u32;
     let svg = r.render_frame_at(mid, &frames).unwrap();
@@ -1365,7 +1365,7 @@ fn transform_composes_with_concurrent_animate() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Mid window: the transform is active AND the concurrent scale/rotate is
     // part-way through, so every fragment group must carry both transforms
     // (the transform inherits the target's live scale/rotation, not just x/y).
@@ -1416,7 +1416,7 @@ fn transform_translation_animate_shifts_all_fragments() {
             frames.len()
         );
         let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-        r.ensure_natural_public().unwrap();
+        r.ensure_flow_public().unwrap();
         let svg = r.render_frame_at(mid, &frames).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Each fragment group is `<g opacity="…" transform="translate(px, py) …">`.
@@ -1489,7 +1489,7 @@ fn transform_translation_animate_shifts_all_fragments() {
 /// transform's temporary old-content mobject (`__xf_eq_1`) become visible during
 /// the first transform's window. The scheduler must keep every tmp invisible
 /// until its own transform starts, and the renderer must not let tmp mobjects
-/// push the target down the page via the natural layout (which would place the
+/// push the target down the page via the flow layout (which would place the
 /// formula fragments off-screen or create a displaced duplicate).
 #[test]
 fn chained_transforms_hide_future_tmp_during_first_window() {
@@ -1526,7 +1526,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     // Midpoint of the FIRST transform window: animate 0-60, first transform 61-120,
     // second transform 121-180. Mid of first window = 90.
     let mid = 90u32;
@@ -1624,7 +1624,7 @@ fn overflowing_scene_plays_pages_in_sequence() {
         frames.len()
     );
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_natural_public().unwrap();
+    r.ensure_flow_public().unwrap();
     let svg = r.render_frame_at(0, &frames).unwrap();
     eprintln!(
         "DBG svg_len={} <g>={} <rect={} <path={}",

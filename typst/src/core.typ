@@ -2,7 +2,7 @@
 //
 // Every directive defined here is *valid, standard Typst*. Under a plain
 // `typst compile` it renders the **first frame** of the animation: each
-// `mobject` at its natural placement in the document flow, every `play` block
+// `mobject` at its flow placement in the document flow, every `play` block
 // visible, and `animate` / `pause` / `audio` simply inert. The Candy Rust
 // toolchain reads the same directives from the source's **AST** (not the
 // rendered output) and produces the full video.
@@ -114,7 +114,7 @@
 /// - `body`: the object's content — a bare block or element (e.g.
 ///   `circle(radius: 1cm)`), *not* a string. Its placement is automatic.
 ///
-/// Under standard Typst this simply renders `body` at its natural position.
+/// Under standard Typst this simply renders `body` at its flow position.
 #let mobject(name, body) = {
   if type(name) != str {
     panic("Mobject name must be a string")

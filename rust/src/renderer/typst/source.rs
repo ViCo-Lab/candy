@@ -302,9 +302,9 @@ impl Renderer {
     /// code-mode block.
     fn wrap_mobject_inputs(label: &str, inner: &str) -> String {
         // Position model: `move` is a *relative* transform, so `dx`/`dy` are the
-        // delta from the mobject's natural flow position (computed in
-        // `build_frame_inputs` as `target − nat` for positioned mobjects, or
-        // `(0, 0)` for un-positioned ones so they stay in their natural flow
+        // delta from the mobject's flow position (computed in
+        // `build_frame_inputs` as `target − flow_pos` for positioned mobjects, or
+        // `(0, 0)` for un-positioned ones so they stay in their flow
         // slot). `scale`/`rotate` are absolute transforms with **origin: center**
         // so the object scales/rotates around its own centre (Manim semantics).
         // Opacity is NOT applied here — it is composited via the SVG bypass.
@@ -462,7 +462,7 @@ impl Renderer {
             }
             // Cross-page scenes: only draw mobjects that landed on the page
             // currently playing. Mobjects without a recorded `page_of` (e.g.
-            // those absent from the natural layout) are drawn on every page.
+            // those absent from the flow layout) are drawn on every page.
             if let Some(p) = self.pages.page_of(label) {
                 if p != active_page {
                     continue;
@@ -477,15 +477,15 @@ impl Renderer {
             }
             // Position model (cm, matching `tuple_cm` / `st` units): `#move` is a
             // *relative* transform, so the input is the delta from the mobject's
-            // natural flow position. An un-positioned mobject (`st` still (0, 0))
+            // flow position. An un-positioned mobject (`st` still (0, 0))
             // gets `(0, 0)` and stays exactly where plain Typst laid it; a
             // positioned one (`#animate`/`#track`/… set `st` to the absolute
-            // `to:` in cm) gets `target − nat` so the native `move` lands it on
+            // `to:` in cm) gets `target − flow_pos` so the native `move` lands it on
             // its absolute eased target. `scale` / `rotate` are absolute and are
             // read straight from `st`. (Opacity is intentionally NOT a native
             // transform here — opacity changes are composited via the SVG bypass
             // in the raster path, not written into the document.)
-            let (dx, dy) = match self.nat.get(label) {
+            let (dx, dy) = match self.flow_pos.get(label) {
                 Some((nx, ny)) => {
                     let (nx_cm, ny_cm) = (nx / PT_PER_CM, ny / PT_PER_CM);
                     if st.x.abs() < 1e-9 && st.y.abs() < 1e-9 {
@@ -611,7 +611,7 @@ impl Renderer {
             .unwrap_or((16.0, 9.0));
         src.push_str(&format!("#scene(width: {pw_cm}cm, height: {ph_cm}cm)[\n"));
         // Emit mobjects in declaration order (from the first scene's
-        // `owns_labels`) so the natural layout matches the intended top-to-bottom
+        // `owns_labels`) so the flow layout matches the intended top-to-bottom
         // stacking. `scene.items` is a HashMap with non-deterministic iteration
         // order, so we must NOT iterate it directly.
         let ordered_labels: Vec<Label> = scene

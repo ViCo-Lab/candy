@@ -60,11 +60,11 @@ An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `la
 string and changes a transform (position / scale / rotation / opacity) over `duration`
 milliseconds. Multiple actions on different targets run in **parallel**.
 
-**Layout & hidden mobjects.** A mobject's *natural* placement is where `body` lands in
-the flow; Candy measures that box once (`ensure_natural`). Mobjects that are *temporarily
+**Layout & hidden mobjects.** A mobject's *flow* placement is where `body` lands in
+the flow; Candy measures that box once (`ensure_flow`). Mobjects that are *temporarily
 not rendered* at frame 0 — a `#reveal` / `#typewriter` target before it has typed
 anything, a `play` block, or a `transform` target whose content timeline starts as
-`none` — still **reserve their natural box** (wrapped in Typst `#hide[…]`) so later
+`none` — still **reserve their flow box** (wrapped in Typst `#hide[…]`) so later
 mobjects do **not** shift up to fill the gap. Pure containers with no content of their
 own are the only objects skipped. This means you can safely stack a `reveal` caption
 between two always-visible shapes without the layout jumping when the text types in.

@@ -5,7 +5,7 @@ use typst_library::introspection::Introspector;
 
 impl Renderer {
     /// Compose a parent transform onto a child transform (group support).
-    /// Both are deltas from their respective natural positions; the result is
+    /// Both are deltas from their respective flow positions; the result is
     /// the child's effective transform with the parent's pan/zoom/rotate applied
     /// to the child's local offset.
     fn compose_transforms(parent: &FrameData, child: &FrameData) -> FrameData {
@@ -136,7 +136,7 @@ impl Renderer {
                 camera = None;
             }
         }
-        // Use cached parent_labels (precomputed in ensure_natural).
+        // Use cached parent_labels (precomputed in ensure_flow).
         let mut out: HashMap<Label, FrameData> = HashMap::new();
         for label in states.keys() {
             if self.parent_labels.contains(label)
@@ -152,7 +152,7 @@ impl Renderer {
         }
         (out, camera)
     }
-    /// Compute (once) the natural layout of every mobject.
+    /// Compute (once) the flow layout of every mobject.
     ///
     /// Each scene's objects are laid out by plain Typst document flow — every
     /// `#mobject(name, body)` now returns `block(body) + label(name)`, so
@@ -163,7 +163,7 @@ impl Renderer {
     /// origin (0, 0), and it stays consistent with how hand-written Typst would
     /// typeset the same content (no synthetic `#stack` gap or centring).
     ///
-    /// The natural (first-frame) position of each mobject is read straight
+    /// The flow (first-frame) position of each mobject is read straight
     /// from the compiled document via the Typst **introspector**: because every
     /// mobject carries its own `label(name)`, `introspector.query_label`
     /// resolves the labelled content and `position()` yields its plain-Typst
@@ -171,8 +171,8 @@ impl Renderer {
     /// parameterized source is compiled once per scene with that scene active and
     /// all transforms at their identity defaults, so every object sits exactly
     /// where plain Typst would lay it.
-    pub(crate) fn ensure_natural(&mut self) -> Result<(), CandyError> {
-        if self.natural_computed {
+    pub(crate) fn ensure_flow(&mut self) -> Result<(), CandyError> {
+        if self.flow_computed {
             return Ok(());
         }
         // Use the page size from the .tyx source if set (`#set page(width:..,
@@ -184,7 +184,7 @@ impl Renderer {
             .unwrap_or((16.0, 9.0));
         self.page_w = page_w_cm * PT_PER_CM;
         self.page_h = page_h_cm * PT_PER_CM;
-        // Measure each mobject's natural (first-frame) flow position directly
+        // Measure each mobject's flow (first-frame) flow position directly
         // from the compiled document via the Typst introspector — no colour-bbox
         // trick. Every `#mobject(name, body)` now returns
         // `block(body) + label(name)`, so `introspector.query_label` resolves
@@ -195,11 +195,11 @@ impl Renderer {
         // plain Typst would lay it — faithful to native layout, and a mobject
         // hidden at frame 0 (its `content_timeline` resolves to `none`) still
         // reserves its box because the wrapper shows the full body at the default
-        // `reveal:len` / `body_idx`, so it keeps its natural slot.
-        let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
+        // `reveal:len` / `body_idx`, so it keeps its flow slot.
+        let mut flow_pos: HashMap<Label, (f64, f64)> = HashMap::new();
         // Synthetic mobjects created by `#transform` / `#morph` (e.g.
         // `__xf_eq_0`, `__xf_eq_0_from`) are parked copies of the *target*
-        // content. They must share the target's natural position — if they were
+        // content. They must share the target's flow position — if they were
         // laid out as separate blocks they would push the target and every later
         // mobject down the page, making formulas fall off-screen and causing
         // the old content to render as a displaced ghost while the target is
@@ -215,12 +215,12 @@ impl Renderer {
                 tmp_to_target.insert(p.from.clone(), p.to.clone());
             }
         }
-        // Number of pages each scene's natural layout spilled onto. A scene that
+        // Number of pages each scene's flow layout spilled onto. A scene that
         // overflows its single page becomes a *cross-page scene*: its mobjects
         // stay in ONE scene (data shared) but are laid out across several pages,
         // and the renderer plays the pages in sequence (see [`pages`]).
         let mut scene_page_counts: HashMap<usize, usize> = HashMap::new();
-        // label -> the page (0-based) its natural layout landed on. Fed to the
+        // label -> the page (0-based) its flow layout landed on. Fed to the
         // page scheduler so it can partition each scene's timeline by page.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
         // Compile once per scene with that scene active (nested scenes render
@@ -250,7 +250,7 @@ impl Renderer {
                     .unwrap_or_default()
             };
             for label in labels {
-                // Synthetic tmps inherit the target's natural position below.
+                // Synthetic tmps inherit the target's flow position below.
                 if tmp_to_target.contains_key(&label) {
                     continue;
                 }
@@ -266,24 +266,24 @@ impl Renderer {
                 let Some(pos) = intro.position(loc) else {
                     continue;
                 };
-                nat.insert(label.clone(), (pos.point.x.to_pt(), pos.point.y.to_pt()));
+                flow_pos.insert(label.clone(), (pos.point.x.to_pt(), pos.point.y.to_pt()));
                 page_of.insert(label.clone(), pos.page.get() - 1);
             }
         }
         // Synthetic `#transform` / `#morph` tmps inherit their target's
-        // natural position (and page). The scheduler positions them relative to
+        // flow position (and page). The scheduler positions them relative to
         // the target, so this keeps old-content crossfades / morphs aligned
         // with the target instead of drifting down the page and ghosting as a
         // duplicate.
         for (tmp, target) in &tmp_to_target {
-            if let Some((x, y)) = nat.get(target).copied() {
-                nat.insert(tmp.clone(), (x, y));
+            if let Some((x, y)) = flow_pos.get(target).copied() {
+                flow_pos.insert(tmp.clone(), (x, y));
             }
             if let Some(p) = page_of.get(target).copied() {
                 page_of.insert(tmp.clone(), p);
             }
         }
-        self.nat = nat;
+        self.flow_pos = flow_pos;
         // Build per-scene canvas sizes + label→scene ownership for auto-hide.
         // When `scenes` is empty (legacy single-scene document) we fall back to
         // the whole document as one scene (id 0) — behavior identical to v0.1.
@@ -382,7 +382,7 @@ impl Renderer {
         // Camera start: first non-identity keyframe time.
         self.parent_labels = self.scene.groups.values().cloned().collect();
         // cam_start is computed lazily in prepare_states on first call (needs all_frames).
-        self.natural_computed = true;
+        self.flow_computed = true;
         Ok(())
     }
     /// The frame-0 visual state for a label (opacity 0 for `play` blocks).

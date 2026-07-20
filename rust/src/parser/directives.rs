@@ -707,7 +707,7 @@ fn process_blink(
 }
 
 /// `spiral_in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")`
-/// — fly in from a scaled-up, rotated state to the natural position, fading in.
+/// — fly in from a scaled-up, rotated state to the flow position, fading in.
 /// Mirrors Manim's `SpiralIn`.
 fn process_spiral_in(
     pos: &[Expr],
@@ -1411,7 +1411,7 @@ fn process_transform(
     let is_inline = is_inline_content(&old_body) && is_inline_content(&new_body);
     if is_inline {
         // The renderer splits both bodies into glyph fragments and lays them
-        // out; `fragments` is filled in by `ensure_natural`. No shape blob.
+        // out; `fragments` is filled in by `ensure_flow`. No shape blob.
         ctx.transform_plans.push(crate::core::ast::TransformPlan {
             target: label.clone(),
             old: tmp.clone(),

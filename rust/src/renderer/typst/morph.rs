@@ -10,7 +10,7 @@
 
 /// Translate a ring so its bounding-box top-left sits at the origin. Morph
 /// outlines are interpolated in this local frame and later placed (via
-/// `place_source`) at the target mobject's natural top-left, so the morph is
+/// `place_source`) at the target mobject's flow top-left, so the morph is
 /// anchored correctly and matches standard Typst positioning at `t = 1`.
 pub(crate) fn localize_ring(ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     if ring.is_empty() {

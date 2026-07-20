@@ -2,7 +2,7 @@
 //
 // Every directive defined here is *valid, standard Typst*. Compiling a `.tyx`
 // with an ordinary `typst compile` renders the **first frame** of the
-// animation: each `mobject` at its natural placement in the document flow,
+// animation: each `mobject` at its flow placement in the document flow,
 // every `play` block visible, and `animate`/`pause`/`audio` simply inert. The
 // animation itself stays hidden. The Candy Rust toolchain reads the same
 // directives from the source's **AST** (not the rendered output) and produces

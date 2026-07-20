@@ -55,7 +55,7 @@ pub(crate) struct GlyphAnim {
 
 /// A precomputed per-glyph `Transform` layout for one `#transform(target, to:
 /// …)` call whose old/new bodies are inline content (formula / text). Built
-/// once in `ensure_natural` by rendering the whole old and new formulas and
+/// once in `ensure_flow` by rendering the whole old and new formulas and
 /// extracting each glyph/decoration as a positioned fragment (via Typst's own
 /// SVG layout — no custom parser). During `[start_ms, end_ms)` the render
 /// paths composite the interpolated fragments *over* `target` so the old
@@ -78,7 +78,7 @@ pub(crate) struct TransformFragmentPlan {
 /// degrees (clockwise, around the object's centre).
 ///
 /// The body is emitted in **native Typst document flow** (no `#place` hack):
-/// `#move(dx, dy)` shifts it from its natural flow position, `#scale`/`#rotate`
+/// `#move(dx, dy)` shifts it from its flow position, `#scale`/`#rotate`
 /// (with `origin: center`) apply the transform. This matches the main render
 /// path's `wrap_mobject_inputs` wrapper, so the isolated render used for
 /// fragment/shape extraction is consistent with the frame render.
@@ -221,7 +221,7 @@ fn nearest_matched_new(
 }
 
 /// Per-glyph `#transform` engine, implemented on [`Renderer`]. Split out of
-/// `mod.rs` so the renderer's core (natural layout, per-frame compositing,
+/// `mod.rs` so the renderer's core (flow layout, per-frame compositing,
 /// camera, scenes) stays free of the transform-specific plumbing.
 impl Renderer {
     /// Sanitize a label into an SVG-id-safe prefix (`[A-Za-z0-9_]`), suffixed
@@ -495,8 +495,8 @@ impl Renderer {
         if time_ms < p.start_ms || time_ms > p.end_ms {
             return None;
         }
-        let nat = self.nat.get(&p.target).copied().unwrap_or((0.0, 0.0));
-        let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+        let flow_pos = self.flow_pos.get(&p.target).copied().unwrap_or((0.0, 0.0));
+        let nat_cm = (flow_pos.0 / PT_PER_CM, flow_pos.1 / PT_PER_CM);
         let (sx, sy, scale, rot) = match states.get(&p.target) {
             Some(s) => (nat_cm.0 + s.x, nat_cm.1 + s.y, s.scale, s.rotation),
             None => (nat_cm.0, nat_cm.1, 1.0, 0.0),
@@ -527,7 +527,7 @@ impl Renderer {
     /// (instead of repeating the markup inside every fragment's clip) keeps the
     /// SVG small and prevents neighbouring glyphs from leaking through a
     /// slightly-off clip box (the "residual garbage" artefact). The clip + the
-    /// translate follow the target mobject (nat + state) so the transform stays
+    /// translate follow the target mobject (flow_pos + state) so the transform stays
     /// aligned with the rest of the scene.
     pub(crate) fn transform_overlay_svg(
         &self,
@@ -631,7 +631,7 @@ impl Renderer {
     /// SVG overlay for active morph pairs. For each `#morph(from, to)` pair
     /// whose `[start_ms, end_ms]` window contains `time_ms`, the morphed
     /// polygon is emitted as an SVG `<path>` element at the `to` object's
-    /// natural position (with the `to` object's per-frame transform applied).
+    /// flow position (with the `to` object's per-frame transform applied).
     /// The `from` object is already being faded/shrunk by the scheduler's
     /// crossfade actions, so only the morphed shape needs to be drawn here.
     pub(crate) fn morph_overlay_svg(
@@ -656,11 +656,11 @@ impl Renderer {
                 continue;
             }
             // Position the morphed polygon at the `to` object's current
-            // transform (natural position + animate offset + scale + rotation).
+            // transform (flow position + animate offset + scale + rotation).
             let st = states.get(&pair.to);
             let (tx, ty, scale, rot) = if let Some(st) = st {
-                let nat = self.nat.get(&pair.to).copied().unwrap_or((0.0, 0.0));
-                let nat_cm = (nat.0 / super::PT_PER_CM, nat.1 / super::PT_PER_CM);
+                let flow_pos = self.flow_pos.get(&pair.to).copied().unwrap_or((0.0, 0.0));
+                let nat_cm = (flow_pos.0 / super::PT_PER_CM, flow_pos.1 / super::PT_PER_CM);
                 (
                     (nat_cm.0 + st.x) * super::PT_PER_CM,
                     (nat_cm.1 + st.y) * super::PT_PER_CM,
@@ -668,8 +668,8 @@ impl Renderer {
                     st.rotation,
                 )
             } else {
-                let nat = self.nat.get(&pair.to).copied().unwrap_or((0.0, 0.0));
-                (nat.0, nat.1, 1.0, 0.0)
+                let flow_pos = self.flow_pos.get(&pair.to).copied().unwrap_or((0.0, 0.0));
+                (flow_pos.0, flow_pos.1, 1.0, 0.0)
             };
             // Build a proper SVG <path> element from the interpolated ring.
             // Previously this called polygon_svg() which returns a Typst

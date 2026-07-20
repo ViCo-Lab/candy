@@ -285,7 +285,7 @@ when the stream is not a terminal or `NO_COLOR` (https://no-color.org) is set.
 - `renderer::typst::Renderer` — compiles each mobject/per-frame document **in-process** with the
   `typst` crate library (the CLI is never spawned). `render_frame_at` produces SVG (draft);
   `render_frame_pixels_par` produces RGBA8 pixels (data-parallel via rayon).
-  `ensure_natural_public()` pre-computes the natural layout once so the parallel loop can share
+  `ensure_flow_public()` pre-computes the flow layout once so the parallel loop can share
   the `WorldState` via `Arc`.
   - **Per-glyph `#transform`** (inline content): `build_transform_fragments` renders the whole
     old and new bodies to SVG and `extract_formula` pulls every glyph/decoration out as a
@@ -370,7 +370,7 @@ Semantics enforced by the pipeline:
 - **Cross-page scene** — content overflowing a scene's page spills onto subsequent pages. The
   mobjects stay in **one** scene (data shared), but are laid out across the overflow pages and the
   canvas is the vertical stack of those pages in page order, so nothing is clipped off a single
-  page and the scene is *not* split into separate sub-scenes. `ensure_natural()` reads every page
+  page and the scene is *not* split into separate sub-scenes. `ensure_flow()` reads every page
   of the natural-layout pass and offsets each mobject's natural y by `k * page_h` (page index `k`).
 - **Implicit root** — when `scenes` is empty (no `scene` call), the whole document is one implicit
   scene (id `0`) whose page is the root page size; this path is backward-compatible with v0.1.

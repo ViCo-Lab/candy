@@ -134,7 +134,7 @@ pub(crate) struct WorldState {
     /// printed at most once per renderer, not once per compiled frame.
     time_warned: AtomicBool,
     /// Parsed-source cache. Typst re-parses its input on every `compile` call,
-    /// so the same source string (a static mobject body, the natural-layout
+    /// so the same source string (a static mobject body, the flow-layout
     /// probe, a repeated counter value, …) would be re-parsed N times across an
     /// animation's frames. We memoize the parsed `TypstSource` here (keyed by the
     /// exact source text) so repeated compiles skip the parse and reuse the
@@ -213,7 +213,7 @@ impl WorldState {
     /// Parse `src` into a `TypstSource`, memoized by the exact source text.
     ///
     /// Consecutive frames that compile the same source (a static / paused
-    /// mobject body, the natural-layout probe, a repeated `ecval` value, …)
+    /// mobject body, the flow-layout probe, a repeated `ecval` value, …)
     /// reuse the already-parsed AST instead of re-parsing — this is what lets
     /// the per-frame recompiler build up a render cache instead of paying the
     /// full parse cost on every frame. The `WorldState` (fonts, file resolver,

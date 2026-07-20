@@ -75,7 +75,7 @@ These mirror Manim Community Edition primitives. Each is inert under standard Ty
 | `#blink(target, blinks: 3, duration: 500, easing: "smooth")` | alternate opacity 1↔0 `blinks` times. |
 | `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
 | `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")` | shrink a "spotlight" onto the target. |
-| `#move-along-path(target, path, duration: 500, easing: "smooth")` | move along a polyline of `(x, y)` points (cm, **relative to the object's natural layout position**). |
+| `#move-along-path(target, path, duration: 500, easing: "smooth")` | move along a polyline of `(x, y)` points (cm, **relative to the object's flow layout position**). |
 
 ```typst
 #save-state("dot", slot: "home")

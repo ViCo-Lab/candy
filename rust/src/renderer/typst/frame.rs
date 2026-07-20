@@ -198,18 +198,18 @@ impl Renderer {
         Ok(out)
     }
 
-    /// Public wrapper around `ensure_natural` so callers (e.g. the parallel
+    /// Public wrapper around `ensure_flow` so callers (e.g. the parallel
     /// rasterization loop in `build_input_with_gpu`) can pre-compute the
-    /// natural layout before spawning parallel frame renders.
-    pub fn ensure_natural_public(&mut self) -> Result<(), CandyError> {
-        self.ensure_natural()
+    /// flow layout before spawning parallel frame renders.
+    pub fn ensure_flow_public(&mut self) -> Result<(), CandyError> {
+        self.ensure_flow()
     }
-    /// Test-only accessor for the computed natural (first-frame) top-left of a
+    /// Test-only accessor for the computed flow (first-frame) top-left of a
     /// mobject, in Typst points (page origin). Used by the native-consistency /
     /// declaration-order regression tests.
     #[cfg(test)]
-    pub(crate) fn nat_for(&self, label: &Label) -> Option<(f64, f64)> {
-        self.nat.get(label).copied()
+    pub(crate) fn flow_pos_for(&self, label: &Label) -> Option<(f64, f64)> {
+        self.flow_pos.get(label).copied()
     }
     /// Test-only: summary of the precomputed per-glyph transform plans
     /// `(target, fragment_count, start_ms, end_ms)`.
@@ -239,15 +239,15 @@ impl Renderer {
         time_ms: u32,
         all_frames: &[FrameData],
     ) -> Result<String, CandyError> {
-        self.ensure_natural()?;
+        self.ensure_flow()?;
         self.render_frame_at_par(time_ms, all_frames)
     }
     /// Parallel-safe variant of [`render_frame_at`].
     ///
     /// Takes `&self` so it can be called from a rayon parallel iterator.
-    /// **Precondition:** `ensure_natural()` must have been called once before
+    /// **Precondition:** `ensure_flow()` must have been called once before
     /// any parallel call (it initializes `nat`/`page_w`/`page_h`). The
-    /// [`Renderer::ensure_natural_public`] method exposes this.
+    /// [`Renderer::ensure_flow_public`] method exposes this.
     ///
     /// The renderer has a single code path now: the whole-document native-Typst
     /// SVG path (`render_frame_at_whole_doc`). The old hand-composed per-object
@@ -383,7 +383,7 @@ impl Renderer {
                 self.scene.artifacts.label_locs.get(&frame.target).cloned(),
             ));
         }
-        self.ensure_natural()?;
+        self.ensure_flow()?;
         let source = self.object_source(frame, frame.time_ms)?;
         let doc = self.compile_cached(&source, &Dict::new())?;
         let page = doc
@@ -395,8 +395,8 @@ impl Renderer {
     }
     /// Build the isolated per-object source for a single target.
     fn object_source(&self, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {
-        let nat = self.nat.get(&st.target).cloned().unwrap_or((0.0, 0.0));
-        let nat_cm = (nat.0 / PT_PER_CM, nat.1 / PT_PER_CM);
+        let flow_pos = self.flow_pos.get(&st.target).cloned().unwrap_or((0.0, 0.0));
+        let nat_cm = (flow_pos.0 / PT_PER_CM, flow_pos.1 / PT_PER_CM);
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;

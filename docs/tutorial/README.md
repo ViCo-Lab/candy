@@ -76,7 +76,7 @@ and Candy's pipeline expands them into per-frame Typst documents that are render
 ```
 
 > **One file, two jobs.** Compiling a `.tyx` with `typst compile` renders the *first
-> frame* (every object at its natural placement, every `play` block visible, and
+> frame* (every object at its flow placement, every `play` block visible, and
 > `animate` / `pause` / `audio` inert). Candy's Rust pipeline reads the *same*
 > directives from the source AST and produces the full clip. So a single `.tyx` is
 > simultaneously a normal Typst document *and* a Candy animation script — you can

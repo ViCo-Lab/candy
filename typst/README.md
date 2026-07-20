@@ -7,7 +7,7 @@ This document is the user-facing reference for **Candy's Typst DSL**. Candy turn
 videos (MP4 / MKV / WebM) or SVG drafts.
 
 > A `.tyx` file is **valid, standard Typst**. Compiling it with `typst compile`
-> renders the *first frame* of the animation (every object at its natural placement,
+> renders the *first frame* of the animation (every object at its flow placement,
 > every `play` block visible, and `animate` / `pause` / `audio` inert). The Candy
 > Rust pipeline reads the **same directives from the source AST** and produces the
 > full clip. So a single `.tyx` is simultaneously a normal Typst document *and* a
@@ -148,13 +148,13 @@ An **action** (`#animate`, `#blink`, `#morph`, …) targets a mobject by its `la
 string and changes a transform (position / scale / rotation / opacity) over `duration`
 milliseconds. Multiple actions on different targets run in parallel.
 
-**Layout & hidden mobjects.** A mobject's *natural* placement is where `body` lands in
-the document flow; `ensure_natural` measures that box by rendering every object once.
+**Layout & hidden mobjects.** A mobject's *flow* placement is where `body` lands in
+the document flow; `ensure_flow` measures that box by rendering every object once.
 Mobjects that are *temporarily not rendered* at frame 0 — a `#reveal` / `#typewriter`
 target before it has typed anything, a `play` block, or a `transform` target whose
-content timeline starts as `none` — still **reserve their natural box** in the flow:
+content timeline starts as `none` — still **reserve their flow box** in the flow:
 candy wraps them in Typst `#hide[…]` so the space is kept (and the hidden object gets a
-correct `nat` to be placed at once it appears) while later mobjects do **not** shift up
+correct `flow_pos` to be placed at once it appears) while later mobjects do **not** shift up
 to fill the gap. Pure containers with no content of their own are the only objects
 skipped. This means you can safely stack a `reveal` caption between two always-visible
 shapes without the layout jumping when the text types in.
@@ -352,7 +352,7 @@ Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`. Inert under standard Ty
 
 #### `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0)` {#spiral-in}
 
-Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
+Fly in from a scaled-up, rotated, invisible state to the flow position. Mirrors
 `SpiralIn`. Inert under standard Typst.
 
 #### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0)` {#focus-on}

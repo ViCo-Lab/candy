@@ -182,7 +182,7 @@ Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
 
 ### `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
-Fly in from a scaled-up, rotated, invisible state to the natural position. Mirrors
+Fly in from a scaled-up, rotated, invisible state to the flow position. Mirrors
 `SpiralIn`.
 
 ### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0)`
@@ -196,7 +196,7 @@ Crossfade two pre-registered mobjects: fade out `from` while fading in `to`. Mir
 
 ### `#move-along-path(target, path, duration: 500, easing: "smooth", mode: "polyline", orient: false, timing: "after", delay: 0)`
 
-Move `target` along a polyline through `path` (array of `(x, y)` points in cm, **relative to the object's natural layout position**).
+Move `target` along a polyline through `path` (array of `(x, y)` points in cm, **relative to the object's flow layout position**).
 The scheduler generates a keyframe at each point, distributed across `duration`. Mirrors
 `MoveAlongPath` (linear paths; arcs/beziers approximated as polylines).
 

@@ -243,7 +243,7 @@
 }
 
 /// Move the target along a polyline through `points` (cm). Like `#animate`'s
-/// `to:`, the points are *relative to the object's natural layout position*
+/// `to:`, the points are *relative to the object's flow layout position*
 /// (the position it has under plain Typst), not absolute page coordinates.
 /// The scheduler generates a keyframe at each point, evenly distributed across
 /// `duration`. Mirrors Manim's `MoveAlongPath` (linear path; arc/bezier paths

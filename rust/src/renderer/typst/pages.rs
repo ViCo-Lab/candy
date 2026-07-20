@@ -1,6 +1,6 @@
 //! Per-page sequential playback for *cross-page scenes*.
 //!
-//! When a scene's natural Typst layout overflows a single page, the mobjects
+//! When a scene's flow Typst layout overflows a single page, the mobjects
 //! stay in **one** scene (shared ownership, shared timeline) but are laid out
 //! across the overflow pages. The renderer then plays those pages **in
 //! sequence** on a single-page canvas (it does *not* grow the canvas): each
@@ -34,10 +34,10 @@ const DEFAULT_PAGE_MS: u32 = 800;
 
 /// Builds and answers queries about per-scene page playback schedules.
 ///
-/// Constructed once in [`Renderer::ensure_natural`](super::Renderer::ensure_natural)
-/// from the natural layout (`page_of`) and the scene timeline (`slides`).
+/// Constructed once in [`Renderer::ensure_flow`](super::Renderer::ensure_flow)
+/// from the flow layout (`page_of`) and the scene timeline (`slides`).
 pub(crate) struct PageScheduler {
-    /// label -> the page (0-based) its natural layout landed on.
+    /// label -> the page (0-based) its flow layout landed on.
     page_of: HashMap<Label, usize>,
     /// Per-scene page playback schedule: the ordered list of page-segments that
     /// make up the scene's timeline.
@@ -46,7 +46,7 @@ pub(crate) struct PageScheduler {
 
 impl PageScheduler {
     /// An empty scheduler (used as the `Renderer` placeholder before
-    /// [`Renderer::ensure_natural`] rebuilds it from the real layout).
+    /// [`Renderer::ensure_flow`] rebuilds it from the real layout).
     pub(crate) fn empty() -> Self {
         Self {
             page_of: HashMap::new(),
@@ -54,7 +54,7 @@ impl PageScheduler {
         }
     }
 
-    /// Build the scheduler from a natural-layout map (`page_of`) and the number
+    /// Build the scheduler from a flow-layout map (`page_of`) and the number
     /// of pages each scene spilled onto.
     pub(crate) fn build(
         scene: &Scene,
@@ -77,7 +77,7 @@ impl PageScheduler {
         }
     }
 
-    /// The page (0-based) a label's natural layout landed on, if known.
+    /// The page (0-based) a label's flow layout landed on, if known.
     pub(crate) fn page_of(&self, label: &Label) -> Option<usize> {
         self.page_of.get(label).copied()
     }

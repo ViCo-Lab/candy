@@ -381,7 +381,7 @@ pub struct CharFragment {
 /// old content (used only as a fallback / for the crossfade safety net).
 /// `old_body` / `new_body` are the raw bodies so the renderer can re-measure
 /// and split them into glyph fragments. `fragments` is empty at parse time and
-/// filled in by the renderer's `ensure_natural` (which does the splitting +
+/// filled in by the renderer's `ensure_flow` (which does the splitting +
 /// layout). During `[start_ms, end_ms]` the renderer composites the
 /// interpolated fragments *over* `target` so the old content visibly
 /// disassembles and reassembles into the new content instead of dissolving as
@@ -601,7 +601,7 @@ pub struct Scene {
     /// `#mobject(label, body)` body and every `#scene(...)`. The renderer
     /// reconstructs each frame as a complete Typst document by splicing the
     /// per-frame wrapped mobject bodies back into the original source, so it
-    /// keeps the document's natural layout, Z-order and all non-candy Typst
+    /// keeps the document's flow layout, Z-order and all non-candy Typst
     /// content (prose, equations, `#play` blocks, …) faithful to `typst
     /// compile`. Skipped from serialization (it is a re-derivable cache of the
     /// source) and defaulted so synthetic `Scene`s (tests) stay trivial.

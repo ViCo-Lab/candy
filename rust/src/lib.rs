@@ -302,9 +302,9 @@ pub fn build_input_with_gpu(
         ));
     }
 
-    // Pre-compute natural layout once (serial) so the parallel rasterization
+    // Pre-compute flow layout once (serial) so the parallel rasterization
     // loop can use the `&self` `render_frame_at_par` method.
-    renderer.ensure_natural_public()?;
+    renderer.ensure_flow_public()?;
 
     // Rasterize every frame in parallel via rayon (data-parallel over frames).
     // Each frame render is independent (the WorldState is shared via Arc and
