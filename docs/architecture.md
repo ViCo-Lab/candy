@@ -39,6 +39,56 @@ A `scene` is a special `page`. `#scene(body)` wraps `body` in `page()`,
 so each scene renders as an independent page. Rendering one scene never
 touches the content of another.
 
+## Rendering Pipeline (Typst)
+
+Every frame is rendered by recompiling the **whole document** with a fresh
+`set sys.inputs` map. The candy-preprocessed Typst source (`param_source`)
+is stable across the entire render; only `sys.inputs` changes per frame, so
+comemo reuses compiled output for frames that share the same inputs.
+`sys.inputs` carries, per object:
+
+- transforms read by `#move` / `#scale` / `#rotate` / `#opacity`
+  (`candy:<label>:x|y|scale|rot|opacity`),
+- `#reveal` / `#typewriter` prefix length (`candy:<label>:reveal:len`),
+- `#transform` body selection when the new body is non-string
+  (`candy:<label>:body_idx`),
+- counter values (`candy:counter:name`),
+- the active scene gate (`candy:active_scene`).
+
+Because the whole document recompiles each frame, there is **no separate
+"natural" measurement pass** — the layout is whatever Typst computes from the
+current inputs.
+
+### Camera group
+When the document declares `#camera`, the rendered base is wrapped in a
+single `<g transform>` driven by the `__camera__` mobject's per-frame
+`FrameData` (pan + zoom + rotate about the page center). The group is applied
+only on frames where a camera is actually active (a per-frame `camera.is_some()`
+decision — the camera test supplies `__camera__` through `frames`, not via a
+`#camera` directive), so no-camera scenes in the same document are unaffected.
+
+### Subtitle split
+- **Camera documents** (`#camera` present): each `#subtitle(...)` call is
+  blanked out of the base document and the caption is re-emitted as a
+  standalone SVG, embedded as a **camera-independent overlay** so it stays
+  screen-fixed regardless of camera motion.
+- **No-camera documents**: subtitles render **naturally inside the document**
+  and are never overlaid.
+
+`has_camera_directive` (whether the source text contains `#camera`) is the
+single source of truth for both the blanking and the overlay, keeping them in
+sync.
+
+### Opacity bypass
+Typst 0.15 has no in-document `opacity()`, so a fading object
+(`0 < opacity < 1`) cannot be expressed in the compiled SVG. Instead the
+base frame is rasterized with every fading object **hidden** (all other
+objects at full opacity), and each fading object is then rendered as its own
+full-opacity layer and alpha-composited over the base at its target opacity
+(premultiplied "over", since tiny-skia `Pixmap` is premultiplied). Frames
+with no fading objects take the single-rasterization fast path, so the common
+case is unchanged.
+
 ## Codec Architecture
 
 ### Default path (requires system ffmpeg)
@@ -128,8 +178,8 @@ Morph uses Flubber's algorithm ported to Rust (`core/morph.rs`):
 3. Flubber morph: equalize point counts + cyclic alignment + lerp
 4. Inject morphed polygon as SVG `<path>` overlay via `morph_overlay_svg()`
 
-The morph overlay is injected in both render paths (whole-doc and
-non-whole-doc) after the content and before the transform overlay.
+The morph overlay is injected in `compose_frame_svg` after the content
+and before the transform overlay (a single whole-document render path).
 The morph polygon is always fully visible (no opacity wrapper) —
 the crossfade is handled by the `from` object's FadeOut + ScaleBy.
 
@@ -150,10 +200,17 @@ The transform overlay is emitted as SVG `<defs>` + `<use>` elements
 
 ## Subtitle Architecture
 
-Subtitles are rendered as complete SVG documents by compiling a small
-Typst snippet per subtitle. The outer `<svg>` tags are stripped via
-`extract_svg_inner()` before embedding into the frame SVG, preventing
-nested `<svg>` elements.
+On **camera documents**, subtitles are rendered as complete SVG documents by
+compiling a small Typst snippet per subtitle. The outer `<svg>` tags are
+stripped via `extract_svg_inner()` before embedding into the frame SVG as a
+camera-independent overlay, preventing nested `<svg>` elements. (The base
+document's `#subtitle(...)` calls are blanked so the caption is not
+double-drawn.)
+
+On **no-camera documents**, subtitles render natively inside the document
+and are not overlaid — `has_camera_directive` (whether the source contains
+`#camera`) is the single source of truth for both the blanking and the
+overlay.
 
 Subtitle visibility follows Typst scoping rules: one per scope, parental
 shadowing, auto-destroy on scope exit.

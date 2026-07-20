@@ -17,10 +17,10 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 | E002 | `Parse` | Invalid `.tyx` syntax (or non-monotonic `time_ms` in `schedule`). |
 | E003 | `Svg` | `candy-json` missing/invalid (SVG extraction). |
 | E004 | `LabelNotFound` | `@label` not found in the Typst layout. |
-| E005 | `Interp` | Invalid interpolation range (clamped, non-fatal). |
+| E005 | `Interpolation` | Invalid interpolation range (clamped, non-fatal). |
 | E006 | `Typst` | Typst render failure — the full `typst::diag::SourceDiagnostic` (message + any `hint:` lines) is captured and surfaced. |
 | E007 | `Encode` | Rav1e/openh264 encoding failure. |
-| E008 | `NoCandyImport` | The `.tyx` does not `#import "@preview/candy"` (or `candy` under any alias). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
+| E008 | `CandyDumpedYou` | The `.tyx` does not `#import` the candy package (or imports it with a version that does not match the installed candy CLI version). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
 | E009 | `UnknownKey` | A key reference (`@label`, `target:`, `animate(target:)`, etc.) points to a mobject that was never registered via `#mobject`. Also used when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`, …) reference an unknown counter name. |
 | E010 | `InvalidKey` | A key parameter evaluated to a non-string type (e.g., number, boolean, array). Keys must always resolve to strings. |
 
