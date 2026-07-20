@@ -715,9 +715,15 @@ fn stream_encode_cpu(
     // `&self` so it is safe to call from the parallel loop); the raster module
     // then rasterizes that SVG to RGBA at the uniform canvas size. This is the
     // single source of truth — the same SVG the draft path writes to `.candy/`.
+    // Per-object opacity goes through the SVG/pixel bypass: `render_frame_pixels`
+    // rasterizes the base (fading objects hidden) and alpha-composites each
+    // fading object as its own full-opacity layer at its target opacity —
+    // Typst 0.15 has no in-document `opacity()`, so opacity is applied
+    // here, not in the compiled source. Frames with no fading objects
+    // take the fast path (a single rasterization), so the common case
+    // is unchanged.
     let render = |t: u32| -> Result<RenderedFrame, CandyError> {
-        let svg = renderer.render_frame_at_par(t, frames)?;
-        crate::renderer::raster::cpu::rasterize_svg(&svg, tw as u32, th as u32)
+        renderer.render_frame_pixels(t, frames, tw as u32, th as u32)
     };
     let run_windows = || {
         for (wi, chunk) in sample_times.chunks(window).enumerate() {

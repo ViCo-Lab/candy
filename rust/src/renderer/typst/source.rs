@@ -79,13 +79,19 @@ impl Renderer {
             edits.push((cs, ce, Self::wrap_mobject_inputs(&label.0, &inner)));
         }
         // 2. Blank each `#subtitle(...)` call out of the base document (it is
-        //    drawn as a separate, camera-independent overlay). The `subtitle_call`
+        //    drawn as a separate, camera-independent overlay) ONLY when the
+        //    document declares a `#camera` directive. Without a camera the
+        //    caption renders natively inside the document (the "no-camera
+        //    direct-output" path) and must NOT be blanked — blanking it here
+        //    would make it disappear on no-camera frames. The `subtitle_call`
         //    range already includes the leading `#`, so replacing it with `#none`
         //    yields a no-op caption in the base.
-        for &(ss, se) in scene.artifacts.subtitle_call.values() {
-            let cs = src[..ss].chars().count();
-            let ce = src[..se].chars().count();
-            edits.push((cs, ce, "#none".to_string()));
+        if src.contains("#camera") {
+            for &(ss, se) in scene.artifacts.subtitle_call.values() {
+                let cs = src[..ss].chars().count();
+                let ce = src[..se].chars().count();
+                edits.push((cs, ce, "#none".to_string()));
+            }
         }
         // Apply right-to-left (descending start) so nested ranges stay correct.
         edits.sort_by_key(|e| std::cmp::Reverse(e.0));

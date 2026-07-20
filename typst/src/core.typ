@@ -193,7 +193,7 @@
 
 /// Make a mobject visible instantly (set opacity to 1.0). No interpolation.
 ///
-/// - `target`: the `name` of the object to make visible.
+/// - `target`: the `name` ofjian kuo h the object to make visible.
 /// - `timing`: sequencing relative to the previous animation — `"after"`
 ///   (default) or `"with"` (parallel). See `animate` for details.
 /// - `delay`: extra wait in milliseconds before this animation begins

@@ -169,7 +169,7 @@ pub enum CandyError {
     /// declaration location when known (so the user sees where it was defined).
     LabelNotFound(Label, Option<SourceLoc>),
     /// E005 — Invalid interpolation range (clamped, not fatal).
-    Interp(String),
+    Interpolation(String),
     /// E006 — Typst render failure. Carries the offending source location
     /// (file:line:col + the offending line) when the failure can be tied to a
     /// specific span in the compiled Typst source, so the user is pointed at the
@@ -179,7 +179,7 @@ pub enum CandyError {
     Typst(String, Option<SourceLoc>),
     /// E007 — Rav1e / codec / mux encoding failure.
     Encode(String),
-    /// CandyDumpedYou — The `.tyx` does not import the candy package (or
+    /// E008 — The `.tyx` does not import the candy package (or
     /// imports it with a version that does not match the installed candy CLI
     /// version), so its static content has no scene to own it. Candy can only
     /// render documents that import `@<namespace>/candy:<version>` with a
@@ -216,7 +216,7 @@ impl CandyError {
             CandyError::Parse(_, _) => "E002",
             CandyError::Svg(_) => "E003",
             CandyError::LabelNotFound(_, _) => "E004",
-            CandyError::Interp(_) => "E005",
+            CandyError::Interpolation(_) => "E005",
             CandyError::Typst(_, _) => "E006",
             CandyError::Encode(_) => "E007",
             CandyError::CandyDumpedYou(_, _) => "E008",
@@ -235,7 +235,7 @@ impl CandyError {
             CandyError::Parse(_, _) => 2,
             CandyError::Svg(_) => 3,
             CandyError::LabelNotFound(_, _) => 4,
-            CandyError::Interp(_) => 5,
+            CandyError::Interpolation(_) => 5,
             CandyError::Typst(_, _) => 6,
             CandyError::Encode(_) => 7,
             CandyError::CandyDumpedYou(_, _) => 8,
@@ -269,7 +269,7 @@ impl CandyError {
             CandyError::LabelNotFound(l, _) => {
                 format!("label @{} not found in Typst layout", l.0)
             }
-            CandyError::Interp(e) => format!("interpolation range: {e}"),
+            CandyError::Interpolation(e) => format!("interpolation range: {e}"),
             CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
             CandyError::CandyDumpedYou(e, _) => format!("candy package not imported: {e}"),

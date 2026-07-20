@@ -157,6 +157,13 @@ pub struct Renderer {
     /// Cached camera start time (first non-identity keyframe). Computed once
     /// in `ensure_natural` to avoid O(N·T) scan per frame.
     cam_start: Option<u32>,
+    /// Whether the document declares a `#camera` directive. When `true`,
+    /// subtitles are blanked in the base document and drawn as a
+    /// camera-independent overlay (see [`compose_frame_svg`]); when `false`,
+    /// subtitles render natively inside the document — the "no-camera
+    /// direct-output" path. (Per-frame camera *presence* is decided
+    /// separately at render time via the `camera` state, not here.)
+    has_camera_directive: bool,
     /// Cached home scene for camera. Computed once in `ensure_natural`.
     /// Cached set of parent group labels (for filtering in prepare_states).
     /// Computed once in `ensure_natural`.
@@ -241,6 +248,10 @@ impl Renderer {
             param_source.hash(&mut h);
             format!("P{:016x}", std::hash::Hasher::finish(&h))
         };
+        // Whether the document declares a `#camera` directive. Captured here
+        // (before `scene` is moved into `Self`) so the field initializer
+        // does not borrow `scene` after its move.
+        let has_camera_directive = scene.artifacts.source.contains("#camera");
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
@@ -254,6 +265,7 @@ impl Renderer {
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
             cam_start: None,
+            has_camera_directive,
             parent_labels: std::collections::HashSet::new(),
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
