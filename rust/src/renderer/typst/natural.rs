@@ -1,4 +1,5 @@
 use super::*;
+use typst_library::introspection::Label as TypstLabel;
 
 impl Renderer {
     /// Compose a parent transform onto a child transform (group support).
@@ -152,18 +153,22 @@ impl Renderer {
     /// Compute (once) the natural layout of every mobject.
     ///
     /// Each scene's objects are laid out by plain Typst document flow — every
-    /// mobject is emitted as an ordinary block-level Typst object on its own
-    /// line, so Typst stacks them top-to-bottom (left-aligned) with its standard
+    /// `#mobject(name, body)` now returns `block(body) + label(name)`, so
+    /// Typst stacks them top-to-bottom (left-aligned) with its standard
     /// spacing, exactly as the same bodies would land if written directly in a
     /// Typst source. This is what makes `#play` beats and `mobject` text appear
     /// at their "standard mode" positions instead of all piling up at the page
     /// origin (0, 0), and it stays consistent with how hand-written Typst would
     /// typeset the same content (no synthetic `#stack` gap or centring).
     ///
-    /// We cannot rely on Typst's `data-typst-label` SVG attribute — the
-    /// `typst_svg` exporter used here does not emit it — so instead we measure
-    /// each object's bounding box by wrapping it in a uniquely-coloured block
-    /// and reading the footprint back from the single rendered layout SVG.
+    /// The natural (first-frame) position of each mobject is read straight
+    /// from the compiled document via the Typst **introspector**: because every
+    /// mobject carries its own `label(name)`, `introspector.query_label`
+    /// resolves the labelled content and `position()` yields its plain-Typst
+    /// top-left — no colour-bbox measurement trick is needed. The whole
+    /// parameterized source is compiled once per scene with that scene active and
+    /// all transforms at their identity defaults, so every object sits exactly
+    /// where plain Typst would lay it.
     pub(crate) fn ensure_natural(&mut self) -> Result<(), CandyError> {
         if self.natural_computed {
             return Ok(());
@@ -177,31 +182,26 @@ impl Renderer {
             .unwrap_or((16.0, 9.0));
         self.page_w = page_w_cm * PT_PER_CM;
         self.page_h = page_h_cm * PT_PER_CM;
-        let preamble = imports_preamble(&self.scene);
-        // Group labels by the scene that owns them, preserving declaration order
-        // within each scene. Legacy single-scene documents (no `scenes`) lay out
-        // every item on one page.
-        let mut by_scene: Vec<(usize, (f64, f64), Vec<Label>)> = Vec::new();
-        if self.scene.scenes.is_empty() {
-            let mut labels: Vec<Label> = self.scene.items.keys().cloned().collect();
-            labels.sort_by(|a, b| a.0.cmp(&b.0));
-            by_scene.push((0, (self.page_w, self.page_h), labels));
-        } else {
-            for s in &self.scene.scenes {
-                let pg = self.scene.effective_page_pt(s.id);
-                // `owns_labels` is in declaration order, which matches the
-                // top-to-bottom document flow we want to reproduce.
-                let ls: Vec<Label> = s.owns_labels.clone();
-                by_scene.push((s.id, pg, ls));
-            }
-        }
+        // Measure each mobject's natural (first-frame) flow position directly
+        // from the compiled document via the Typst introspector — no colour-bbox
+        // trick. Every `#mobject(name, body)` now returns
+        // `block(body) + label(name)`, so `introspector.query_label` resolves
+        // the labelled content and `position()` yields its plain-Typst
+        // top-left. Because the whole-document source is compiled with all
+        // transforms at their *identity* defaults (`dx`/`dy` = 0, `s` = 100%,
+        // `r` = 0, `hide` = false), every mobject sits exactly where
+        // plain Typst would lay it — faithful to native layout, and a mobject
+        // hidden at frame 0 (its `content_timeline` resolves to `none`) still
+        // reserves its box because the wrapper shows the full body at the default
+        // `reveal:len` / `body_idx`, so it keeps its natural slot.
         let mut nat: HashMap<Label, (f64, f64)> = HashMap::new();
-        // Synthetic mobjects created by `#transform` (e.g. `__xf_eq_0`) are parked
-        // copies of the *target* content. They must share the target's natural
-        // position — if they were laid out as separate blocks they would push
-        // the target and every later mobject down the page, making formulas fall
-        // off-screen and causing the old content to render as a displaced ghost
-        // while the target is translated.
+        // Synthetic mobjects created by `#transform` / `#morph` (e.g.
+        // `__xf_eq_0`, `__xf_eq_0_from`) are parked copies of the *target*
+        // content. They must share the target's natural position — if they were
+        // laid out as separate blocks they would push the target and every later
+        // mobject down the page, making formulas fall off-screen and causing
+        // the old content to render as a displaced ghost while the target is
+        // translated.
         let mut tmp_to_target: HashMap<Label, Label> = HashMap::new();
         for p in &self.scene.transform_plans {
             if p.old.0.starts_with("__xf_") {
@@ -221,115 +221,56 @@ impl Renderer {
         // label -> the page (0-based) its natural layout landed on. Fed to the
         // page scheduler so it can partition each scene's timeline by page.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
-        for (sid, (pw, ph), labels) in &by_scene {
-            // Native layout pass: each mobject is wrapped in a content-sized,
-            // block-level coloured `block` and emitted in plain document flow.
-            // Typst's own block flow stacks them top-to-bottom (left-aligned) with
-            // its standard spacing — exactly where the same bodies would land if
-            // written directly in a Typst source. This is faithful to "standard
-            // Typst" layout, unlike `#stack(dir: ttb, spacing: …)`, which imposes a
-            // synthetic fixed gap and centring that do not match plain Typst.
-            if labels.is_empty() {
-                continue;
+        // Compile once per scene with that scene active (nested scenes render
+        // only while active) and all transforms at identity, then introspect
+        // each owning mobject's label position.
+        let scene_ids: Vec<usize> = if self.scene.scenes.is_empty() {
+            vec![0]
+        } else {
+            self.scene.scenes.iter().map(|s| s.id).collect()
+        };
+        for sid in scene_ids {
+            let mut inputs = Dict::new();
+            if !self.scene.scenes.is_empty() {
+                inputs.insert("candy:active_scene".into(), Value::Int(sid as i64));
             }
-            let mut palette: Vec<(Label, String)> = Vec::new();
-            let mut blocks = String::new();
-            for (i, label) in labels.iter().enumerate() {
-                // Synthetic `#transform` tmps are not laid out as their own
-                // blocks; they inherit the target's natural position below.
-                if tmp_to_target.contains_key(label) {
+            let doc = self.compile(&self.param_source, &inputs)?;
+            scene_page_counts.insert(sid, doc.pages().len().max(1));
+            let intro = doc.introspector();
+            let labels: Vec<Label> = if self.scene.scenes.is_empty() {
+                self.scene.items.keys().cloned().collect()
+            } else {
+                self.scene
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .map(|s| s.owns_labels.clone())
+                    .unwrap_or_default()
+            };
+            for label in labels {
+                // Synthetic tmps inherit the target's natural position below.
+                if tmp_to_target.contains_key(&label) {
                     continue;
                 }
-                let natural = self.scene.items.get(label).map(|s| s.trim()).unwrap_or("");
-                // Frame-0 body (content-timeline resolved at t=0). A mobject that
-                // is revealed / transformed / hidden so nothing shows at t=0 yet
-                // WILL render later has `frame0` empty/`none` while `natural`
-                // still carries the real content. Such mobjects must keep their
-                // natural box in the flow — otherwise every later mobject shifts
-                // up and the hidden mobject never gets a `nat` to be placed at —
-                // so we emit them wrapped in `#hide[…]`, exactly the native-Typst
-                // idiom for "keep the space, hide the ink", instead of dropping
-                // them from the flow. Pure containers whose base body is empty /
-                // `none` *and* which never render any content own no box and are
-                // still skipped.
-                let (frame0, _unknown) = content_for(&self.scene, label, 0);
-                let frame0_t = frame0.trim();
-                if (natural.is_empty() || natural == "none")
-                    && (frame0_t.is_empty() || frame0_t == "none")
-                {
+                let Ok(content) = intro.query_label(TypstLabel::new(label.0.to_string().into()))
+                else {
                     continue;
-                }
-                // Distinct, safe 24-bit colour (skips black/white corners).
-                let color = format!("#{:06x}", 0x010101u32.wrapping_add(i as u32) & 0xFFFFFF);
-                palette.push((label.clone(), color.clone()));
-                let (natural_sub, _unknown) = substitute_counters(&self.scene, natural, 0);
-                let body = if frame0_t.is_empty() || frame0_t == "none" {
-                    // Temporarily not rendered: keep the box, hide the ink.
-                    // Note: this is interpolated inside `#{{ … }}` (Typst *code*
-                    // mode), so `hide` is called as a bare function — no `#`.
-                    format!("hide[{natural_sub}]")
-                } else {
-                    // `content_for` already substituted counters at t=0, so the
-                    // frame-0 body can be emitted verbatim.
-                    frame0_t.to_string()
                 };
-                // A block-level, content-sized wrapper makes Typst place this
-                // object on its own line in the normal flow (so it stacks
-                // vertically with the others), while the unique fill colour lets
-                // us recover its footprint from the single rendered SVG.
-                blocks.push_str(&format!(
-                    "\n#block(width: auto, fill: rgb(\"{color}\"))[#{{ ({body}) }}]"
-                ));
-            }
-            if blocks.is_empty() {
-                continue;
-            }
-            let src = format!(
-                "{preamble}\n#set page(width: {pw}pt, height: {ph}pt, margin: 0pt, fill: none)\n\
-                 {blocks}\n"
-            );
-            let doc = self.compile(&src, &Dict::new())?;
-            // A scene is laid out in plain Typst document flow, so content that
-            // overflows its single page spills onto *subsequent* pages (page 1,
-            // page 2, …), each `ph` tall. We treat this as a **cross-page scene**:
-            // the mobjects stay in ONE scene (data shared — same ownership, same
-            // timeline), but they are laid out across the overflow pages and the
-            // renderer plays the pages **in sequence** on a single-page canvas
-            // (it does NOT grow the canvas). Each mobject keeps its position
-            // *within* the page it landed on (page-local `ly`), and is only drawn
-            // while that page is the active one — so the other pages' timelines
-            // stay frozen until this page finishes and the renderer auto-advances.
-            let pages = doc.pages();
-            let num_pages = pages.len().max(1);
-            scene_page_counts.insert(*sid, num_pages);
-            for (k, page) in pages.iter().enumerate() {
-                let svg = typst_svg::svg(page, &SvgOptions::default());
-                for (label, color) in &palette {
-                    // An object appears on exactly one page, so skip colours we
-                    // have already placed on an earlier page.
-                    if nat.contains_key(label) {
-                        continue;
-                    }
-                    let Some(layout_bbox) = bbox_of_svg_with_fill(&svg, color) else {
-                        continue;
-                    };
-                    // The natural position is exactly where plain Typst lays the
-                    // object's content box: the coloured `block` we wrap it in
-                    // shrinks to the body, so its fill footprint's top-left *is*
-                    // the body's native content-box top-left (`lx, ly`). Each
-                    // page's SVG resets its origin to that page's top-left, so we
-                    // record the position *within* the page (page-local `ly`) and
-                    // remember which page `k` the mobject landed on.
-                    let (lx, ly, _, _) = layout_bbox;
-                    nat.insert(label.clone(), (lx, ly));
-                    page_of.insert(label.clone(), k);
-                }
+                let Some(loc) = content.location() else {
+                    continue;
+                };
+                let Some(pos) = intro.position(loc) else {
+                    continue;
+                };
+                nat.insert(label.clone(), (pos.point.x, pos.point.y));
+                page_of.insert(label.clone(), pos.page.get() - 1);
             }
         }
-        // Synthetic `#transform` tmps inherit their target's natural position (and
-        // page). The scheduler positions them relative to the target, so this keeps
-        // old-content crossfades / morphs aligned with the target instead of
-        // drifting down the page and ghosting as a duplicate.
+        // Synthetic `#transform` / `#morph` tmps inherit their target's
+        // natural position (and page). The scheduler positions them relative to
+        // the target, so this keeps old-content crossfades / morphs aligned
+        // with the target instead of drifting down the page and ghosting as a
+        // duplicate.
         for (tmp, target) in &tmp_to_target {
             if let Some((x, y)) = nat.get(target).copied() {
                 nat.insert(tmp.clone(), (x, y));

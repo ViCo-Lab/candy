@@ -370,6 +370,7 @@ pub(crate) fn read_num(b: &[u8], i: &mut usize) -> f64 {
 /// is wrapped in a uniquely-coloured `box`, so locating that colour's footprint
 /// recovers the object's natural top-left as laid out by Typst itself — no
 /// hand-computed coordinates.
+#[allow(dead_code)]
 pub(crate) fn bbox_of_svg_with_fill(svg: &str, fill: &str) -> Option<(f64, f64, f64, f64)> {
     let target = fill.to_ascii_lowercase();
     let mut fill_stack: Vec<String> = Vec::new();
@@ -470,6 +471,7 @@ pub(crate) fn bbox_of_svg_with_fill(svg: &str, fill: &str) -> Option<(f64, f64, 
 }
 
 /// Extract `name="value"` (single or double quoted) from a tag string.
+#[allow(dead_code)]
 pub(crate) fn svg_attr(tag: &str, name: &str) -> Option<String> {
     let pat = format!("{name}=");
     let i = tag.find(&pat)? + pat.len();
@@ -483,6 +485,7 @@ pub(crate) fn svg_attr(tag: &str, name: &str) -> Option<String> {
     Some(tag[start..end].to_string())
 }
 
+#[allow(dead_code)]
 pub(crate) fn svg_num(tag: &str, name: &str) -> f64 {
     svg_attr(tag, name)
         .and_then(|s| s.parse::<f64>().ok())
@@ -490,6 +493,7 @@ pub(crate) fn svg_num(tag: &str, name: &str) -> f64 {
 }
 
 /// Parse a `points="x1,y1 x2,y2 ..."` attribute into coordinate pairs.
+#[allow(dead_code)]
 pub(crate) fn svg_points(s: Option<String>) -> Vec<(f64, f64)> {
     let Some(s) = s else {
         return vec![];
@@ -512,6 +516,7 @@ pub(crate) fn svg_points(s: Option<String>) -> Vec<(f64, f64)> {
 /// Loose extent of an SVG path: every coordinate pair in `d` (control points
 /// included). Good enough for layout spacing.
 /// A token in an SVG path `d` string: a command letter or a numeric argument.
+#[allow(dead_code)]
 pub(crate) enum PathTok {
     Cmd(char),
     Num(f64),
@@ -520,6 +525,7 @@ pub(crate) enum PathTok {
 /// Pull the next numeric argument, skipping any interleaved command letters
 /// (which belong to a later group). Returns `None` at end-of-input or when the
 /// next token is a command (so the caller can stop consuming this group).
+#[allow(dead_code)]
 pub(crate) fn next_path_num(toks: &[PathTok], i: &mut usize) -> Option<f64> {
     // The loop body always returns on its first iteration (a `Num` yields the
     // value, a `Cmd` stops the group), so this is just a single guarded peek.
@@ -545,6 +551,7 @@ pub(crate) fn next_path_num(toks: &[PathTok], i: &mut usize) -> Option<f64> {
 /// hull bounds the whole curve (a Bézier lies inside its control-point convex
 /// hull). Previously this function just zipped every number into `(x, y)` pairs,
 /// which silently transposed `v`/`h` rects and broke any non-square path.
+#[allow(dead_code)]
 pub(crate) fn collect_path_points(d: &str) -> Vec<(f64, f64)> {
     // Tokenize: command letters vs numbers (scientific notation is allowed).
     let mut toks: Vec<PathTok> = Vec::new();
@@ -777,11 +784,13 @@ pub(crate) fn collect_path_points(d: &str) -> Vec<(f64, f64)> {
 }
 
 /// Apply a 2-D affine `[a, b, c, d, e, f]` to a point.
+#[allow(dead_code)]
 pub(crate) fn apply_matrix(m: &[f64; 6], x: f64, y: f64) -> (f64, f64) {
     (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
 }
 
 /// Compose two affines so that `result` applies `b` then `a` (SVG `a b` order).
+#[allow(dead_code)]
 pub(crate) fn compose_matrix(a: [f64; 6], b: &[f64; 6]) -> [f64; 6] {
     [
         a[0] * b[0] + a[2] * b[1],
@@ -794,6 +803,7 @@ pub(crate) fn compose_matrix(a: [f64; 6], b: &[f64; 6]) -> [f64; 6] {
 }
 
 /// Parse a `transform` attribute (`translate` / `scale` / `rotate` / `matrix`).
+#[allow(dead_code)]
 pub(crate) fn parse_transform_attr(s: &str) -> [f64; 6] {
     let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut rest = s;

@@ -297,7 +297,7 @@ impl Renderer {
         // `place` + `move(dx, dy)` therefore lands each body exactly on its
         // target on the single canvas.
         format!(
-            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ place(top + left, dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[ #scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[ #rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[ #__b ] ] ] }} }}",
+            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ #move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[ #scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[ #rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[ #__b ] ] ] }} }}",
             inner = inner,
             label = label,
         )
@@ -463,21 +463,26 @@ impl Renderer {
                 inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
                 continue;
             }
-            // Position model (cm, matching `tuple_cm` / `st` units): a mobject's
-            // drawn position is its absolute eased target `st` when it has been
-            // positioned by an animation (`#animate`/`#track`/… set `st` to the
-            // absolute `to:` in cm). Before any position keyframe `st` is still
-            // (0, 0), and for spiral-in / static mobjects it stays (0, 0) — in
-            // both cases we fall back to the natural flow position `nat` so the
-            // body lands exactly where plain Typst would put it. The wrapper pins
-            // every mobject at the page origin (`place(top + left)`) and shifts
-            // it by `(dx, dy)`, so feeding the final absolute position here is
-            // all that is needed; no `nat` input is required by the wrapper.
+            // Position model (cm, matching `tuple_cm` / `st` units): `#move` is a
+            // *relative* transform, so the input is the delta from the mobject's
+            // natural flow position. An un-positioned mobject (`st` still (0, 0))
+            // gets `(0, 0)` and stays exactly where plain Typst laid it; a
+            // positioned one (`#animate`/`#track`/… set `st` to the absolute
+            // `to:` in cm) gets `target − nat` so the native `move` lands it on
+            // its absolute eased target. `scale` / `rotate` are absolute and are
+            // read straight from `st`. (Opacity is intentionally NOT a native
+            // transform here — opacity changes are composited via the SVG bypass
+            // in the raster path, not written into the document.)
             let (dx, dy) = match self.nat.get(label) {
-                Some((nx, ny)) if st.x.abs() < 1e-9 && st.y.abs() < 1e-9 => {
-                    (nx / PT_PER_CM, ny / PT_PER_CM)
+                Some((nx, ny)) => {
+                    let (nx_cm, ny_cm) = (nx / PT_PER_CM, ny / PT_PER_CM);
+                    if st.x.abs() < 1e-9 && st.y.abs() < 1e-9 {
+                        (0.0, 0.0)
+                    } else {
+                        (st.x - nx_cm, st.y - ny_cm)
+                    }
                 }
-                _ => (st.x, st.y),
+                None => (st.x, st.y),
             };
             inputs.insert(format!("candy:{l}:dx").into(), Value::Float(dx));
             inputs.insert(format!("candy:{l}:dy").into(), Value::Float(dy));
