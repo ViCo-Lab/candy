@@ -106,15 +106,15 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         }
     }
 
-    // CandyDumpedYou: a `.tyx` must import candy via the canonical
-    // `@preview/candy:<version>` package form. File-style imports
+    // CandyDumpedYou: a `.tyx` must import candy via a Typst package import
+    // of the form `@<namespace>/candy:<version>`. File-style imports
     // (`#import "candy"`) are rejected. The version must match the installed
     // candy CLI version (unless `--ignore-version` is passed, which also
     // accepts file-style imports for development/testing).
     if !ignore_version && ctx.file_style_candy_import {
         return Err(CandyError::CandyDumpedYou(
-            "file-style candy import detected; candy must be imported as the \
-             published package `@preview/candy:<version>`, not via a local \
+            "file-style candy import detected; candy must be imported as a \
+             Typst package (`@<namespace>/candy:<version>`), not via a local \
              file path (e.g. `#import \"candy\"`); pass --ignore-version to \
              bypass this check"
                 .into(),
@@ -124,7 +124,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     if !ctx.candy_imported && !ctx.file_style_candy_import {
         return Err(CandyError::CandyDumpedYou(
             "the .tyx does not import the candy package; candy can only render \
-             documents that import `@preview/candy:<version>`"
+             documents that import `@<namespace>/candy:<version>`"
                 .into(),
             None,
         ));
@@ -135,7 +135,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             if imported_v != &expected {
                 return Err(CandyError::CandyDumpedYou(
                     format!(
-                        "candy version mismatch: .tyx imports @preview/candy:{imported_v} \
+                        "candy version mismatch: .tyx imports candy:{imported_v} \
                          but the installed candy CLI is version {expected}; \
                          pass --ignore-version to skip this check"
                     ),
@@ -608,15 +608,21 @@ fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
 
 /// Record imported Candy symbols so later calls can be resolved.
 fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
-    // Only the canonical `@preview/candy:<version>` package form is recognized
-    // as a valid candy import. File-style imports (`#import "candy"` or
-    // `#import ".../candy"`) are recorded as `file_style_candy_import` and
-    // trigger CandyDumpedYou — the user must use the published package form.
+    // Detect candy package imports. Any Typst package import of the form
+    // `@<namespace>/candy:<version>` is accepted (e.g. `@preview/candy:0.1.0`,
+    // `@local/candy:0.1.0`). File-style imports (`#import "candy"` or
+    // `#import ".../candy"`) are recorded separately and trigger
+    // CandyDumpedYou unless `--ignore-version` is passed.
     if let Expr::Str(s) = imp.source() {
         let src = s.get();
-        if let Some(rest) = src.strip_prefix("@preview/candy:") {
-            ctx.candy_imported = true;
-            ctx.candy_import_version = Some(rest.to_string());
+        // Package import: `@<ns>/candy:<version>` — any namespace is accepted.
+        if src.starts_with('@') {
+            if let Some((path, version)) = src.split_once(':') {
+                if path.ends_with("/candy") {
+                    ctx.candy_imported = true;
+                    ctx.candy_import_version = Some(version.to_string());
+                }
+            }
         } else if src == "candy" || src.ends_with("/candy") {
             ctx.file_style_candy_import = true;
         }
@@ -643,13 +649,13 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
             }
         }
         None => {
-            // Bare module import (`#import "@preview/candy:..." as c`):
+            // Bare module import (`#import "@<ns>/candy:..." as c`):
             // the module object itself is bound to a name, enabling
             // `candy.mobject(...)` field-access calls. Record the bound alias so
             // `call_symbol` only treats *that* receiver's Candy fields as Candy.
             if let Expr::Str(s) = imp.source() {
                 let src = s.get();
-                if src.starts_with("@preview/candy:") {
+                if src.starts_with('@') && src.contains("/candy:") {
                     if let Ok(alias) = imp.bare_name() {
                         ctx.candy_aliases.insert(alias.to_string());
                     }

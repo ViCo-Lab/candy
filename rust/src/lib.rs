@@ -792,49 +792,15 @@ fn stream_encode_gpu(
     enc.finish(output)
 }
 
-/// Resolve the path to the `@preview/candy` Typst package manifest
-/// (`typst/typst.toml`) relative to this crate's manifest directory.
-///
-/// The Rust backend and the Typst package live side by side under the repo
-/// root (`rust/` and `typst/`), so the manifest is always
-/// `<crate_root>/../typst/typst.toml`.
-fn typst_package_manifest() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/typst.toml")
-}
+/// The candy package version, baked in at compile time from the Rust crate's
+/// `Cargo.toml` (`CARGO_PKG_VERSION`). The Rust crate and the Typst package
+/// share the same version (they are released in lockstep), so this is the
+/// authoritative version for both sides.
+pub(crate) const CANDY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Read the `version` field of a `typst.toml` (or any TOML) file.
-///
-/// Used at runtime to verify the `.tyx`'s `@preview/candy:<version>` import
-/// matches the installed candy CLI version (CandyDumpedYou on mismatch), and
-/// by test code to auto-fetch the version for assertions.
-fn read_typst_toml_version(path: &Path) -> Result<String, CandyError> {
-    let text = std::fs::read_to_string(path)?; // E001 on missing file
-    for line in text.lines() {
-        let line = line.trim_start();
-        if let Some(rest) = line.strip_prefix("version") {
-            // Match the key itself, not a longer identifier like `versions`.
-            match rest.chars().next() {
-                Some('=') | Some(' ') | Some('\t') => {}
-                _ => continue,
-            }
-            if let Some(eq) = rest.find('=') {
-                let val = rest[eq + 1..].trim().trim_matches('"');
-                if !val.is_empty() {
-                    return Ok(val.to_string());
-                }
-            }
-        }
-    }
-    Err(CandyError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "typst.toml: missing `version` field",
-    )))
-}
-
-/// Auto-fetch the published version of the `@preview/candy` Typst package from
-/// `typst/typst.toml`. Used at runtime to verify `.tyx` import versions.
+/// The candy package version as a `String` (for comparison with `.tyx` imports).
 pub(crate) fn runtime_typst_package_version() -> Result<String, CandyError> {
-    read_typst_toml_version(&typst_package_manifest())
+    Ok(CANDY_VERSION.to_string())
 }
 
 /// Test-only alias for backward compatibility.
@@ -849,9 +815,8 @@ mod version_tests {
 
     #[test]
     fn typst_package_version_is_fetched_from_manifest() {
-        // Auto-fetch proof: the version is read from the package manifest,
-        // never hard-coded in the assertion.
-        let v = typst_package_version().expect("typst/typst.toml must exist");
+        // The version is baked in at compile time from CARGO_PKG_VERSION.
+        let v = typst_package_version().expect("CARGO_PKG_VERSION is always set");
         assert!(!v.is_empty(), "version must not be empty");
         // Must look like plain semver: digits and dots only, with a dot.
         assert!(
@@ -859,31 +824,5 @@ mod version_tests {
             "version `{v}` is not plain semver"
         );
         assert!(v.contains('.'), "version `{v}` should contain a dot");
-    }
-
-    #[test]
-    fn read_typst_toml_version_parses_known_value() {
-        let tmp = std::env::temp_dir().join("candy_test_typst_version.toml");
-        std::fs::write(&tmp, "[package]\nname = \"candy\"\nversion = \"9.8.7\"\n").unwrap();
-        let got = read_typst_toml_version(&tmp).expect("temp toml must parse");
-        assert_eq!(got, "9.8.7");
-        std::fs::remove_file(&tmp).ok();
-    }
-
-    #[test]
-    fn read_typst_toml_version_handles_missing_file() {
-        let err = read_typst_toml_version(Path::new("/nonexistent/candy/typst.toml"))
-            .expect_err("missing file must error");
-        assert_eq!(err.code(), "E001");
-    }
-
-    #[test]
-    fn read_typst_toml_version_handles_missing_key() {
-        let tmp = std::env::temp_dir().join("candy_test_typst_noversion.toml");
-        std::fs::write(&tmp, "[package]\nname = \"candy\"\n").unwrap();
-        let err = read_typst_toml_version(&tmp).expect_err("missing version must error");
-        // InvalidData surfaces as E001 (Io), the right bucket for this helper.
-        assert_eq!(err.code(), "E001");
-        std::fs::remove_file(&tmp).ok();
     }
 }

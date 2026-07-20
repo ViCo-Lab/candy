@@ -170,10 +170,11 @@ pub enum CandyError {
     /// CandyDumpedYou — The `.tyx` does not import the candy package (or
     /// imports it with a version that does not match the installed candy CLI
     /// version), so its static content has no scene to own it. Candy can only
-    /// render documents that import `@preview/candy:<version>` with a matching
-    /// version. A bare Typst document, a file-style import (`#import "candy"`),
-    /// or a version mismatch all trigger this error. Pass `--ignore-version` to
-    /// skip the version check (useful for development).
+    /// render documents that import `@<namespace>/candy:<version>` with a
+    /// matching version (compiled in from `CARGO_PKG_VERSION`). A bare Typst
+    /// document, a file-style import (`#import "candy"`), or a version mismatch
+    /// all trigger this error. Pass `--ignore-version` to skip the version
+    /// check (useful for development).
     CandyDumpedYou(String, Option<SourceLoc>),
     /// E009 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used

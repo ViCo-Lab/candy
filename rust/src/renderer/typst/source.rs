@@ -156,7 +156,7 @@ impl Renderer {
         // in-process (see `WorldState::candy_local`). In production the parser
         // rejects file-style imports (CandyDumpedYou), but test code and
         // `--ignore-version` mode still use them, so we rewrite here too.
-        let v = crate::runtime_typst_package_version().unwrap_or_else(|_| "0.1.0".to_string());
+        let v = crate::CANDY_VERSION;
         cur = cur
             .replace(
                 "#import \"candy\":",
@@ -592,7 +592,7 @@ impl Renderer {
     pub(crate) fn synthesize_handbuilt_source(
         scene: &Scene,
     ) -> (String, HashMap<Label, (usize, usize)>) {
-        let v = crate::runtime_typst_package_version().unwrap_or_else(|_| "0.1.0".to_string());
+        let v = crate::CANDY_VERSION;
         let mut src = format!("#import \"@preview/candy:{v}\": *\n\n");
         // Wrap mobjects in a `#scene(...)` so the page size matches what the
         // renderer expects (margin: 0pt, the scene's declared width/height or
