@@ -515,7 +515,13 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
                 .ok_or_else(|| CandyError::Typst("no pages".into(), None))?;
             Ok(typst_svg::svg(page, &SvgOptions::default()))
         }
-        Err(e) => Err(e.into()),
+        Err(errs) => {
+            let loc = errs.first().and_then(|d| typst_diag_loc(&world, d, path));
+            Err(CandyError::Typst(
+                crate::core::diag::format_typst_errors(&errs),
+                loc,
+            ))
+        }
     }
 }
 /// Verify the content timeline actually swaps an mobject's rendered body

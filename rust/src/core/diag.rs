@@ -54,6 +54,11 @@ pub struct SourceLoc {
     pub start: usize,
     /// Byte offset of the end of the offending span.
     pub end: usize,
+    /// Character length of the offending span (number of Unicode scalar
+    /// values covered by `[start, end)`). This is what the caret (`^^^`)
+    /// uses — not `end - start` (byte length), which would be wrong for
+    /// multi-byte characters (Chinese, Emoji, …).
+    pub char_span: usize,
 }
 
 impl SourceLoc {
@@ -78,6 +83,12 @@ impl SourceLoc {
             }
         }
         let line_text = raw[line_start..].lines().next().unwrap_or("").to_string();
+        // Character length of the span (not byte length) so the caret covers
+        // multi-byte characters (Chinese, Emoji, …) correctly.
+        let char_span = raw[range.start..range.end.min(raw.len())]
+            .chars()
+            .count()
+            .max(1);
         SourceLoc {
             path: path.to_path_buf(),
             line,
@@ -85,6 +96,7 @@ impl SourceLoc {
             line_text,
             start: range.start,
             end: range.end,
+            char_span,
         }
     }
 
@@ -97,7 +109,7 @@ impl SourceLoc {
     pub fn render(&self) -> String {
         let line_len = self.line_text.chars().count();
         let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
-        let caret_len = (self.end - self.start).clamp(1, avail);
+        let caret_len = self.char_span.clamp(1, avail);
         let indent = " ".repeat(self.col.saturating_sub(1));
         let caret = "^".repeat(caret_len);
         format!(
@@ -123,7 +135,7 @@ impl SourceLoc {
         }
         let line_len = self.line_text.chars().count();
         let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
-        let caret_len = (self.end - self.start).clamp(1, avail);
+        let caret_len = self.char_span.clamp(1, avail);
         let indent = " ".repeat(self.col.saturating_sub(1));
         let caret = "^".repeat(caret_len);
         let header = format!("{}:{}:{}", self.path.display(), self.line, self.col)
@@ -320,6 +332,11 @@ pub type TypstErrors = typst::ecow::EcoVec<typst::diag::SourceDiagnostic>;
 
 impl From<TypstErrors> for CandyError {
     fn from(errs: TypstErrors) -> Self {
+        // Without a `World` we cannot resolve the span to a `SourceLoc`
+        // (line/col requires the source text). Callers with access to a
+        // `World` should use `typst_diag_loc` instead (see
+        // `Renderer::compile` / `compile_file_for_test`). This `From` impl is
+        // a last-resort fallback for sites that only have the errors.
         CandyError::Typst(format_typst_errors(&errs), None)
     }
 }
