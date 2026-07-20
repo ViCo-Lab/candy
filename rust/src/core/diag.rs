@@ -167,13 +167,14 @@ pub enum CandyError {
     Typst(String, Option<SourceLoc>),
     /// E007 — Rav1e / codec / mux encoding failure.
     Encode(String),
-    /// E008 — The `.tyx` does not import the candy package, so its static
-    /// (non-candy) content has no scene to own it — not even the implicit root
-    /// scene. Candy can only render documents that import `@preview/candy`
-    /// (whose root scene then owns all static content). A bare Typst document
-    /// run through `candy build` without importing candy is therefore rejected
-    /// with this dedicated code rather than producing an empty / garbage output.
-    NoCandyImport(String, Option<SourceLoc>),
+    /// CandyDumpedYou — The `.tyx` does not import the candy package (or
+    /// imports it with a version that does not match the installed candy CLI
+    /// version), so its static content has no scene to own it. Candy can only
+    /// render documents that import `@preview/candy:<version>` with a matching
+    /// version. A bare Typst document, a file-style import (`#import "candy"`),
+    /// or a version mismatch all trigger this error. Pass `--ignore-version` to
+    /// skip the version check (useful for development).
+    CandyDumpedYou(String, Option<SourceLoc>),
     /// E009 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used
     /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
@@ -205,7 +206,7 @@ impl CandyError {
             CandyError::Interp(_) => "E005",
             CandyError::Typst(_, _) => "E006",
             CandyError::Encode(_) => "E007",
-            CandyError::NoCandyImport(_, _) => "E008",
+            CandyError::CandyDumpedYou(_, _) => "E008",
             CandyError::UnknownKey(_, _, _) => "E009",
             CandyError::InvalidKey(_, _) => "E010",
         }
@@ -224,7 +225,7 @@ impl CandyError {
             CandyError::Interp(_) => 5,
             CandyError::Typst(_, _) => 6,
             CandyError::Encode(_) => 7,
-            CandyError::NoCandyImport(_, _) => 8,
+            CandyError::CandyDumpedYou(_, _) => 8,
             CandyError::UnknownKey(_, _, _) => 9,
             CandyError::InvalidKey(_, _) => 10,
         }
@@ -258,7 +259,7 @@ impl CandyError {
             CandyError::Interp(e) => format!("interpolation range: {e}"),
             CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
             CandyError::Encode(e) => format!("encode failure: {e}"),
-            CandyError::NoCandyImport(e, _) => format!("candy package not imported: {e}"),
+            CandyError::CandyDumpedYou(e, _) => format!("candy package not imported: {e}"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!("{kind} \"{key}\" does not exist (never declared or already destroyed)")
             }
@@ -275,7 +276,7 @@ impl CandyError {
         match self {
             CandyError::LabelNotFound(_, l) => l.as_ref(),
             CandyError::Parse(_, l) => l.as_ref(),
-            CandyError::NoCandyImport(_, l) => l.as_ref(),
+            CandyError::CandyDumpedYou(_, l) => l.as_ref(),
             CandyError::UnknownKey(_, _, l) => l.as_ref(),
             CandyError::InvalidKey(_, l) => l.as_ref(),
             CandyError::Typst(_, l) => l.as_ref(),

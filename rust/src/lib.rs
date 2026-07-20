@@ -71,10 +71,16 @@ pub enum Input {
 }
 
 impl Input {
-    /// Parse the input into a [`Scene`] AST.
+    /// Parse the input into a [`Scene`] AST. Performs the candy import version
+    /// check (CandyDumpedYou on mismatch).
     pub fn parse(&self) -> Result<Scene, CandyError> {
+        self.parse_with_ignore_version(false)
+    }
+    /// Parse with an explicit `ignore_version` flag. When `true`, the candy
+    /// import version check is skipped (useful for development).
+    pub fn parse_with_ignore_version(&self, ignore_version: bool) -> Result<Scene, CandyError> {
         match self {
-            Input::Tyx(p) => parse_tyx(p),
+            Input::Tyx(p) => parse_tyx(p, ignore_version),
             Input::Svg(p) => extract_scene_from_svg(p),
         }
     }
@@ -181,6 +187,7 @@ pub fn build_input(
         false,
         jobs,
         keep_intermediates,
+        false,
     )
 }
 
@@ -203,8 +210,9 @@ pub fn build_input_with_gpu(
     use_gpu: bool,
     jobs: usize,
     keep_intermediates: bool,
+    ignore_version: bool,
 ) -> Result<(), CandyError> {
-    let scene: Scene = input.parse()?; // Steps 1–2
+    let scene: Scene = input.parse_with_ignore_version(ignore_version)?; // Steps 1–2
     let project_root = input.project_root();
     let mut keyframes = scheduler::schedule(&scene)?; // Step 3
 
@@ -790,17 +798,15 @@ fn stream_encode_gpu(
 /// The Rust backend and the Typst package live side by side under the repo
 /// root (`rust/` and `typst/`), so the manifest is always
 /// `<crate_root>/../typst/typst.toml`.
-#[cfg(test)]
 fn typst_package_manifest() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../typst/typst.toml")
 }
 
 /// Read the `version` field of a `typst.toml` (or any TOML) file.
 ///
-/// This is how test code auto-fetches the published `@preview/candy` version
-/// instead of hard-coding it in assertions (project convention: only test code
-/// needs the Typst package version auto-fetched).
-#[cfg(test)]
+/// Used at runtime to verify the `.tyx`'s `@preview/candy:<version>` import
+/// matches the installed candy CLI version (CandyDumpedYou on mismatch), and
+/// by test code to auto-fetch the version for assertions.
 fn read_typst_toml_version(path: &Path) -> Result<String, CandyError> {
     let text = std::fs::read_to_string(path)?; // E001 on missing file
     for line in text.lines() {
@@ -826,10 +832,15 @@ fn read_typst_toml_version(path: &Path) -> Result<String, CandyError> {
 }
 
 /// Auto-fetch the published version of the `@preview/candy` Typst package from
-/// `typst/typst.toml`. Test-only helper (see the project convention above).
+/// `typst/typst.toml`. Used at runtime to verify `.tyx` import versions.
+pub(crate) fn runtime_typst_package_version() -> Result<String, CandyError> {
+    read_typst_toml_version(&typst_package_manifest())
+}
+
+/// Test-only alias for backward compatibility.
 #[cfg(test)]
 pub(crate) fn typst_package_version() -> Result<String, CandyError> {
-    read_typst_toml_version(&typst_package_manifest())
+    runtime_typst_package_version()
 }
 
 #[cfg(test)]

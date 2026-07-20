@@ -40,7 +40,7 @@ use crate::core::ast::PT_PER_CM;
 /// Precondition: `path` exists and is valid UTF-8 (else E001).
 /// Postcondition: returns `Ok(Scene)` with validated slides (else E002).
 /// `private_metadata` is set to the fixed defaults.
-pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
+pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError> {
     let raw = std::fs::read_to_string(path)?; // E001 on missing file
     // Parse as standard Typst **markup** — exactly like `typst compile`. A
     // `.tyx` is a valid standard Typst document: it imports the Candy package
@@ -106,18 +106,43 @@ pub fn parse_tyx(path: &Path) -> Result<Scene, CandyError> {
         }
     }
 
-    // E008: a `.tyx` that never imports the candy package has no root scene to
-    // own its static (non-candy) content, so candy cannot render it. This is
-    // checked after the full walk so any import style (wildcard / renamed /
-    // bare module / published `@preview/candy:<v>`) is recognized.
-    if !ctx.candy_imported {
-        return Err(CandyError::NoCandyImport(
-            "the .tyx does not import the candy package; candy can only render \
-             documents that import `@preview/candy` (its static content must be \
-             owned by the implicit root scene)"
+    // CandyDumpedYou: a `.tyx` must import candy via the canonical
+    // `@preview/candy:<version>` package form. File-style imports
+    // (`#import "candy"`) are rejected. The version must match the installed
+    // candy CLI version (unless `--ignore-version` is passed, which also
+    // accepts file-style imports for development/testing).
+    if !ignore_version && ctx.file_style_candy_import {
+        return Err(CandyError::CandyDumpedYou(
+            "file-style candy import detected; candy must be imported as the \
+             published package `@preview/candy:<version>`, not via a local \
+             file path (e.g. `#import \"candy\"`); pass --ignore-version to \
+             bypass this check"
                 .into(),
             None,
         ));
+    }
+    if !ctx.candy_imported && !ctx.file_style_candy_import {
+        return Err(CandyError::CandyDumpedYou(
+            "the .tyx does not import the candy package; candy can only render \
+             documents that import `@preview/candy:<version>`"
+                .into(),
+            None,
+        ));
+    }
+    if !ignore_version {
+        if let Some(ref imported_v) = ctx.candy_import_version {
+            let expected = crate::runtime_typst_package_version()?;
+            if imported_v != &expected {
+                return Err(CandyError::CandyDumpedYou(
+                    format!(
+                        "candy version mismatch: .tyx imports @preview/candy:{imported_v} \
+                         but the installed candy CLI is version {expected}; \
+                         pass --ignore-version to skip this check"
+                    ),
+                    None,
+                ));
+            }
+        }
     }
 
     // Every scene must have at least one slide so the renderer can emit frames.
@@ -196,12 +221,16 @@ pub(crate) struct ParseCtx {
     /// `#import "candy"` / `#import "candy" as X`. Enables `candy.mobject(...)`
     /// field-access detection while keeping ordinary method calls out.
     pub(crate) candy_aliases: HashSet<String>,
-    /// Whether the candy package itself was imported anywhere in the document
-    /// (any import style: `#import "candy": *`, `#import "candy": mobject as m`,
-    /// `#import "candy"`, or `#import "@preview/candy:<v>"`). Gates the E008
-    /// "candy package not imported" error — without it there is no root scene to
-    /// own the document's static (non-candy) content.
+    /// Whether the candy package itself was imported via the canonical
+    /// `@preview/candy:<version>` package form. File-style imports (`#import "candy"`)
+    /// are NOT recognized — they trigger CandyDumpedYou.
     pub(crate) candy_imported: bool,
+    /// The version string from the detected `@preview/candy:<version>` import,
+    /// if any. Used to verify it matches the installed candy CLI version.
+    pub(crate) candy_import_version: Option<String>,
+    /// Whether a file-style candy import (`#import "candy"` / `#import ".../candy"`)
+    /// was seen — these trigger CandyDumpedYou.
+    pub(crate) file_style_candy_import: bool,
     /// label -> raw body source text.
     pub(crate) items: HashMap<Label, String>,
     /// label -> frame-0 visual state.
@@ -579,14 +608,17 @@ fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
 
 /// Record imported Candy symbols so later calls can be resolved.
 fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
-    // Detect whether the candy *package* itself is being imported (any style).
-    // This gates the E008 "candy package not imported" error: a `.tyx` that
-    // never imports `@preview/candy` (or a local `candy` path) has no root
-    // scene to own its static content, so candy cannot render it.
+    // Only the canonical `@preview/candy:<version>` package form is recognized
+    // as a valid candy import. File-style imports (`#import "candy"` or
+    // `#import ".../candy"`) are recorded as `file_style_candy_import` and
+    // trigger CandyDumpedYou — the user must use the published package form.
     if let Expr::Str(s) = imp.source() {
         let src = s.get();
-        if src == "candy" || src.ends_with("/candy") || src.starts_with("@preview/candy:") {
+        if let Some(rest) = src.strip_prefix("@preview/candy:") {
             ctx.candy_imported = true;
+            ctx.candy_import_version = Some(rest.to_string());
+        } else if src == "candy" || src.ends_with("/candy") {
+            ctx.file_style_candy_import = true;
         }
     }
     match imp.imports() {
@@ -611,16 +643,13 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
             }
         }
         None => {
-            // Bare module import (`#import "candy"` / `#import "candy" as c`):
+            // Bare module import (`#import "@preview/candy:..." as c`):
             // the module object itself is bound to a name, enabling
             // `candy.mobject(...)` field-access calls. Record the bound alias so
             // `call_symbol` only treats *that* receiver's Candy fields as Candy.
             if let Expr::Str(s) = imp.source() {
                 let src = s.get();
-                // Accept the local `candy`, a path `…/candy`, and the published
-                // `@preview/candy:<version>` package (so a real `.tyx` that
-                // imports the published package as a module resolves too).
-                if src == "candy" || src.ends_with("/candy") || src.starts_with("@preview/candy:") {
+                if src.starts_with("@preview/candy:") {
                     if let Ok(alias) = imp.bare_name() {
                         ctx.candy_aliases.insert(alias.to_string());
                     }
@@ -869,7 +898,7 @@ mod tests {
     fn parses_dot_ast() {
         let tmp = std::env::temp_dir().join("candy_test_dot.tyx");
         std::fs::write(&tmp, with_auto_version(DOT)).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 3); // 2 animate + pause
         // play not used here; but dot + dot2 registered
         assert!(scene.items.contains_key(&Label("dot".into())));
@@ -904,7 +933,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_timing_with.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 3);
         // a: default `after` → sequential boundary 0.
         assert_eq!(scene.slides[0].start_ms, 0);
@@ -932,7 +961,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_order.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
 
         let root = scene.scenes.iter().find(|s| s.id == 0).expect("root scene");
@@ -959,7 +988,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_field.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert!(scene.items.contains_key(&Label("box".into())));
         assert_eq!(
             scene.items[&Label("box".into())],
@@ -981,7 +1010,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_box.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert!(scene.items.contains_key(&Label("box".into())));
         assert_eq!(scene.slides[0].actions.len(), 1); // move
         assert_eq!(scene.slides[1].actions.len(), 1); // scale
@@ -999,7 +1028,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_play.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         // one synthetic block label
         let blocks: usize = scene
             .items
@@ -1054,7 +1083,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_rotate.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 1);
         let actions = &scene.slides[0].actions;
         // rotate + opacity → 2 actions
@@ -1094,7 +1123,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_manim.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 9, "slides: {:?}", scene.slides);
 
         // Verify each action variant.
@@ -1142,7 +1171,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_transform.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 2, "slides: {:?}", scene.slides);
 
         assert_eq!(scene.items[&Label("eq".into())], "[$a + b = c$]");
@@ -1210,7 +1239,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_transform_sched.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         let frames = crate::core::scheduler::schedule(&scene).unwrap();
 
         for f in &frames {
@@ -1285,7 +1314,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_nested_scene.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
 
         assert_eq!(scene.scenes.len(), 3, "scenes: {:?}", scene.scenes);
         assert_eq!(scene.root_scene, Some(0));
@@ -1329,7 +1358,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_sibling_scene.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
 
         assert_eq!(
             scene.scenes.len(),
@@ -1385,7 +1414,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_field_false.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         // No items should be produced by the false-positive calls.
         // The parser auto-inserts a single pause slide for any scene that
         // has content (even if it's just the candy import), so we expect
@@ -1413,7 +1442,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_shadow.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         // No slides should be produced by the shadowed call.
         // The parser auto-inserts a single pause slide for any scene.
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
@@ -1438,7 +1467,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join("candy_test_shadow_restore.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         assert_eq!(scene.slides.len(), 1, "slides: {:?}", scene.slides);
         assert!(matches!(scene.slides[0].actions[0], Action::Track { .. }));
         std::fs::remove_file(&tmp).ok();
@@ -1458,7 +1487,7 @@ mod tests {
 "#;
         let tmp = std::env::temp_dir().join("candy_test_no_import.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let err = parse_tyx(&tmp).unwrap_err();
+        let err = parse_tyx(&tmp, true).unwrap_err();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(err.code(), "E008", "expected E008, got {err:?}");
     }
@@ -1500,7 +1529,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_markup_comments.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert!(scene.items.contains_key(&Label("dot".into())));
     }
@@ -1520,7 +1549,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_dup_mobject.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Later definition wins.
         assert_eq!(
@@ -1545,7 +1574,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_nested_mobject.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Both declarations parse; the inner (later) body is the surviving one
         // in the global `items` map. The point is no error / no duplicate warn.
@@ -1570,7 +1599,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_dup_ecnew.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         let same: Vec<&crate::core::ast::CounterDef> =
             scene.counters.iter().filter(|c| c.name == "k").collect();
@@ -1596,7 +1625,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_nested_ecnew.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         let same: Vec<&crate::core::ast::CounterDef> =
             scene.counters.iter().filter(|c| c.name == "k").collect();
@@ -1617,7 +1646,7 @@ Some prose with an equation $a + b = c$ and a URL https://example.com.
         );
         let tmp = std::env::temp_dir().join("candy_test_static_mobjects.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Should have exactly one auto-inserted pause slide.
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
@@ -1640,7 +1669,7 @@ This is plain Typst content with an equation $E = mc^2$.
         );
         let tmp = std::env::temp_dir().join("candy_test_pure_typst.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         // Even pure Typst content gets a slide so it can be rendered.
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
@@ -1658,7 +1687,7 @@ This is plain Typst content with an equation $E = mc^2$.
         );
         let tmp = std::env::temp_dir().join("candy_test_static_subtitle.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
         assert_eq!(scene.slides[0].duration_ms, 500);
@@ -1676,7 +1705,7 @@ This is plain Typst content with an equation $E = mc^2$.
         );
         let tmp = std::env::temp_dir().join("candy_test_static_counter.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
         assert_eq!(scene.slides[0].duration_ms, 500);
@@ -1697,7 +1726,7 @@ This is plain Typst content with an equation $E = mc^2$.
         );
         let tmp = std::env::temp_dir().join("candy_test_scene_no_slides.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
         assert_eq!(scene.scenes.len(), 2, "root + 1 child scene");

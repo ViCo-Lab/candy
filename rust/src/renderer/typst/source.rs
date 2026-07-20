@@ -151,11 +151,21 @@ impl Renderer {
             wrapped.insert(sid, wrapper.clone());
             cur.replace_range(cs..ce, &wrapper);
         }
-        // Rewrite the bare `#import "candy"` form to the `@preview/candy` package
-        // form so the World can resolve it in-process (see `WorldState::candy_local`).
+        // Rewrite any file-style `#import "candy"` to the canonical
+        // `@preview/candy:<version>` form so the World can resolve it
+        // in-process (see `WorldState::candy_local`). In production the parser
+        // rejects file-style imports (CandyDumpedYou), but test code and
+        // `--ignore-version` mode still use them, so we rewrite here too.
+        let v = crate::runtime_typst_package_version().unwrap_or_else(|_| "0.1.0".to_string());
         cur = cur
-            .replace("#import \"candy\":", "#import \"@preview/candy:0.1.0\":")
-            .replace("#import \"candy\"", "#import \"@preview/candy:0.1.0\"");
+            .replace(
+                "#import \"candy\":",
+                &format!("#import \"@preview/candy:{v}\":"),
+            )
+            .replace(
+                "#import \"candy\"",
+                &format!("#import \"@preview/candy:{v}\""),
+            );
         cur
     }
 
@@ -582,7 +592,8 @@ impl Renderer {
     pub(crate) fn synthesize_handbuilt_source(
         scene: &Scene,
     ) -> (String, HashMap<Label, (usize, usize)>) {
-        let mut src = String::from("#import \"@preview/candy:0.1.0\": *\n\n");
+        let v = crate::runtime_typst_package_version().unwrap_or_else(|_| "0.1.0".to_string());
+        let mut src = format!("#import \"@preview/candy:{v}\": *\n\n");
         // Wrap mobjects in a `#scene(...)` so the page size matches what the
         // renderer expects (margin: 0pt, the scene's declared width/height or
         // the 16:9 default). Without this, Typst's default page (A4 with

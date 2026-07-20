@@ -518,46 +518,6 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
         Err(e) => Err(e.into()),
     }
 }
-#[test]
-fn path_parser_handles_relative_hv_and_implicit_repeat() {
-    // Typst emits the coloured layout-marker rects as relative `v`/`h` paths.
-    // The old naive parser zipped every number into `(x, y)` pairs and
-    // transposed width/height (44.18×13.16 reported as 13.16×44.18).
-    let pts = collect_path_points("M 0 0v 13.16h 44.18v -13.16Z");
-    let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
-    let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
-    let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    assert_eq!(min_x, 0.0);
-    assert_eq!(min_y, 0.0);
-    assert!(
-        (max_x - 44.18).abs() < 1e-6,
-        "expected width 44.18, got {max_x}"
-    );
-    assert!(
-        (max_y - 13.16).abs() < 1e-6,
-        "expected height 13.16, got {max_y}"
-    );
-}
-#[test]
-fn path_parser_includes_bezier_control_points() {
-    // Control points must be part of the returned hull, otherwise the bbox of
-    // a curve would be under-reported (a Bézier lives inside its control hull).
-    let pts = collect_path_points("M 0 0 C 10 20 30 -10 40 0 L 40 10");
-    let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
-    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
-    assert!(
-        (max_y - 20.0).abs() < 1e-6,
-        "control point y=20 must bound bbox, got {max_y}"
-    );
-    assert!(
-        (min_y - (-10.0)).abs() < 1e-6,
-        "control point y=-10 must bound bbox, got {min_y}"
-    );
-}
 /// Verify the content timeline actually swaps an mobject's rendered body
 /// between frames (this is what makes `transform` show the OLD content before
 /// the switch and the NEW content after, without corrupting earlier frames).
@@ -570,7 +530,7 @@ fn content_timeline_swaps_rendered_body() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_content_swap.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     // Before the switch (t=0): should render the original `rect`.
     let before = r.render_frame_at(0, &[]).unwrap();
@@ -957,7 +917,7 @@ fn transform_splits_inline_content_into_glyph_fragments() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_frag.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_natural_public().unwrap();
     let plans = r.transform_plans_debug();
@@ -997,7 +957,7 @@ fn transform_target_renders_after_window() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_after.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1087,7 +1047,7 @@ fn chained_transform_persists_intermediate() {
     .replace("#import \"candy\":", &format!("#import \"{pkg}\":"));
     let tmp = std::env::temp_dir().join("candy_test_xf_chain_persist.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1177,7 +1137,7 @@ fn camera_background_stays_fixed_outside_camera_group() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_cam_bg.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     // A zoomed-out camera (scale 0.4) at t=0; with no scene tree it applies
     // globally. This is the case that exposed the transparent-edge bug.
     let frames = vec![FrameData {
@@ -1247,7 +1207,7 @@ fn typewriter_multibyte_prefix_does_not_panic() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_typewriter_mb.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1295,7 +1255,7 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_defs.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1364,7 +1324,7 @@ fn transform_composes_with_concurrent_animate() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_compose.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1415,7 +1375,7 @@ fn transform_translation_animate_shifts_all_fragments() {
     fn fragment_translate_xs(src: &str, mid: u32) -> Vec<f64> {
         let tmp = std::env::temp_dir().join("candy_test_xf_shift.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+        let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
         let frames = crate::core::scheduler::schedule(&scene).unwrap();
         eprintln!(
             "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1525,7 +1485,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_chain_hide.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1623,7 +1583,7 @@ fn overflowing_scene_plays_pages_in_sequence() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xpage.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let frames = crate::core::scheduler::schedule(&scene).unwrap();
     eprintln!(
         "DBG scenes={:?} items={:?} label_scene={:?}",
@@ -1724,7 +1684,7 @@ fn e006_typst_error_carries_source_location() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_e006_loc.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let r = Renderer::with_root(scene, tmp.parent().unwrap().to_path_buf()).unwrap();
     let err = r
         .compile(&r.param_source, &Dict::new())

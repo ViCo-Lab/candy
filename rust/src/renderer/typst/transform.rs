@@ -73,14 +73,15 @@ pub(crate) struct TransformFragmentPlan {
     pub(crate) anims: Vec<GlyphAnim>,
 }
 
-/// Build the Typst source that places a single mobject body at `(x_cm, y_cm)`
+/// Build the Typst source that renders a single mobject body at `(x_cm, y_cm)`
 /// from the top-left corner, scaled by `scale_pct`% and rotated by `rotation`
-/// degrees (clockwise, around the object's top-left origin).
+/// degrees (clockwise, around the object's centre).
 ///
-/// When `rotation == 0.0` the `rotate(..)` wrapper is omitted, keeping the
-/// generated source minimal for the common case (and matching the v0.1 output
-/// exactly, so existing SVG drafts are byte-identical when no rotation is
-/// applied).
+/// The body is emitted in **native Typst document flow** (no `#place` hack):
+/// `#move(dx, dy)` shifts it from its natural flow position, `#scale`/`#rotate`
+/// (with `origin: center`) apply the transform. This matches the main render
+/// path's `wrap_mobject_inputs` wrapper, so the isolated render used for
+/// fragment/shape extraction is consistent with the frame render.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn place_source(
     page_w: f64,
@@ -92,29 +93,20 @@ pub(crate) fn place_source(
     body: &str,
     preamble: &str,
 ) -> String {
-    // The body is a raw Typst *expression* (e.g. "rect(width: 2cm, fill: red)")
-    // recovered from the source AST node. We wrap it in a code block
-    // `#{{ (body) }}` so it is evaluated as Typst *code*, not markup:
-    //   · a body containing a string with `#` (e.g. `rgb("#9fb3ff")`) is safe —
-    //     in markup mode the `#` would re-enter code mode and corrupt the source;
-    //   · the surrounding parentheses let a multi-line body (e.g. `a\n + b`)
-    //     stay a single expression — Typst treats newlines as separators inside
-    //     a code block, but not inside parentheses.
     let pre = if preamble.is_empty() {
         String::new()
     } else {
         format!("{preamble}\n")
     };
     if rotation.abs() < 1e-9 {
-        let out = format!(
+        format!(
             "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#{{ ({body}) }}]]\n"
-        );
-        out
+             #move(dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: center, {scale_pct}%)[#{{ ({body}) }}]]\n"
+        )
     } else {
         format!(
             "{pre}#set page(width: {page_w}pt, height: {page_h}pt, margin: 0pt, fill: none)\n\
-             #place(top + left, dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: top + left, {scale_pct}%)[#rotate(origin: top + left, {rotation}deg)[#{{ ({body}) }}]]]"
+             #move(dx: {x_cm}cm, dy: {y_cm}cm)[#scale(origin: center, {scale_pct}%)[#rotate(origin: center, {rotation}deg)[#{{ ({body}) }}]]]\n"
         )
     }
 }

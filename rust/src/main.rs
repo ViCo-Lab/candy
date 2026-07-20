@@ -113,6 +113,13 @@ enum Commands {
         /// output *is* the `.candy/` draft).
         #[arg(long, default_value_t = false)]
         keep_intermediates: bool,
+        /// Skip the candy import version check. By default candy verifies that
+        /// the `.tyx`'s `@preview/candy:<version>` import matches the installed
+        /// candy CLI version (CandyDumpedYou on mismatch). Pass this flag to
+        /// bypass the check — useful during development when the package
+        /// version has been bumped but the `.tyx` has not been updated yet.
+        #[arg(long, default_value_t = false)]
+        ignore_version: bool,
         /// Parallel rasterization jobs (render thread pool size). Caps how many
         /// frames are rasterized in parallel and — via the bounded streaming
         /// channel — how many frames' RGBA may be live in memory at once. This
@@ -228,6 +235,7 @@ fn run() -> Result<(), CandyError> {
             height,
             gpu,
             keep_intermediates,
+            ignore_version,
             output_dir,
             jobs,
         } => {
@@ -346,6 +354,7 @@ fn run() -> Result<(), CandyError> {
                             false,
                             jobs,
                             keep_intermediates,
+                            ignore_version,
                         )?;
                         info!("draft: {}/frame_*.svg", intermediate_dir.display());
                         return Ok(());
@@ -371,6 +380,7 @@ fn run() -> Result<(), CandyError> {
                         gpu,
                         jobs,
                         keep_intermediates,
+                        ignore_version,
                     )?;
                     // Successful build: drop the per-build intermediate dir unless
                     // the user asked to keep it (the SVG draft `return`s above, so
