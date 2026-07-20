@@ -119,7 +119,7 @@
   if type(name) != str {
     panic("Mobject name must be a string")
   }
-  block(body) + label(name)
+  [#body#label(name)]
 }
 
 /// Animate an object to a new placement / scale / rotation / opacity over

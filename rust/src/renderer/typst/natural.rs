@@ -1,5 +1,7 @@
 use super::*;
-use typst_library::introspection::Label as TypstLabel;
+use typst_library::foundations::Label as TypstLabel;
+use typst_library::foundations::Str as TypstStr;
+use typst_library::introspection::Introspector;
 
 impl Renderer {
     /// Compose a parent transform onto a child transform (group support).
@@ -252,8 +254,10 @@ impl Renderer {
                 if tmp_to_target.contains_key(&label) {
                     continue;
                 }
-                let Ok(content) = intro.query_label(TypstLabel::new(label.0.to_string().into()))
-                else {
+                let Ok(label_val) = TypstLabel::construct(TypstStr::from(label.0.as_str())) else {
+                    continue;
+                };
+                let Ok(content) = intro.query_label(label_val) else {
                     continue;
                 };
                 let Some(loc) = content.location() else {
@@ -262,7 +266,7 @@ impl Renderer {
                 let Some(pos) = intro.position(loc) else {
                     continue;
                 };
-                nat.insert(label.clone(), (pos.point.x, pos.point.y));
+                nat.insert(label.clone(), (pos.point.x.to_pt(), pos.point.y.to_pt()));
                 page_of.insert(label.clone(), pos.page.get() - 1);
             }
         }

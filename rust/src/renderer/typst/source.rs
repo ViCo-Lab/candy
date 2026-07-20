@@ -285,19 +285,15 @@ impl Renderer {
     /// and break parsing ("`#` is not valid in code"); a bare `{ … }` is a valid
     /// code-mode block.
     fn wrap_mobject_inputs(label: &str, inner: &str) -> String {
-        // Pin the body at the page origin with `place(top + left)` so every
-        // mobject shares a single reference point regardless of how many there
-        // are — they never overflow the canvas into extra pages (which would
-        // otherwise push later mobjects onto pages that the single-page gated
-        // render never emits). The per-frame `dx`/`dy` (fed by
-        // `build_frame_inputs`) are the mobject's absolute target in cm: the
-        // scheduler emits `to:` as an absolute position, so a positioned
-        // mobject's `dx`/`dy` equal its eased `st`; an un-positioned /
-        // pre-keyframe mobject gets its natural flow position `nat` instead.
-        // `place` + `move(dx, dy)` therefore lands each body exactly on its
-        // target on the single canvas.
+        // Position model: `move` is a *relative* transform, so `dx`/`dy` are the
+        // delta from the mobject's natural flow position (computed in
+        // `build_frame_inputs` as `target − nat` for positioned mobjects, or
+        // `(0, 0)` for un-positioned ones so they stay in their natural flow
+        // slot). `scale`/`rotate` are absolute transforms with **origin: center**
+        // so the object scales/rotates around its own centre (Manim semantics).
+        // Opacity is NOT applied here — it is composited via the SVG bypass.
         format!(
-            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ #move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[ #scale(origin: top + left, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[ #rotate(origin: top + left, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[ #__b ] ] ] }} }}",
+            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[#scale(origin: center, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[#rotate(origin: center, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[#__b]]] }} }}",
             inner = inner,
             label = label,
         )
@@ -587,15 +583,43 @@ impl Renderer {
         scene: &Scene,
     ) -> (String, HashMap<Label, (usize, usize)>) {
         let mut src = String::from("#import \"@preview/candy:0.1.0\": *\n\n");
+        // Wrap mobjects in a `#scene(...)` so the page size matches what the
+        // renderer expects (margin: 0pt, the scene's declared width/height or
+        // the 16:9 default). Without this, Typst's default page (A4 with
+        // margins) would be used and the introspector positions would not
+        // match the renderer's canvas.
+        let (pw_cm, ph_cm) = scene
+            .page_size
+            .map(|(w, h)| (w / PT_PER_CM, h / PT_PER_CM))
+            .unwrap_or((16.0, 9.0));
+        src.push_str(&format!("#scene(width: {pw_cm}cm, height: {ph_cm}cm)[\n"));
+        // Emit mobjects in declaration order (from the first scene's
+        // `owns_labels`) so the natural layout matches the intended top-to-bottom
+        // stacking. `scene.items` is a HashMap with non-deterministic iteration
+        // order, so we must NOT iterate it directly.
+        let ordered_labels: Vec<Label> = scene
+            .scenes
+            .first()
+            .map(|s| s.owns_labels.clone())
+            .unwrap_or_else(|| scene.items.keys().cloned().collect());
         let mut mobject_body = HashMap::new();
-        for (label, body) in &scene.items {
-            // `#mobject("label", ` prefix length (bytes) before the body.
-            let prefix_len = "#mobject(\"".len() + label.0.len() + "\", ".len();
-            let body_start = src.len() + prefix_len;
-            let body_end = body_start + body.len();
-            src.push_str(&format!("#mobject(\"{}\", {})\n", label.0, body));
+        for label in &ordered_labels {
+            let Some(body) = scene.items.get(label) else {
+                continue;
+            };
+            // Build the `  #mobject("label", <body>)` line piece by piece so we
+            // can record the exact byte range of `<body>` for the per-frame
+            // recompiler to splice the wrapped body back in.
+            src.push_str("  #mobject(\"");
+            src.push_str(&label.0);
+            src.push_str("\", ");
+            let body_start = src.len();
+            src.push_str(body);
+            let body_end = src.len();
+            src.push_str(")\n");
             mobject_body.insert(label.clone(), (body_start, body_end));
         }
+        src.push_str("]\n");
         (src, mobject_body)
     }
 }
