@@ -22,7 +22,9 @@ use std::path::Path;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
 use candy::core::diag::CandyWarn;
-use candy::{CandyError, Codec, Input, OutputFormat, build_input_with_gpu};
+use candy::{
+    CandyError, Codec, Input, OutputFormat, build_input_with_gpu, check_input, migrate_file,
+};
 use candy::{error, info, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -130,6 +132,39 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         jobs: usize,
     },
+    /// Force-migrate an old `.tyx` to the current candy version (or a version
+    /// given via `--version`), rewriting only the candy import line in place.
+    #[command(alias = "upgrade")]
+    Migrate {
+        /// Path(s) to one or more `.tyx` files whose candy import version line
+        /// should be rewritten.
+        #[arg(num_args = 1..)]
+        inputs: Vec<PathBufOrStr>,
+        /// Target candy version to write into the import line. Defaults to the
+        /// candy CLI's own version (compiled in from `CARGO_PKG_VERSION`), so a
+        /// plain `candy migrate a.tyx` brings `a.tyx` up to the installed CLI.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Simulate a render without producing any artifact. Candy compiles and
+    /// composes every frame's SVG (Typst → SVG) but never rasterizes to a
+    /// bitmap or encodes — a fast way to catch compile/compose errors. The
+    /// candy import version check still runs by default.
+    #[command(alias = "simulate")]
+    Check {
+        /// Path(s) to one or more `.tyx` Typst X-sheet files to check.
+        #[arg(num_args = 0..)]
+        inputs: Vec<PathBufOrStr>,
+        /// Frames per second (controls how many frames are composed during the
+        /// simulation). Default `30`.
+        #[arg(short, long, default_value_t = 30)]
+        fps: u32,
+        /// Skip the candy import version check. By default `check` verifies that
+        /// the `.tyx`'s `@preview/candy:<version>` import matches the installed
+        /// candy CLI version (CandyDumpedYou on mismatch).
+        #[arg(long, default_value_t = false)]
+        ignore_version: bool,
+    },
     /// Hidden easter-egg command. Invoked as `candy candy` or `candy tyx`.
     #[command(alias = "tyx", hide = true)]
     Candy,
@@ -161,7 +196,7 @@ enum CodecArg {
     Av1,
     /// H.264 via openh264 (self-contained). Default.
     H264,
-    /// H.265/HEVC. Uses system ffmpeg + x265 if available; E007 otherwise.
+    /// H.265/HEVC. Uses system ffmpeg + x265 if available; E009 otherwise.
     H265,
     /// H.264 via system ffmpeg + libx264 (higher quality than openh264).
     X264,
@@ -273,6 +308,7 @@ fn run() -> Result<(), CandyError> {
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
             for (i, input) in inputs.iter().enumerate() {
                 let input_path = input.0.clone();
+                info!("build: Started building {}", input_path.display());
                 // Run one input; `?` inside collects into `result` instead of
                 // aborting the whole batch.
                 let result: Result<(), CandyError> = (|| {
@@ -356,7 +392,10 @@ fn run() -> Result<(), CandyError> {
                             keep_intermediates,
                             ignore_version,
                         )?;
-                        info!("draft: {}/frame_*.svg", intermediate_dir.display());
+                        info!(
+                            "build: Genrated SVG draft {}/frame_*.svg",
+                            intermediate_dir.display()
+                        );
                         return Ok(());
                     }
 
@@ -388,7 +427,7 @@ fn run() -> Result<(), CandyError> {
                     if !keep_intermediates {
                         cleanup_intermediate(&intermediate_dir);
                     }
-                    info!("built: {}", out_path.display());
+                    info!("build: Successfully built {}", out_path.display());
                     Ok(())
                 })();
                 if let Err(e) = result {
@@ -423,10 +462,113 @@ fn run() -> Result<(), CandyError> {
                     // deliberately bypasses the `64`-based rule). `111` ≈
                     // "yī yī yī" → "yee~": the strangled little noise you make
                     // after biting into something spoiled.
-                    error!(CandyError::Yee("yee~ Batch failed. \\(!_!)/".to_string()));
+                    error!(CandyError::Yee(
+                        "build: yee~ Batch build failed. \\(!_!)/".to_string()
+                    ));
                 } else {
                     // Single input (non-batch): keep the specific `E00x` code
                     // via the diagnostic pipeline — no "Batch failed" summary.
+                    error!(failures.into_iter().next().unwrap().1);
+                }
+            }
+        }
+        Commands::Migrate { inputs, version } => {
+            // No inputs: print the migrate subcommand's help and exit cleanly.
+            if inputs.is_empty() {
+                let mut cmd = Cli::command();
+                if let Some(c) = cmd.find_subcommand_mut("migrate") {
+                    let _ = c.print_help();
+                } else {
+                    let _ = cmd.print_help();
+                }
+                println!();
+                return Ok(());
+            }
+            // Batch mode is **non-fatal per input** (same as build): every input
+            // is attempted so partial progress is preserved, failures are
+            // collected and surfaced together at the end. With more than one
+            // input the process exits with `BATCH_ERROR_EXIT` (111) if *any*
+            // input failed; for a single input the specific `E00x` code is kept.
+            let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            for input in &inputs {
+                let path = input.0.clone();
+                info!("migrate: Started migrating {}", path.display());
+                match migrate_file(&path, version.as_deref()) {
+                    Ok(0) => info!("migrate: {} is already at target version", path.display()),
+                    Ok(n) => info!("migrate: rewrote {n} import line(s) in {}", path.display()),
+                    Err(e) => failures.push((path, e)),
+                }
+            }
+            if !failures.is_empty() {
+                if inputs.len() > 1 {
+                    eprintln!(
+                        "{}",
+                        format!("Migrate failed on {} input(s):", failures.len())
+                            .red()
+                            .bold()
+                    );
+                    for (path, e) in &failures {
+                        eprintln!(
+                            "  - {}: {} {}",
+                            path.display(),
+                            candy::core::diag::code_error(e.code()),
+                            e.message()
+                        );
+                    }
+                    error!(CandyError::Yee(
+                        "migrate: yee~ Batch migrate failed. \\(!_!)/".to_string()
+                    ));
+                } else {
+                    error!(failures.into_iter().next().unwrap().1);
+                }
+            }
+        }
+        Commands::Check {
+            inputs,
+            fps,
+            ignore_version,
+        } => {
+            // No inputs: print the check subcommand's help and exit cleanly.
+            if inputs.is_empty() {
+                let mut cmd = Cli::command();
+                if let Some(c) = cmd.find_subcommand_mut("check") {
+                    let _ = c.print_help();
+                } else {
+                    let _ = cmd.print_help();
+                }
+                println!();
+                return Ok(());
+            }
+            // Batch mode is non-fatal per input (same as build): every input is
+            // attempted, failures are collected and surfaced together at the end.
+            let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            for input in &inputs {
+                let path = input.0.clone();
+                info!("check: Started checking {}", path.display());
+                if let Err(e) = check_input(Input::from(path.as_path()), ignore_version, fps) {
+                    failures.push((path, e));
+                }
+            }
+            if !failures.is_empty() {
+                if inputs.len() > 1 {
+                    eprintln!(
+                        "{}",
+                        format!("Check failed on {} input(s):", failures.len())
+                            .red()
+                            .bold()
+                    );
+                    for (path, e) in &failures {
+                        eprintln!(
+                            "  - {}: {} {}",
+                            path.display(),
+                            candy::core::diag::code_error(e.code()),
+                            e.message()
+                        );
+                    }
+                    error!(CandyError::Yee(
+                        "check: yee~ Batch check failed. \\(!_!)/".to_string()
+                    ));
+                } else {
                     error!(failures.into_iter().next().unwrap().1);
                 }
             }

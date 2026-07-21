@@ -264,7 +264,7 @@ pub(crate) fn spawn_ffmpeg(
     private_metadata: &PrivateMeta,
 ) -> Result<(Child, ChildStdin, MuxSink, ErrLog), CandyError> {
     let ffmpeg = find_ffmpeg()
-        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E007)".into()))?;
+        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E009)".into()))?;
 
     let (encoder, _default_ext) = ffmpeg_args(codec)
         .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
@@ -361,7 +361,7 @@ pub(crate) fn spawn_ffmpeg(
         .take()
         .ok_or_else(|| CandyError::Encode("ffmpeg stdin not captured".into()))?;
 
-    info!("spawned ffmpeg -c:v {encoder} -f {format} (streaming)");
+    info!("encode: spawned ffmpeg -c:v {encoder} -f {format} (streaming)");
     Ok((child, stdin, mux, err_log))
 }
 
@@ -438,7 +438,7 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
     private_metadata: &PrivateMeta,
 ) -> Result<(Child, std::fs::File, MuxSink, ErrLog), CandyError> {
     let ffmpeg = find_ffmpeg()
-        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E007)".into()))?;
+        .ok_or_else(|| CandyError::Encode("ffmpeg not found on $PATH (E009)".into()))?;
 
     let (encoder, _default_ext) = ffmpeg_args(codec)
         .ok_or_else(|| CandyError::Encode(format!("codec {codec:?} does not use ffmpeg")))?;
@@ -567,7 +567,7 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
     // the caller drops the write end, ffmpeg sees the real EOF and finalises.
     drop(read_file);
 
-    info!("spawned ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)");
+    info!("encode: spawned ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)");
     Ok((child, write_file, mux, err_log))
 }
 
@@ -704,7 +704,7 @@ pub(crate) fn finish_ffmpeg(
 
     if bytes.is_empty() {
         return Err(CandyError::Encode(
-            "ffmpeg produced no output (E007)".into(),
+            "ffmpeg produced no output (E009)".into(),
         ));
     }
     Ok(bytes)
@@ -729,7 +729,7 @@ pub(crate) fn finish_ffmpeg_to_file(
         let stderr = read_err_log(&err_log);
         mux.cleanup();
         return Err(CandyError::Encode(format!(
-            "ffmpeg exited with {status} (E007): {stderr}"
+            "ffmpeg exited with {status} (E009): {stderr}"
         )));
     }
 
@@ -745,7 +745,7 @@ pub(crate) fn finish_ffmpeg_to_file(
 /// feeds frames one at a time instead of buffering them all.
 ///
 /// # Errors
-/// Returns `CandyError::Encode` (E007) if ffmpeg is not found, exits non-zero,
+/// Returns `CandyError::Encode` (E009) if ffmpeg is not found, exits non-zero,
 /// or writes no output.
 pub fn encode_via_ffmpeg(
     frames: &[RenderedFrame],

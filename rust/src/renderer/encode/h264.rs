@@ -146,7 +146,7 @@ impl H264Stream {
             _ => {
                 let _ = std::fs::remove_file(&self.samples_path);
                 return Err(CandyError::Encode(
-                    "openh264 did not emit SPS/PPS (E007)".into(),
+                    "openh264 did not emit SPS/PPS (E009)".into(),
                 ));
             }
         };

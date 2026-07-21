@@ -55,7 +55,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E010) + CandyWarn (W001–W015) + macros
+│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W016) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
 │   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
@@ -138,7 +138,7 @@ End-to-end, `build_input_with_gpu` performs:
      shell out to ffmpeg and bypass Candy's muxer. Self-contained codecs (`Av1`, `H264`) go
      through `rav1e`/`openh264` + Candy's hand-written muxer, with audio collected via
      `collect_audio`. On any encode failure, Candy writes an SVG draft to `.candy/` and
-     surfaces the error (`E007` for encode).
+     surfaces the error (`E009` for encode).
    - `Gif`: an animated GIF of every frame (looping), encoded in-process via the pure-Rust
      `gif` crate. The `--codec` flag is ignored.
    - `Png`: a single static RGBA bitmap of the **final** frame (the animation "poster"),
@@ -198,7 +198,7 @@ pub enum Codec {
 }
 ```
 
-- `Av1` / `H264` are self-contained (rav1e / openh264). `H265` returns `E007` unless system
+- `Av1` / `H264` are self-contained (rav1e / openh264). `H265` returns `E009` unless system
   ffmpeg is available (in which case it uses x265).
 - `X264` / `X265` / `Vp9` / `Vp8` are ffmpeg-backed (runtime-detected) on every platform.
 - The hardware variants `H264Vaapi` / `H265Vaapi` / `Av1Vaapi` (VAAPI, **Linux only**),
@@ -240,7 +240,7 @@ and a final keyframe at the last frame. A non-monotonic `time_ms` for a target r
 
 `interpolate_with(keyframes, method, fps)` samples the keyframes into all output frames (one
 per video frame) using the per-action `Easing`. `InterpMethod::Linear` is the default.
-Out-of-range interpolation is clamped (emits `E005`, non-fatal).
+Out-of-range interpolation is clamped (emits `W016`, non-fatal).
 
 ### `core::easing`
 

@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use crate::core::ast::{FrameData, Label, lerp};
+use crate::core::diag::CandyWarn;
 
 /// Interpolation method for expanding keyframes into per-frame data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,7 +33,9 @@ pub enum InterpMethod {
 /// scheduler guarantees both; we re-sort defensively).
 /// Postcondition: returns `Vec<FrameData>` with length ≥ `keyframes.len()`,
 /// grouped/sorted by `(time_ms, target)`. Every `opacity` value is clamped to
-/// [0.0, 1.0] (spec E005 handling).
+/// [0.0, 1.0]; if any frame had to be clamped, the interpolator clamps and
+/// continues but emits [`CandyWarn::Interpolation`] (W016) so the user is told
+/// their keyframes / easing produced an out-of-range opacity.
 pub fn interpolate(keyframes: Vec<FrameData>) -> Vec<FrameData> {
     interpolate_with(keyframes, InterpMethod::Linear, 30)
 }
@@ -70,6 +73,8 @@ pub fn interpolate_with(
     let n_frames = ((total_ms as f64) / frame_ms).ceil() as u32 + 1;
 
     let mut out: Vec<FrameData> = Vec::new();
+    // Track whether any frame's opacity had to be clamped to [0, 1] (W016).
+    let mut opacity_clamped = false;
     for (_, mut kfs) in groups {
         kfs.sort_by_key(|f| f.time_ms);
 
@@ -82,6 +87,7 @@ pub fn interpolate_with(
             if let Some(mut fr) = fr {
                 if !(0.0..=1.0).contains(&fr.opacity) {
                     fr.opacity = fr.opacity.clamp(0.0, 1.0);
+                    opacity_clamped = true;
                 }
                 fr.time_ms = t_ms;
                 out.push(fr);
@@ -90,6 +96,11 @@ pub fn interpolate_with(
     }
 
     out.sort_by(|a, b| a.time_ms.cmp(&b.time_ms).then(a.target.0.cmp(&b.target.0)));
+    if opacity_clamped {
+        crate::warn!(CandyWarn::Interpolation(
+            "opacity out of [0,1] was clamped during interpolation".into(),
+        ));
+    }
     out
 }
 
@@ -286,9 +297,15 @@ mod tests {
                 easing: Easing::Linear,
             },
         ];
+        // Out-of-range opacity is clamped to [0, 1] and surfaced as a warning
+        // (W016); the interpolator returns the clamped frames (non-fatal).
         let out = interpolate(kf);
         for f in &out {
-            assert!((0.0..=1.0).contains(&f.opacity));
+            assert!(
+                (0.0..=1.0).contains(&f.opacity),
+                "opacity {} was not clamped to [0, 1]",
+                f.opacity
+            );
         }
     }
 

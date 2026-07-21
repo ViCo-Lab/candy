@@ -427,7 +427,7 @@ impl Renderer {
         let scale_pct = st.scale * 100.0;
         let (body, unknown_counters) = self.resolve_body(&st.target, time_ms);
 
-        // Report E009 errors for any unknown counters found during rendering.
+        // Report E006 errors for any unknown counters found during rendering.
         if let Some(counter_name) = unknown_counters.first() {
             return Err(CandyError::UnknownKey(
                 "ecnew".to_string(),
@@ -479,7 +479,7 @@ impl Renderer {
             h = self.page_h,
         );
         // A compile failure (e.g. a syntax error in a morphable body) is a real
-        // error and must propagate as `E006`. Only a *successful* compile that
+        // error and must propagate as `E005`. Only a *successful* compile that
         // yields no extractable outline legitimately returns `None` (the body
         // falls back to a plain crossfade).
         let doc = self.compile(&src, &Dict::new())?;

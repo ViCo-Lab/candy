@@ -3,7 +3,7 @@
 //!
 //! | Level  | Stream  | Code | Behavior                                            |
 //! |--------|---------|------|-----------------------------------------------------|
-//! | Error  | stderr  | `E`  | print, then terminate (exit code `64`–`70`, e.g. `E001` → `64`) |
+//! | Error  | stderr  | `E`  | print, then terminate (exit code `64`–`72`, e.g. `E001` → `64`) |
 //! | Error  | stderr  | `EYEE` | batch partial failure → terminate with exit code `111` (NOT the `64` rule) |
 //! | Warn   | stderr  | `W`  | print, continue (non-fatal)                        |
 //! | Debug  | stdout  | —    | print (developer diagnostics)                      |
@@ -155,7 +155,7 @@ impl SourceLoc {
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E010.
+/// variant to the mandatory error codes E001–E009 (E008 is the fixed easter-egg slot).
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
@@ -168,16 +168,14 @@ pub enum CandyError {
     /// E004 — `@label` not found in the Typst layout. Carries the label's
     /// declaration location when known (so the user sees where it was defined).
     LabelNotFound(Label, Option<SourceLoc>),
-    /// E005 — Invalid interpolation range (clamped, not fatal).
-    Interpolation(String),
-    /// E006 — Typst render failure. Carries the offending source location
+    /// E005 — Typst render failure. Carries the offending source location
     /// (file:line:col + the offending line) when the failure can be tied to a
     /// specific span in the compiled Typst source, so the user is pointed at the
     /// exact code that failed to compile — just like the parser-level errors
     /// (E002/E004/…). Without a resolvable span (e.g. an internal Typst panic)
     /// the location is `None`.
     Typst(String, Option<SourceLoc>),
-    /// E007 — Rav1e / codec / mux encoding failure.
+    /// E009 — Rav1e / codec / mux encoding failure.
     Encode(String),
     /// E008 — The `.tyx` does not import the candy package (or
     /// imports it with a version that does not match the installed candy CLI
@@ -188,27 +186,27 @@ pub enum CandyError {
     /// all trigger this error. Pass `--ignore-version` to skip the version
     /// check (useful for development).
     CandyDumpedYou(String, Option<SourceLoc>),
-    /// E009 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
+    /// E006 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used
     /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
     /// …) reference an unknown counter name. The first field is the kind
     /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
     /// key name.
     UnknownKey(String, String, Option<SourceLoc>),
-    /// E010 — A key parameter evaluated to a non-string type (e.g., number,
+    /// E007 — A key parameter evaluated to a non-string type (e.g., number,
     /// boolean, array). Keys must always resolve to strings.
     InvalidKey(String, Option<SourceLoc>),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
-    /// n - 1` scheme used by E001–E007 — its process exit code is the dedicated
+    /// n - 1` scheme used by E001–E009 — its process exit code is the dedicated
     /// [`BATCH_ERROR_EXIT`] (111) instead, so a CI pipeline / shell script can
     /// detect "some inputs failed" without aborting the remaining inputs.
     Yee(String),
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E010).
+    /// Mandatory error code (E001–E009).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
@@ -216,17 +214,16 @@ impl CandyError {
             CandyError::Parse(_, _) => "E002",
             CandyError::Svg(_) => "E003",
             CandyError::LabelNotFound(_, _) => "E004",
-            CandyError::Interpolation(_) => "E005",
-            CandyError::Typst(_, _) => "E006",
-            CandyError::Encode(_) => "E007",
+            CandyError::Typst(_, _) => "E005",
+            CandyError::Encode(_) => "E009",
             CandyError::CandyDumpedYou(_, _) => "E008",
-            CandyError::UnknownKey(_, _, _) => "E009",
-            CandyError::InvalidKey(_, _) => "E010",
+            CandyError::UnknownKey(_, _, _) => "E006",
+            CandyError::InvalidKey(_, _) => "E007",
         }
     }
 
     /// Numeric part of the code (1–11), used to build the process exit code for
-    /// the E001–E010 family. `EYEE` is excluded here on purpose — it carries no
+    /// the E001–E009 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
         match self {
@@ -235,19 +232,18 @@ impl CandyError {
             CandyError::Parse(_, _) => 2,
             CandyError::Svg(_) => 3,
             CandyError::LabelNotFound(_, _) => 4,
-            CandyError::Interpolation(_) => 5,
-            CandyError::Typst(_, _) => 6,
-            CandyError::Encode(_) => 7,
+            CandyError::Typst(_, _) => 5,
+            CandyError::Encode(_) => 9,
             CandyError::CandyDumpedYou(_, _) => 8,
-            CandyError::UnknownKey(_, _, _) => 9,
-            CandyError::InvalidKey(_, _) => 10,
+            CandyError::UnknownKey(_, _, _) => 6,
+            CandyError::InvalidKey(_, _) => 7,
         }
     }
 
     /// Process exit code for this error.
     ///
-    /// The E001–E010 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
-    /// `E007` → `70`). `EYEE` is the **one exception**: it bypasses that scheme
+    /// The E001–E009 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
+    /// `E009` → `72`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
     /// partial-failure marker ("yee~ Batch failed") must not be re-encoded into
     /// the `64` range.
@@ -264,20 +260,21 @@ impl CandyError {
     pub fn message(&self) -> String {
         match self {
             CandyError::Io(e) => format!("I/O error: {e}"),
-            CandyError::Parse(e, _) => format!("Invalid .tyx syntax: {e}"),
-            CandyError::Svg(e) => format!("candy-json missing/invalid: {e}"),
+            CandyError::Parse(e, _) => format!("parse: Invalid .tyx syntax: {e}"),
+            CandyError::Svg(e) => format!("svg: candy-json missing/invalid: {e}"),
             CandyError::LabelNotFound(l, _) => {
-                format!("label @{} not found in Typst layout", l.0)
+                format!("render: Label @{} not found in Typst layout", l.0)
             }
-            CandyError::Interpolation(e) => format!("interpolation range: {e}"),
-            CandyError::Typst(e, _) => format!("Typst render failure: {e}"),
-            CandyError::Encode(e) => format!("encode failure: {e}"),
-            CandyError::CandyDumpedYou(e, _) => format!("Candy dumped you: {e} (-_-)"),
+            CandyError::Typst(e, _) => format!("typst: {e}"),
+            CandyError::Encode(e) => format!("encode: {e}"),
+            CandyError::CandyDumpedYou(e, _) => format!("candy: {e} She dumped you! (-_-)"),
             CandyError::UnknownKey(kind, key, _) => {
-                format!("{kind} \"{key}\" does not exist (never declared or already destroyed)")
+                format!(
+                    "parse: {kind} \"{key}\" does not exist (never declared or already destroyed)"
+                )
             }
             CandyError::InvalidKey(val_type, _) => {
-                format!("key must be a string, got {val_type}")
+                format!("parse: key must be a string, got {val_type}")
             }
             CandyError::Yee(e) => e.to_string(),
         }
@@ -319,12 +316,12 @@ impl From<serde_json::Error> for CandyError {
     }
 }
 
-// ===================== Typst Error capture (E006) ======================
+// ===================== Typst Error capture (E005) ======================
 //
 // A Typst compile yields `typst::ecow::EcoVec<typst::diag::SourceDiagnostic>`
 // (the error half of `typst::SourceResult<T>`). This `From` impl lets any
 // `?` on a Typst result be captured uniformly as `CandyError::Typst` and thus
-// assigned the mandatory `E006` code, instead of every call site hand-rolling
+// assigned the mandatory `E005` code, instead of every call site hand-rolling
 // `format!("{:?}", errs)`.
 
 /// The error type produced by `typst::compile` / `typst::SourceResult<T>`.
@@ -414,10 +411,16 @@ pub enum CandyWarn {
     ///
     /// Field: the private function name (e.g. `"_assert_str"`).
     CallingPrivate(String),
+
+    /// W016 — Opacity went out of the valid `[0, 1]` interpolation range and
+    /// was clamped during interpolation (`interpolator::interpolate_with`).
+    /// Non-fatal: the interpolator clamps and continues, but warns so the user
+    /// knows their keyframes / easing produced an out-of-range opacity.
+    Interpolation(String),
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W015).
+    /// Mandatory warning code (W001–W016).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",
@@ -435,6 +438,7 @@ impl CandyWarn {
             CandyWarn::OutputNameInvalid(_) => "W013",
             CandyWarn::DuplicateName(_, _, _) => "W014",
             CandyWarn::CallingPrivate(_) => "W015",
+            CandyWarn::Interpolation(_) => "W016",
         }
     }
 
@@ -443,59 +447,62 @@ impl CandyWarn {
     /// + colored while the message stays plain.
     pub fn message(&self) -> String {
         match self {
-            CandyWarn::TimeDependent => ".tyx uses the current date/time \
+            CandyWarn::TimeDependent => "render: .tyx uses the current date/time \
                  (datetime.today()); the render depends on the wall clock and is \
                  not reproducible"
                 .into(),
             CandyWarn::GpuUnavailable(e) => {
-                format!("GPU unavailable, falling back to CPU: {e}")
+                format!("gpu: unavailable, falling back to CPU: {e}")
             }
-            CandyWarn::GpuFeatureDisabled => "--gpu requested but candy was built \
+            CandyWarn::GpuFeatureDisabled => "gpu: --gpu requested but candy was built \
                  without the 'gpu' feature; using CPU"
                 .into(),
             CandyWarn::EncodeFallback(d) => {
-                format!("encode failed, wrote SVG draft to .candy: {d}")
+                format!("encode: failed, wrote SVG draft to .candy: {d}")
             }
             CandyWarn::CodecFallback(d) => {
-                format!("codec encode failed, falling back: {d}")
+                format!("encode: codec encode failed, falling back: {d}")
             }
-            CandyWarn::AudioDropped(d) => format!("dropping audio track: {d}"),
-            CandyWarn::EncodeRetry => "rav1e inter-prediction panicked; retrying \
+            CandyWarn::AudioDropped(d) => format!("audio: dropping audio track: {d}"),
+            CandyWarn::EncodeRetry => "encode: rav1e inter-prediction panicked; retrying \
                  AV1 in all-intra mode (valid but no temporal compression)"
                 .into(),
-            CandyWarn::AudioIgnored => "MP4 only muxes AAC audio; ignoring non-AAC track".into(),
+            CandyWarn::AudioIgnored => {
+                "audio: MP4 only muxes AAC audio; ignoring non-AAC track".into()
+            }
             CandyWarn::UnknownEasing(d) => {
-                format!("unknown easing {d}; falling back to linear")
+                format!("parse: unknown easing {d}; falling back to linear")
             }
             CandyWarn::RevealFallback(d) => {
-                format!("#reveal body is not a string literal; falling back to FadeIn: {d}")
+                format!("parse: #reveal body is not a string literal; falling back to FadeIn: {d}")
             }
             CandyWarn::CleanupFailed(d) => {
-                format!("could not remove intermediate dir {d}")
+                format!("build: could not remove intermediate dir {d}")
             }
             CandyWarn::OutputNameCountMismatch(d) => {
                 format!(
-                    "{d}; ignoring custom --output names and using the default \
+                    "build: {d}; ignoring custom --output names and using the default \
                      dist/<stem>.<ext> for every input"
                 )
             }
             CandyWarn::OutputNameInvalid(d) => {
                 format!(
-                    "--output name '{d}' is not a plain file name (contains a path \
+                    "build: --output name '{d}' is not a plain file name (contains a path \
                      separator / multi-level directory); using the default \
                      dist/<stem>.<ext>"
                 )
             }
             CandyWarn::DuplicateName(kind, name, _) => {
                 format!(
-                    "{kind} name '{name}' is redefined in the same lexical scope; the \
+                    "parse: {kind} name '{name}' is redefined in the same lexical scope; the \
                      later definition shadows the earlier one (redefining inside a \
                      nested scope is legitimate Typst shadowing and is not warned)"
                 )
             }
             CandyWarn::CallingPrivate(name) => {
-                format!("`#{name}` is a private Candy helper, not part of the public API")
+                format!("parse: `#{name}` is a private Candy helper, not part of the public API")
             }
+            CandyWarn::Interpolation(e) => format!("interpolator: {e}"),
         }
     }
 
@@ -535,7 +542,7 @@ impl fmt::Display for CandyWarn {
 ///   - `2`     clap usage error (argument parsing)
 ///   - `101`   Rust panic — also avoided (not in our range)
 ///   - `64..`  candy fatal errors: `ERROR_EXIT_BASE + number() - 1`
-///     (`E001` → `64` … `E007` → `70`; the `64` prefix is the requested
+///     (`E001` → `64` … `E009` → `72`; the `64` prefix is the requested
 ///     segment; room up to ~`E014` before 78)
 ///   - `111`   batch failure: `candy build a.tyx b.tyx …` ran every input but at
 ///     least one failed midway. Individual failures keep their own `E00x`

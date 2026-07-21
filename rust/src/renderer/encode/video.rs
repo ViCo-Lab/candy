@@ -57,7 +57,7 @@ pub enum Codec {
     Av1,
     /// H.264 via openh264 (self-contained). Default.
     H264,
-    /// H.265/HEVC. Self-contained build returns E007; with system ffmpeg +
+    /// H.265/HEVC. Self-contained build returns E009; with system ffmpeg +
     /// x265, shells out to ffmpeg.
     H265,
     /// H.264 via system ffmpeg + libx264 (higher quality than openh264).
@@ -259,7 +259,7 @@ impl Codec {
 
     /// Returns `true` if candy has a self-contained encoder for this codec
     /// (rav1e for AV1, openh264 for H.264). H265 is self-contained-only when
-    /// ffmpeg is not available (it returns E007 in that case).
+    /// ffmpeg is not available (it returns E009 in that case).
     pub fn is_self_contained(self) -> bool {
         matches!(self, Codec::Av1 | Codec::H264 | Codec::H265)
     }
@@ -447,11 +447,11 @@ impl StreamingVideo {
             // all-intra mode. Convert that to a clean error (no process abort).
             // The streaming path cannot transparently fall back to H.264 here
             // because each frame's RGBA has already been dropped, so we surface
-            // E007 and let the caller retry with `--codec h264` if desired.
+            // E009 and let the caller retry with `--codec h264` if desired.
             return match catch_unwind(AssertUnwindSafe(|| r.push(&composed))) {
                 Ok(res) => res,
                 Err(_) => Err(CandyError::Encode(
-                    "rav1e aborted during AV1 streaming encode (E007); try `--codec h264`".into(),
+                    "rav1e aborted during AV1 streaming encode (E009); try `--codec h264`".into(),
                 )),
             };
         }
@@ -596,7 +596,7 @@ pub fn encode_frames(
         Codec::H265 => {
             if crate::renderer::encode::ffmpeg::find_ffmpeg().is_some() {
                 Err(CandyError::Encode(
-                    "H.265 requires the ffmpeg path — use encode_via_ffmpeg (E007 fallback)".into(),
+                    "H.265 requires the ffmpeg path — use encode_via_ffmpeg (E009 fallback)".into(),
                 ))
             } else {
                 Err(CandyError::Encode(

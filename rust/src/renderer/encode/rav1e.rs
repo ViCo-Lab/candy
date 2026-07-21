@@ -23,7 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// Precondition: `frames` is non-empty, `fps` ≥ 1.
 /// Postcondition: on success returns valid AV1 packets + `av1C` codec config.
 /// When the `video` feature is disabled (default build has it on), returns
-/// `E007`.
+/// `E009`.
 pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
     #[cfg(feature = "video")]
     {
@@ -35,7 +35,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
         // transparently retry in all-intra mode (every frame a keyframe → no ME →
         // no panic). The output is valid AV1 either way; only the
         // temporal-compression efficiency differs. (A panic still results in a
-        // clean `E007` rather than a process abort.)
+        // clean `E009` rather than a process abort.)
         match catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, false))) {
             Ok(r) => r,
             Err(_) => {
@@ -43,7 +43,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
                 catch_unwind(AssertUnwindSafe(|| encode_inner(frames, fps, true))).unwrap_or_else(
                     |_| {
                         Err(CandyError::Encode(
-                            "rav1e aborted during AV1 encoding (E007); falling back to H.264"
+                            "rav1e aborted during AV1 encoding (E009); falling back to H.264"
                                 .into(),
                         ))
                     },
@@ -55,7 +55,7 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
     {
         let _ = (frames, fps);
         Err(CandyError::Encode(
-            "video encoding is disabled in this build (E007). Rebuild `candy` with the \
+            "video encoding is disabled in this build (E009). Rebuild `candy` with the \
              default `video` feature to enable AV1 encoding."
                 .into(),
         ))

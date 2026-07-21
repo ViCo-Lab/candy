@@ -102,13 +102,13 @@ the bytes back. On Linux the frame input is a `pipe(2)` (grown to ≥ one frame 
 ffmpeg's stdin wrapped in a 1MB `BufWriter`. Hardware encoders (VAAPI / VideoToolbox /
 QSV) upload the RGBA frames to a hardware surface (`format=nv12,hwupload`) and use
 codec-appropriate rate control. If ffmpeg is not found, Candy falls back to the
-self-contained codecs (av1/h264) or returns E007 (`h265`/`x264`/`x265` without ffmpeg).
+self-contained codecs (av1/h264) or returns E009 (`h265`/`x264`/`x265` without ffmpeg).
 
 > **Encoding fallback.** `rav1e` 0.8.1 can panic during inter-prediction on certain frame
 > geometries. Candy first tries full-quality AV1, and on that panic automatically retries
 > in all-intra mode (valid AV1, no temporal compression); only if that also fails does it
 > fall back to H.264. The panic is caught (`catch_unwind`) so the command never aborts —
-> if every encoder fails, Candy writes an SVG draft to `.candy/` and surfaces E007.
+> if every encoder fails, Candy writes an SVG draft to `.candy/` and surfaces E009 (and emits the W004 warning).
 
 ## CLI flags
 

@@ -30,9 +30,9 @@ pub mod core;
 pub mod parser;
 pub mod renderer;
 
-/// Unified error type (E001–E010 → exit code 64–73; `EYEE` → exit code 111, a
+/// Unified error type (E001–E009 → exit code 64–72; `EYEE` → exit code 111, a
 /// batch partial-failure marker that deliberately bypasses the `64` rule) and
-/// non-fatal warning type (W001–W015); see `core::diag::{CandyError, CandyWarn}`
+/// non-fatal warning type (W001–W016); see `core::diag::{CandyError, CandyWarn}`
 /// and the `core::diag::{error, warn, debug, info}` reporters.
 pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
@@ -324,7 +324,7 @@ pub fn build_input_with_gpu(
     if gpu_ok {
         match crate::renderer::raster::gpu::GpuRenderer::new() {
             Ok(g) => {
-                info!("GPU rasterization enabled (vello + wgpu)");
+                info!("gpu: GPU rasterization enabled (vello + wgpu)");
                 gpu_renderer = Some(g);
             }
             Err(e) => {
@@ -378,7 +378,7 @@ pub fn build_input_with_gpu(
     // parallelism.
     #[cfg(feature = "gpu")]
     if let Some(g) = gpu_renderer.as_mut() {
-        stream_encode_gpu(
+        match stream_encode_gpu(
             &mut renderer,
             &frames,
             &sample_times,
@@ -395,8 +395,22 @@ pub fn build_input_with_gpu(
             intermediate_dir,
             output,
             g,
-        )?;
-        return Ok(());
+        ) {
+            Ok(()) => return Ok(()),
+            // Encode failure is non-fatal: fall back to an SVG draft under
+            // `.candy/` and surface W004 instead of aborting the build.
+            Err(e) if matches!(e, CandyError::Encode(_)) => {
+                write_svg_draft_on_encode_fail(
+                    &mut renderer,
+                    &frames,
+                    &sample_times,
+                    intermediate_dir,
+                )?;
+                warn!(CandyWarn::EncodeFallback(e.to_string()));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     // CPU path: bounded-parallel render → bounded channel → streaming encoder.
@@ -404,7 +418,7 @@ pub fn build_input_with_gpu(
     // `jobs` in-flight frames plus the (small) coded stream — never all N frames
     // at once. This is the core OOM fix: the old code collected every frame's
     // RGBA into `probe` before encoding.
-    stream_encode_cpu(
+    match stream_encode_cpu(
         &renderer,
         &frames,
         &sample_times,
@@ -421,8 +435,158 @@ pub fn build_input_with_gpu(
         keep_intermediates,
         intermediate_dir,
         output,
-    )?;
+    ) {
+        Ok(()) => {}
+        // Encode failure is non-fatal: fall back to an SVG draft under `.candy/`
+        // and surface W004 instead of aborting the build.
+        Err(e) if matches!(e, CandyError::Encode(_)) => {
+            write_svg_draft_on_encode_fail(
+                &mut renderer,
+                &frames,
+                &sample_times,
+                intermediate_dir,
+            )?;
+            warn!(CandyWarn::EncodeFallback(e.to_string()));
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    }
     Ok(())
+}
+
+/// On a video-encoding failure, fall back to writing an SVG draft of every
+/// frame under `intermediate_dir` (`.candy/<stem>/frame_*.svg`) so the user
+/// still gets a usable artifact, then the caller emits [`CandyWarn::EncodeFallback`]
+/// (W004). Mirrors the `--format svg` draft path but is triggered by an encode
+/// error rather than an explicit format choice.
+fn write_svg_draft_on_encode_fail(
+    renderer: &mut Renderer,
+    frames: &[FrameData],
+    sample_times: &[u32],
+    intermediate_dir: &Path,
+) -> Result<(), CandyError> {
+    std::fs::create_dir_all(intermediate_dir)?;
+    for (i, &t_ms) in sample_times.iter().enumerate() {
+        let svg = renderer.render_frame_at(t_ms, frames)?;
+        std::fs::write(
+            intermediate_dir.join(format!("frame_{:016}.svg", i)),
+            svg.as_bytes(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Simulate a render without producing any artifact: candy compiles and
+/// composes every frame's SVG (Typst → SVG) but never rasterizes to a bitmap or
+/// encodes. This is a fast way to catch compile/compose errors.
+///
+/// This path is intentionally GPU-free: it never rasterizes, so there is no
+/// `use_gpu` flag and no `gpu` feature dependency — the same `render_frame_at`
+/// SVG composition the build uses runs here, just without the rasterization /
+/// encoding tail. The candy import version check still runs unless
+/// `ignore_version` is set.
+#[allow(clippy::too_many_arguments)]
+pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), CandyError> {
+    let scene: Scene = input.parse_with_ignore_version(ignore_version)?;
+    let project_root = input.project_root();
+    let mut keyframes = scheduler::schedule(&scene)?;
+
+    // Extend the timeline so persistent subtitles / long-lived counters that end
+    // *after* the last mobject keyframe are still covered (mirrors the build).
+    let mut render_end = scene.total_ms();
+    for s in &scene.subtitles {
+        if let Some(e) = s.end_ms {
+            render_end = render_end.max(e);
+        }
+    }
+    for ev in &scene.counter_events {
+        if let CounterEventKind::Destroy = ev.kind {
+            render_end = render_end.max(ev.at_ms);
+        }
+    }
+    let max_kf = keyframes.iter().map(|f| f.time_ms).max().unwrap_or(0);
+    if render_end > max_kf {
+        let mut last: HashMap<Label, crate::core::ast::FrameData> = HashMap::new();
+        for f in &keyframes {
+            last.insert(f.target.clone(), f.clone());
+        }
+        for (_tgt, f) in last {
+            let mut ext = f.clone();
+            ext.time_ms = render_end;
+            keyframes.push(ext);
+        }
+    }
+
+    let frames = interpolator::interpolate_with(keyframes, interpolator::InterpMethod::Linear, fps);
+    let mut renderer = Renderer::with_root(scene.clone(), project_root)?;
+
+    let mut sample_times: Vec<u32> = frames.iter().map(|f| f.time_ms).collect();
+    sample_times.sort();
+    sample_times.dedup();
+
+    // Force every `#transform` / `#morph` plan's `end_ms` to be a sampled frame
+    // (same as the build, so the final in-window frame is the exact target).
+    for end_ms in scene
+        .transform_plans
+        .iter()
+        .map(|p| p.end_ms)
+        .chain(scene.morph_pairs.iter().map(|p| p.end_ms))
+    {
+        sample_times.push(end_ms);
+    }
+    sample_times.sort();
+    sample_times.dedup();
+
+    let mut times: Vec<u32> = sample_times.clone();
+    if times.is_empty() {
+        // Degenerate input: still exercise one compile so the check is
+        // meaningful (a zero-frame pass would never touch Typst).
+        times.push(0);
+    }
+    for &t in &times {
+        renderer.render_frame_at(t, &frames)?;
+    }
+    info!("check: {} frame(s) composed successfully", times.len());
+    Ok(())
+}
+
+/// Force-migrate a `.tyx` to the target candy version by rewriting only the
+/// version token in its `@preview/candy:<version>` import line, in place. All
+/// other content is preserved. `target` defaults to the installed CLI version
+/// (compiled in from `CARGO_PKG_VERSION`), so `candy migrate a.tyx` brings
+/// `a.tyx` up to the installed candy. Returns the number of import lines
+/// rewritten (0 if the file already referenced the target version, or had no
+/// candy import at all).
+pub fn migrate_file(path: &Path, target: Option<&str>) -> Result<usize, CandyError> {
+    let target = target.unwrap_or(CANDY_VERSION);
+    let src = std::fs::read_to_string(path)?;
+    let marker = "@preview/candy:";
+    let mut out = String::with_capacity(src.len());
+    let mut rewritten = 0usize;
+    for line in src.lines() {
+        if let Some(start) = line.find(marker) {
+            let vstart = start + marker.len();
+            // Version ends at the closing quote of the import string.
+            if let Some(q) = line[vstart..].find('"') {
+                let vend = vstart + q;
+                let current = &line[vstart..vend];
+                if current != target {
+                    out.push_str(&line[..vstart]);
+                    out.push_str(target);
+                    out.push_str(&line[vend..]);
+                    out.push('\n');
+                    rewritten += 1;
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if rewritten > 0 {
+        std::fs::write(path, out.as_bytes())?;
+    }
+    Ok(rewritten)
 }
 
 /// Map an [`OutputFormat`] to its container (video targets only).

@@ -223,7 +223,7 @@ impl WorldState {
     /// The source is always *detached* (Typst's synthetic `main.typ` id), so two
     /// documents compiled in parallel never collide on a `FileId` (which would
     /// corrupt Typst's global comemo memoization). The real `.tyx` path is still
-    /// surfaced on an `E006` via [`crate::renderer::typst::typst_diag_loc`], which
+    /// surfaced on an `E005` via [`crate::renderer::typst::typst_diag_loc`], which
     /// rewrites the detached `main.typ` id back to the user's file.
     pub(crate) fn main_source(&self, src: &str) -> TypstSource {
         if let Some(cached) = self.source_cache.lock().unwrap().get(src) {

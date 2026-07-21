@@ -213,7 +213,7 @@ pub struct Renderer {
     param_sources: HashMap<(usize, usize), String>,
     /// Absolute path of the original `.tyx` source file, if known (empty for
     /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
-    /// source a real `FileId` so an `E006` points the user at the actual file
+    /// source a real `FileId` so an `E005` points the user at the actual file
     /// rather than the synthetic `main.typ` detached source.
     source_path: PathBuf,
 }
@@ -236,7 +236,7 @@ impl Renderer {
         // counters, …) instead of rendering a blank page.
         let mut scene = scene;
         // Capture the original `.tyx` path (if any) so the compiled Typst source
-        // can carry a real `FileId` and `E006` diagnostics point at the user's
+        // can carry a real `FileId` and `E005` diagnostics point at the user's
         // file. Empty for hand-built / programmatic scenes.
         let source_path = scene.artifacts.file_path.clone();
         if scene.artifacts.source.is_empty() {
@@ -276,7 +276,7 @@ impl Renderer {
         // Typst can *panic* (rather than return a diagnostic) on certain
         // malformed input — especially in release builds, where such a panic
         // would otherwise abort the process with no diagnostic. Catch it and
-        // surface it as `E006` so a syntax error is always reported, never
+        // surface it as `E005` so a syntax error is always reported, never
         // swallowed or crashed on.
         let warned =
             match catch_unwind(AssertUnwindSafe(|| typst::compile::<PagedDocument>(&world))) {
@@ -435,7 +435,7 @@ impl Renderer {
         }
         let src = format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
         // A compile failure (e.g. a syntax error inside `bg`) is a real error and
-        // must propagate as `E006`. Only a *successful* compile whose fill is not
+        // must propagate as `E005`. Only a *successful* compile whose fill is not
         // a solid colour legitimately falls back to opaque white.
         let resolved = self
             .compile(&src, &Dict::new())?
@@ -470,7 +470,7 @@ impl Renderer {
     }
 }
 /// Resolve a Typst [`typst::diag::SourceDiagnostic`] to a candy [`SourceLoc`]
-/// via the compile `world`, so an `E006` can point the user at the exact
+/// via the compile `world`, so an `E005` can point the user at the exact
 /// `file:line:col` and the offending source line — just like the parser-level
 /// diagnostics (E002 / E004 / …) already do.
 ///
@@ -483,7 +483,7 @@ impl Renderer {
 /// empty for hand-built / programmatic scenes, in which case the detached
 /// `main.typ` name is kept. Returns `None` when the span is detached or its
 /// source cannot be resolved (e.g. an internal Typst panic), in which case the
-/// `E006` is reported without a location.
+/// `E005` is reported without a location.
 pub(crate) fn typst_diag_loc(
     world: &CandyWorld,
     diag: &typst::diag::SourceDiagnostic,
@@ -1684,34 +1684,34 @@ fn overflowing_scene_plays_pages_in_sequence() {
     std::fs::remove_file(&tmp).ok();
 }
 
-/// Regression: an `E006` Typst render failure must carry a source location that
+/// Regression: an `E005` Typst render failure must carry a source location that
 /// points at the offending code in the user's `.tyx` (the `file:line:col` +
 /// caret), not just a free-text message. A type error inside a mobject body
 /// (`#(1cm + "x"` — adding a length and a string) fails Typst evaluation; the
-/// renderer must surface `E006` with a `SourceLoc` whose path is the real `.tyx`
+/// renderer must surface `E005` with a `SourceLoc` whose path is the real `.tyx`
 /// and whose line text is the offending source line.
 #[test]
-fn e006_typst_error_carries_source_location() {
+fn e005_typst_error_carries_source_location() {
     let src = "#import \"candy\": *\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"bad\", #(1cm + \"x\"))\n\
                ]\n";
-    let tmp = std::env::temp_dir().join("candy_test_e006_loc.tyx");
+    let tmp = std::env::temp_dir().join("candy_test_e005_loc.tyx");
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let r = Renderer::with_root(scene, tmp.parent().unwrap().to_path_buf()).unwrap();
     let err = r
         .compile(&r.param_source, &Dict::new())
         .expect_err("type error in mobject body must fail compilation");
-    assert_eq!(err.code(), "E006", "failure must be reported as E006");
+    assert_eq!(err.code(), "E005", "failure must be reported as E005");
     let loc = err
         .loc()
-        .expect("E006 must carry a source location pointing at the bad code");
+        .expect("E005 must carry a source location pointing at the bad code");
     assert_eq!(
         loc.path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned()),
-        Some("candy_test_e006_loc.tyx".to_string()),
+        Some("candy_test_e005_loc.tyx".to_string()),
         "location must point at the real .tyx file"
     );
     assert!(

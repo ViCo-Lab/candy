@@ -109,7 +109,7 @@ pub fn parse_audio(track: &AudioTrack) -> Result<AudioData, CandyError> {
         parse_adts_aac(&bytes)?
     } else {
         return Err(CandyError::Encode(format!(
-            "unsupported audio format for '{}' (E007): candy supports Opus (.opus/.ogg) and \
+            "unsupported audio format for '{}' (E009): candy supports Opus (.opus/.ogg) and \
              AAC/ADTS (.aac). Other formats are attached as files, not muxed.",
             track.path
         )));
@@ -165,9 +165,9 @@ fn parse_opus_ogg(bytes: &[u8]) -> Result<AudioData, CandyError> {
     // packet[0] = OpusHead: "OpusHead" + version(1) + channels(1) + preskip(2) + ...
     let head = packets
         .first()
-        .ok_or_else(|| CandyError::Encode("Ogg/Opus: missing OpusHead (E007)".into()))?;
+        .ok_or_else(|| CandyError::Encode("Ogg/Opus: missing OpusHead (E009)".into()))?;
     if head.len() < 9 || &head[0..8] != b"OpusHead" {
-        return Err(CandyError::Encode("Ogg/Opus: bad OpusHead (E007)".into()));
+        return Err(CandyError::Encode("Ogg/Opus: bad OpusHead (E009)".into()));
     }
     let channels = head[9] as u16;
     let sample_rate = 48_000; // Opus always decodes to 48 kHz
@@ -236,7 +236,7 @@ fn parse_adts_aac(bytes: &[u8]) -> Result<AudioData, CandyError> {
 
     if frames.is_empty() {
         return Err(CandyError::Encode(
-            "ADTS AAC: no frames found (E007)".into(),
+            "ADTS AAC: no frames found (E009)".into(),
         ));
     }
     Ok(AudioData {
@@ -277,7 +277,7 @@ fn ogg_packets(bytes: &[u8]) -> Result<Vec<Vec<u8>>, CandyError> {
             let start = seg_end;
             let end = start + len;
             if end > bytes.len() {
-                return Err(CandyError::Encode("Ogg: truncated segment (E007)".into()));
+                return Err(CandyError::Encode("Ogg: truncated segment (E009)".into()));
             }
             packet.extend_from_slice(&bytes[start..end]);
             seg_end = end;
@@ -336,7 +336,10 @@ pub fn transcode_via_ffmpeg(
         .output()
         .ok()?;
     if output.status.success() && tmp.exists() {
-        info!("transcoded '{}' to {} via ffmpeg", input_path, codec_name);
+        info!(
+            "audio: transcoded '{}' to {} via ffmpeg",
+            input_path, codec_name
+        );
         Some(tmp)
     } else {
         warn!(CandyWarn::AudioDropped(format!(

@@ -31,7 +31,7 @@ The default codec (`x264`) uses system **`ffmpeg`** for higher-quality encoding.
 | `h264-videotoolbox` / `h265-videotoolbox` | h264_videotoolbox / hevc_videotoolbox | macOS hardware. |
 | `h264-qsv` / `h265-qsv` | h264_qsv / hevc_qsv | Intel Quick Sync Video (**Windows**). |
 
-If ffmpeg is not found, Candy falls back to the self-contained codecs or returns E007
+If ffmpeg is not found, Candy falls back to the self-contained codecs or returns E009
 (`h265`/`x264`/`x265` without ffmpeg).
 
 ## The ffmpeg path
@@ -81,4 +81,4 @@ Candy transparently falls back to `h264` (openh264) so a valid video is still pr
 frame geometries. Candy first tries full-quality AV1, and on that panic automatically
 retries in all-intra mode (valid AV1, no temporal compression); only if that also fails does
 it fall back to H.264. The panic is caught (`catch_unwind`) so the command never aborts — if
-every encoder fails, Candy writes an SVG draft to `.candy/` and surfaces E007.
+every encoder fails, Candy writes an SVG draft to `.candy/` and surfaces E009 (and emits the W004 warning).

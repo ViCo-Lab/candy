@@ -30,7 +30,7 @@ pub fn mux_mp4(
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
         return Err(CandyError::Encode(
-            "cannot mux an empty video (E007)".into(),
+            "cannot mux an empty video (E009)".into(),
         ));
     }
     let total_ms = (nframes as u64) * 1000 / v.fps as u64;
@@ -143,7 +143,7 @@ pub(crate) fn mux_mp4_to_file(
     let nframes = v.sample_sizes.len() as u32;
     if nframes == 0 {
         return Err(CandyError::Encode(
-            "cannot mux an empty video (E007)".into(),
+            "cannot mux an empty video (E009)".into(),
         ));
     }
     let total_ms = (nframes as u64) * 1000 / v.fps as u64;
@@ -800,7 +800,7 @@ pub fn mux_matroska(
     let nframes = v.frames.len() as u32;
     if nframes == 0 {
         return Err(CandyError::Encode(
-            "cannot mux an empty video (E007)".into(),
+            "cannot mux an empty video (E009)".into(),
         ));
     }
 
@@ -1068,7 +1068,7 @@ pub(crate) fn mux_matroska_to_file(
     let nframes = v.sample_sizes.len() as u32;
     if nframes == 0 {
         return Err(CandyError::Encode(
-            "cannot mux an empty video (E007)".into(),
+            "cannot mux an empty video (E009)".into(),
         ));
     }
 

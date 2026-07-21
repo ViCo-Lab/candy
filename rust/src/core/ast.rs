@@ -621,7 +621,7 @@ pub struct ParseArtifacts {
     pub source: String,
     /// Absolute path of the `.tyx` file this scene was parsed from. Empty for
     /// hand-built / programmatic `Scene`s. Threaded into the renderer so an
-    /// `E006` Typst failure can point at the real file rather than the synthetic
+    /// `E005` Typst failure can point at the real file rather than the synthetic
     /// `main.typ` detached source.
     pub file_path: PathBuf,
     /// Source range `(start, end)` of each `#mobject(label, body)` call's
@@ -805,7 +805,7 @@ impl Scene {
         for ev in &self.counter_events {
             if !counter_names.contains(ev.name.as_str()) {
                 return Err(format!(
-                    "E009: counter \"{name}\" does not exist (never declared or already destroyed)",
+                    "E006: counter \"{name}\" does not exist (never declared or already destroyed)",
                     name = ev.name
                 ));
             }
@@ -819,7 +819,7 @@ impl Scene {
                 if let Some(target) = action.target() {
                     if !mobject_names.contains(target.0.as_str()) {
                         return Err(format!(
-                            "E009: mobject \"@{label}\" not found in Typst layout",
+                            "E006: mobject \"@{label}\" not found in Typst layout",
                             label = target.0
                         ));
                     }
