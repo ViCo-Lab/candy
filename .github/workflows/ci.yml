@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -10,6 +9,76 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  typst-package:
+    name: Package Typst library
+    runs-on: ubuntu-slim
+    steps:
+      - id: checkout
+        uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^[[:space:]]*version' typst/typst.toml | sed -E 's/.*= *"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse 'version' from typst/typst.toml" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - id: package
+        shell: bash
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          # Respect the `exclude` list declared in typst/typst.toml so the
+          # published tarball matches what `typst` itself would package.
+          mapfile -t EXCLUDES < <(grep -m1 '^[[:space:]]*exclude' typst/typst.toml | grep -oE '"[^"]+"' | sed 's/"//g')
+          TAR_EXTRA=()
+          for f in "${EXCLUDES[@]}"; do
+            TAR_EXTRA+=(--exclude="$f")
+          done
+          tar -czf "candy-typst-${VERSION}-${{ steps.meta.outputs.short_sha }}.tar.gz" "${TAR_EXTRA[@]}" -C typst .
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: candy-typst-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.short_sha }}
+          path: candy-typst-*.tar.gz
+          if-no-files-found: error
+
+  test:
+    name: Test
+    runs-on: ubuntu-26.04
+    # `RUSTFLAGS: -D warnings` makes the compiler treat all warnings as errors
+    # for every step below (check, clippy, and test).
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - id: checkout
+        uses: actions/checkout@v4
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: test-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: test-cargo-
+      # rustc: ensure the crate compiles (no codegen) before running tests.
+      - id: check
+        run: cargo check --manifest-path rust/Cargo.toml
+        shell: bash
+      # clippy: lint with warnings promoted to errors.
+      - id: clippy
+        run: cargo clippy --all-targets --manifest-path rust/Cargo.toml
+        shell: bash
+      - id: test
+        run: cargo test --manifest-path rust/Cargo.toml
+        shell: bash
+
   # Standard release build across every Rust Tier 1 (with host tools) target.
   # Source of truth: https://doc.rust-lang.org/rustc/platform-support.html
   # (aarch64/armv7/i686 Linux use `cross`; the rest build natively on their
@@ -25,48 +94,57 @@ jobs:
         include:
           # Linux (x86_64 native; the rest cross-compiled)
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
             cross: false
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
+            os: ubuntu-26.04-arm
+            cross: false
           - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
+            os: ubuntu-26.04
             cross: true
           - target: i686-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
             cross: true
           # Windows (all native on windows-latest)
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025-vs2026
             cross: false
           - target: x86_64-pc-windows-gnu
-            os: windows-latest
+            os: windows-2025-vs2026
             cross: false
           - target: i686-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025-vs2026
             cross: false
           - target: aarch64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025-vs2026-arm
             cross: false
           # macOS: macos-latest is now Apple Silicon (arm64), so aarch64 is the
           # native (non-cross) target. x86_64 is cross-compiled; `cross` has no
           # macOS images, so it still builds with plain `cargo` via the universal
           # macOS SDK (see the build steps below).
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-26
             cross: false
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-26
             cross: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - id: checkout
+        uses: actions/checkout@v4
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - if: matrix.cross && !startsWith(matrix.os, 'macos')
+      - id: meta
+        shell: bash
+        run: |
+          echo "version=$(grep -m1 '^version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - id: install-cross
+        if: matrix.cross && !startsWith(matrix.os, 'macos')
         run: cargo install cross --git https://github.com/cross-rs/cross
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -77,10 +155,12 @@ jobs:
       # `cross` has no macOS images, so even cross-marked macOS targets build
       # with plain `cargo` (the universal macOS SDK cross-compiles x86_64 from
       # Apple Silicon). Only Linux cross targets use the `cross` tool.
-      - if: '!matrix.cross || startsWith(matrix.os, ''macos'')'
+      - id: build
+        if: '!matrix.cross || startsWith(matrix.os, ''macos'')'
         run: cargo build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
-      - if: matrix.cross && !startsWith(matrix.os, 'macos')
+      - id: cross-build
+        if: matrix.cross && !startsWith(matrix.os, 'macos')
         run: cross build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
       - id: binpath
@@ -91,9 +171,10 @@ jobs:
           else
             echo "bin=rust/target/${{ matrix.target }}/release/candy" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/upload-artifact@v4
+      - id: upload
+        uses: actions/upload-artifact@v4
         with:
-          name: candy-${{ matrix.target }}
+          name: candy-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.short_sha }}-${{ matrix.target }}
           path: ${{ steps.binpath.outputs.bin }}
           if-no-files-found: warn
 
@@ -110,31 +191,40 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-26.04-arm
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-26
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-26
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025-vs2026
           - target: aarch64-pc-windows-msvc
-            os: windows-latest
-          - target: x86_64-pc-windows-gnu
-            os: windows-latest
+            os: windows-2025-vs2026-arm
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - id: checkout
+        uses: actions/checkout@v4
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - id: meta
+        shell: bash
+        run: |
+          echo "version=$(grep -m1 '^version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       # wgpu's Linux backend links the system Vulkan/X11/Wayland libraries.
-      - if: startsWith(matrix.os, 'ubuntu')
+      - id: install-deps
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install --assume-yes \
             pkg-config libx11-dev libxkbcommon-dev libwayland-dev \
             libxrandr-dev libxext-dev libxcursor-dev libxi-dev libvulkan-dev
         shell: bash
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -142,7 +232,8 @@ jobs:
             rust/target
           key: gpu-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: gpu-${{ matrix.target }}-cargo-
-      - run: cargo build --release --features gpu --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+      - id: build
+        run: cargo build --release --features gpu --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
         shell: bash
       - id: binpath
         shell: bash
@@ -152,63 +243,9 @@ jobs:
           else
             echo "bin=rust/target/${{ matrix.target }}/release/candy" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/upload-artifact@v4
+      - id: upload
+        uses: actions/upload-artifact@v4
         with:
-          name: candy-gpu-${{ matrix.target }}
+          name: candy-gpu-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.short_sha }}-${{ matrix.target }}
           path: ${{ steps.binpath.outputs.bin }}
           if-no-files-found: warn
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    # `RUSTFLAGS: -D warnings` makes the compiler treat all warnings as errors
-    # for every step below (check, clippy, and test).
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: test-cargo-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: test-cargo-
-      # rustc: ensure the crate compiles (no codegen) before running tests.
-      - run: cargo check --manifest-path rust/Cargo.toml
-        shell: bash
-      # clippy: lint with warnings promoted to errors.
-      - run: cargo clippy --all-targets --manifest-path rust/Cargo.toml
-        shell: bash
-      - run: cargo test --manifest-path rust/Cargo.toml
-        shell: bash
-
-  typst-package:
-    name: Package Typst library
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - shell: bash
-        run: |
-          VERSION=$(grep -m1 '^[[:space:]]*version' typst/typst.toml | sed -E 's/.*= *"([^"]+)".*/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not parse 'version' from typst/typst.toml" >&2
-            exit 1
-          fi
-          # Respect the `exclude` list declared in typst/typst.toml so the
-          # published tarball matches what `typst` itself would package.
-          mapfile -t EXCLUDES < <(grep -m1 '^[[:space:]]*exclude' typst/typst.toml | grep -oE '"[^"]+"' | sed 's/"//g')
-          TAR_EXTRA=()
-          for f in "${EXCLUDES[@]}"; do
-            TAR_EXTRA+=(--exclude="$f")
-          done
-          tar -czf "candy-typst-${VERSION}.tar.gz" "${TAR_EXTRA[@]}" -C typst .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: candy-typst
-          path: candy-typst-*.tar.gz
-          if-no-files-found: error

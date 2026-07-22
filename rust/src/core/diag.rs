@@ -267,7 +267,7 @@ impl CandyError {
             }
             CandyError::Typst(e, _) => format!("typst: {e}"),
             CandyError::Encode(e) => format!("encode: {e}"),
-            CandyError::CandyDumpedYou(e, _) => format!("candy: {e} She dumped you! (-_-)"),
+            CandyError::CandyDumpedYou(e, _) => format!("candy: {e}. She dumped you! (-_-)"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!(
                     "parse: {kind} \"{key}\" does not exist (never declared or already destroyed)"
