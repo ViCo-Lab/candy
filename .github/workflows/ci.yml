@@ -116,7 +116,7 @@ jobs:
             os: windows-2025-vs2026
             cross: false
           - target: aarch64-pc-windows-msvc
-            os: windows-2025-vs2026-arm
+            os: windows-11-vs2026-arm
             cross: false
           # macOS: macos-latest is now Apple Silicon (arm64), so aarch64 is the
           # native (non-cross) target. x86_64 is cross-compiled; `cross` has no
@@ -201,7 +201,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-2025-vs2026
           - target: aarch64-pc-windows-msvc
-            os: windows-2025-vs2026-arm
+            os: windows-11-vs2026-arm
     steps:
       - id: checkout
         uses: actions/checkout@v4
