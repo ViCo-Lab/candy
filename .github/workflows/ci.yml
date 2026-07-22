@@ -138,7 +138,7 @@ jobs:
       - id: meta
         shell: bash
         run: |
-          echo "version=$(grep -m1 '^version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^[[:space:]]*version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - id: install-cross
         if: matrix.cross && !startsWith(matrix.os, 'macos')
@@ -212,7 +212,7 @@ jobs:
       - id: meta
         shell: bash
         run: |
-          echo "version=$(grep -m1 '^version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^[[:space:]]*version' rust/Cargo.toml | sed -E 's/.*= *"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       # wgpu's Linux backend links the system Vulkan/X11/Wayland libraries.
       - id: install-deps
