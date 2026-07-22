@@ -216,7 +216,10 @@ impl Renderer {
     /// case). Each value is a flat Typst source fragment that, prepended before
     /// the `#set page(...)` and the `#mobject(...)` calls, reproduces exactly the
     /// environment the mobjects had inside the whole document.
-    pub(crate) fn build_scene_contexts(scene: &Scene) -> HashMap<usize, String> {
+    pub(crate) fn build_scene_contexts(
+        scene: &Scene,
+        wrapped: &HashMap<Label, String>,
+    ) -> HashMap<usize, String> {
         let mut map: HashMap<usize, String> = HashMap::new();
         let src = &scene.artifacts.source;
         if src.is_empty() {
@@ -247,19 +250,20 @@ impl Renderer {
             )
         };
         if scene.scenes.is_empty() {
-            // No scene tree: context for sid 0 = root minus mobjects/subtitles.
+            // No scene tree: context for sid 0 = root minus mobjects/subtitles,
+            // with `#play(...)` rewritten to its inline controlled mobject.
             let keep: HashSet<usize> = HashSet::new();
-            let mut skipped = Vec::new();
-            Self::collect_skipped(src, &node, &keep, &call_map, &mut skipped);
-            let ctx = Self::emit_minus_skipped(src, node.range(), &skipped);
+            let mut edits: Vec<(usize, usize, Option<String>)> = Vec::new();
+            Self::collect_skipped(src, &node, &keep, &call_map, &mut edits, scene, wrapped);
+            let ctx = Self::emit_minus_skipped(src, node.range(), &edits);
             map.insert(0, rewrite(ctx));
             return map;
         }
         for s in &scene.scenes {
             let keep: HashSet<usize> = Self::ancestor_chain(scene, s.id).into_iter().collect();
-            let mut skipped = Vec::new();
-            Self::collect_skipped(src, &node, &keep, &call_map, &mut skipped);
-            let ctx = Self::emit_minus_skipped(src, node.range(), &skipped);
+            let mut edits: Vec<(usize, usize, Option<String>)> = Vec::new();
+            Self::collect_skipped(src, &node, &keep, &call_map, &mut edits, scene, wrapped);
+            let ctx = Self::emit_minus_skipped(src, node.range(), &edits);
             map.insert(s.id, rewrite(ctx));
         }
         map
@@ -282,8 +286,8 @@ impl Renderer {
         chain
     }
 
-    /// Collect the byte ranges that must be *removed* from `node`'s source to obtain
-    /// the injected context for a scene whose ancestor chain is `keep`.
+    /// Collect the byte-range *edits* that turn `node`'s source into the injected
+    /// context for a scene whose ancestor chain is `keep`.
     ///
     /// * A `#scene(...)` call **on** the ancestor chain is kept, but only its inner
     ///   body — its `#scene(name, w, h, bg, …)` wrapper (everything outside the body)
@@ -292,12 +296,24 @@ impl Renderer {
     /// * A `#scene(...)` call **not** on the chain is subtracted whole.
     /// * `#mobject(...)` and `#subtitle(...)` calls are subtracted whole (they are
     ///   re-emitted per page / drawn as overlays).
+    /// * A `#play(...)` call is **replaced** (not dropped) by its inline controlled
+    ///   `#mobject("__block_N", …)` at the call site, so the play content is drawn
+    ///   by the synthetic block mobject (correctly hidden / faded by its animation)
+    ///   exactly where `#play` appeared — see `assemble_page_doc` which then skips
+    ///   re-appending `__block_N`. This fixes the two play bugs: the mask was being
+    ///   appended at the page end and drifted off the call site ("play 遮罩和内容
+    ///   错位"), and the literal `block(body)` emitted by `#play` was always
+    ///   rendered, ignoring the block mobject's opacity ("遮罩开始播放时原始内容没有
+    ///   隐藏"). Each edit is `(start, end, None)` to remove or
+    ///   `(start, end, Some(replacement))` to substitute.
     fn collect_skipped(
         src: &str,
         node: &LinkedNode,
         keep: &HashSet<usize>,
         call_map: &HashMap<(usize, usize), usize>,
-        out: &mut Vec<(usize, usize)>,
+        out: &mut Vec<(usize, usize, Option<String>)>,
+        scene: &Scene,
+        wrapped: &HashMap<Label, String>,
     ) {
         // A Typst code expression `#expr` is parsed so the `FuncCall` (etc.) node
         // range starts at the callee identifier and *excludes* the leading `#`.
@@ -330,66 +346,75 @@ impl Renderer {
                     } else {
                         (bs, be)
                     };
-                    out.push((cs, ibs));
-                    out.push((ibe, ce));
+                    out.push((cs, ibs, None));
+                    out.push((ibe, ce, None));
                     for child in body.children() {
-                        Self::collect_skipped(src, &child, keep, call_map, out);
+                        Self::collect_skipped(src, &child, keep, call_map, out, scene, wrapped);
                     }
                 }
             } else {
                 let cs = with_hash(node.range().start);
-                out.push((cs, node.range().end));
+                out.push((cs, node.range().end, None));
             }
+            return;
+        }
+        // `#play(...)` call? Rewrite it inline to its controlled block mobject at
+        // the call site so the content lands where `#play` appeared and obeys the
+        // block's animation (hidden until its `FadeIn`, hidden again after).
+        if Self::callee_is(node, "play") {
+            let cs = with_hash(node.range().start);
+            let ce = node.range().end;
+            // The block mobject is the `__block_N` whose recorded body range lies
+            // inside this `#play` call (either the explicit `#mobject("__block_N", …)`
+            // passed to `#play`, or the synthetic one `process_play` created).
+            let block_label = scene
+                .artifacts
+                .mobject_body
+                .iter()
+                .find(|(l, (bs, be))| l.0.starts_with("__block_") && *bs >= cs && *be <= ce)
+                .map(|(l, _)| l.clone());
+            if let Some(label) = block_label {
+                if let Some(w) = wrapped.get(&label) {
+                    out.push((cs, ce, Some(format!("#mobject(\"{}\", {})", label.0, w))));
+                    return;
+                }
+            }
+            // No matching synthetic block — drop the call so nothing leaks.
+            out.push((cs, ce, None));
             return;
         }
         // `#mobject(...)` / `#subtitle(...)` call?
         if Self::callee_is(node, "mobject") || Self::callee_is(node, "subtitle") {
             let cs = with_hash(node.range().start);
-            out.push((cs, node.range().end));
+            out.push((cs, node.range().end, None));
             return;
         }
         for child in node.children() {
-            Self::collect_skipped(src, &child, keep, call_map, out);
+            Self::collect_skipped(src, &child, keep, call_map, out, scene, wrapped);
         }
     }
 
-    /// Emit `src[range]` with every `skipped` interval removed (intervals are
-    /// merged first so overlaps are handled).
+    /// Emit `src[range]` with every edit applied: ranges mapped to `None` are
+    /// removed, ranges mapped to `Some(replacement)` are substituted. Edits are
+    /// applied right-to-left (descending start) so earlier offsets stay valid.
     fn emit_minus_skipped(
         src: &str,
         range: std::ops::Range<usize>,
-        skipped: &[(usize, usize)],
+        edits: &[(usize, usize, Option<String>)],
     ) -> String {
-        let mut sk: Vec<(usize, usize)> = skipped
+        let mut es: Vec<(usize, usize, Option<String>)> = edits
             .iter()
-            .cloned()
-            .filter(|(s, e)| *e > *s && *e > range.start && *s < range.end)
-            .map(|(s, e)| (s.max(range.start), e.min(range.end)))
+            .filter(|(s, e, _)| *e > *s && *e > range.start && *s < range.end)
+            .map(|(s, e, t)| ((*s).max(range.start), (*e).min(range.end), t.clone()))
             .collect();
-        sk.sort();
-        sk.dedup();
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (s, e) in sk {
-            if let Some(last) = merged.last_mut() {
-                if s <= last.1 {
-                    last.1 = last.1.max(e);
-                    continue;
-                }
-            }
-            merged.push((s, e));
+        es.sort_by_key(|b| std::cmp::Reverse(b.0));
+        let mut out: Vec<u8> = src[range.clone()].as_bytes().to_vec();
+        for (s, e, t) in es {
+            let (s, e) = (s - range.start, e - range.start);
+            let rep = t.unwrap_or_default();
+            out.splice(s..e, rep.into_bytes());
         }
-        let mut out = String::new();
-        let mut cur = range.start;
-        for (s, e) in merged {
-            if s > cur {
-                out.push_str(&src[cur..s]);
-            }
-            cur = cur.max(e);
-        }
-        if cur < range.end {
-            out.push_str(&src[cur..range.end]);
-        }
-        out
+        String::from_utf8(out).unwrap_or_default()
     }
 
     /// If `node` is a `#scene(...)` call, return its registered scene id.
@@ -526,6 +551,13 @@ impl Renderer {
             let Some(wrapped) = self.wrapped_bodies.get(label) else {
                 continue;
             };
+            // `#play` blocks are no longer appended here: they are rewritten
+            // inline (at their `#play` call site) in the scene context by
+            // `collect_skipped`, so re-emitting them would duplicate the
+            // content and drift it back to the page end ("play 遮罩和内容错位").
+            if label.0.starts_with("__block_") {
+                continue;
+            }
             // Page filter: skip mobjects that landed on a different page.
             if let Some(p) = self.pages.page_of(label) {
                 if p != page {

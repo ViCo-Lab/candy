@@ -17,9 +17,7 @@ use typst_svg::SvgOptions;
 
 use crate::core::ast::{FrameData, Label};
 use crate::core::easing::Easing;
-use crate::renderer::typst::{
-    PT_PER_CM, Renderer, collect_formula_leaves, imports_preamble, localize_formula_ids,
-};
+use crate::renderer::typst::{PT_PER_CM, Renderer, collect_formula_leaves, localize_formula_ids};
 use typst_library::foundations::{Dict, Label as TypstLabel, Str as TypstStr};
 use typst_library::introspection::Introspector;
 
@@ -263,7 +261,16 @@ impl Renderer {
         &self,
         plan: &crate::core::ast::TransformPlan,
     ) -> Option<TransformFragmentPlan> {
-        let preamble = imports_preamble(&self.scene);
+        // Render the isolated old/new formulas with the SAME scene context the
+        // base document uses (page size, `#set text`, ancestor `#set`/`#show`/
+        // `#let`, …), so the overlay glyphs match the base mobject's exact scale
+        // and position. Using only `imports_preamble` (the bare candy import)
+        // drops that context — a scene that sets `#set text(size: 40pt)` would
+        // render the base formula at 40pt but the overlay at the default 11pt,
+        // drifting every per-glyph fragment off the content (the "transform 遮罩
+        // 和内容不对齐" bug).
+        let sid = self.label_scene.get(&plan.target).copied().unwrap_or(0);
+        let preamble = self.scene_context_preamble(sid);
         let old_svg = self.render_formula_svg(&plan.old_body, &preamble)?;
         let new_svg = self.render_formula_svg(&plan.new_body, &preamble)?;
         let (old_inner, old_frags) = Self::extract_formula(&old_svg)?;

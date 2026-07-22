@@ -551,14 +551,19 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                         easing: easing.clone(),
                     });
                     // New content (`target`): tiny + transparent → full, at the
-                    // same position. `scale` returns to `s.scale` (so repeated
-                    // transforms don't accumulate).
+                    // same position. `scale` stays at `s.scale` (NOT `small`): the
+                    // per-glyph transform overlay (`transform_overlay_svg`) reads
+                    // the target's scale to size its fragments, so shrinking it
+                    // here would shrink the overlay formula and make it drift off
+                    // the base content ("transform 遮罩和内容不对齐"). The legacy
+                    // non-inline crossfade keeps its shrink via the `old` mobject
+                    // below; the target itself only needs the opacity crossfade.
                     per_item.entry(target.clone()).or_default().push(FrameData {
                         time_ms: start_t,
                         target: target.clone(),
                         x: s.x,
                         y: s.y,
-                        scale: small,
+                        scale: s.scale,
                         opacity: 0.0,
                         rotation: s.rotation,
                         easing: easing.clone(),

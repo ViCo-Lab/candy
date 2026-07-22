@@ -245,7 +245,7 @@ impl Renderer {
             scene.artifacts.mobject_body = mobject_body;
         }
         let (param_source, wrapped_bodies) = Self::build_parameterized_source(&scene);
-        let scene_contexts = Self::build_scene_contexts(&scene);
+        let scene_contexts = Self::build_scene_contexts(&scene, &wrapped_bodies);
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
             scene,
