@@ -1684,6 +1684,54 @@ fn overflowing_scene_plays_pages_in_sequence() {
     std::fs::remove_file(&tmp).ok();
 }
 
+/// Regression: a `#play` block that is not yet playing (opacity 0) must be
+/// wrapped in `#hide[…]` so it reserves its flow slot and does NOT flash at
+/// full opacity before its FadeIn window. This must hold on the plain SVG
+/// draft path (`hide_fading = false`) too — only the pixel path previously
+/// hid low-opacity objects, so the standard Typst-SVG / viewer output used to
+/// show the block prematurely.
+#[test]
+fn play_block_hidden_when_not_rendered() {
+    let src = "#import \"candy\": *\n\
+               #mobject(\"a\", rect(width: 3cm, height: 1cm))\n\
+               #play(rect(width: 2cm, height: 1cm, fill: green), duration: 25)\n";
+    let tmp = std::env::temp_dir().join("candy_test_play_hide.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
+    // Identify the synthetic play block label before `scene` is moved.
+    let block = scene
+        .items
+        .keys()
+        .find(|l| l.0.starts_with("__block_"))
+        .cloned()
+        .expect("play creates a __block_ mobject");
+    let frames = crate::core::scheduler::schedule(&scene).unwrap();
+    // Read the active scene at t = 0 before `scene` is moved into the Renderer.
+    let active0 = scene.active_scene_at(0);
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_flow_public().unwrap();
+    // Single-page scene: the play block lives on page 0.
+    let page0 = 0usize;
+    let (states0, _) = r.prepare_states(&frames, 0);
+    // Draft path (hide_fading = false): the not-yet-playing play block must be
+    // flagged `hide` so `wrap_mobject_inputs` reserves its slot.
+    let inputs0 = r.build_frame_inputs(&states0, active0, page0, false, 0);
+    assert!(
+        matches!(
+            inputs0.get(&format!("candy:{}:hide", block.0)).ok(),
+            Some(&typst_library::foundations::Value::Bool(true))
+        ),
+        "play block must be hidden (hide) before its window, even on the draft path"
+    );
+    // An always-opaque non-play mobject must NOT be hidden on the draft path —
+    // the fix is play-specific, not a blanket hide.
+    assert!(
+        inputs0.get("candy:a:hide").ok().is_none(),
+        "opaque non-play mobject must not be hidden on the draft path"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
 /// Regression: an `E005` Typst render failure must carry a source location that
 /// points at the offending code in the user's `.tyx` (the `file:line:col` +
 /// caret), not just a free-text message. A type error inside a mobject body

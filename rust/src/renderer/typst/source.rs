@@ -683,8 +683,17 @@ impl Renderer {
         // when the prefix ends inside a multi-byte character (e.g. an em-dash).
         // Slice the codepoint array instead so the prefix is always taken on a
         // character boundary; `calc.min` clamps against any out-of-range `__n`.
+        //
+        // The *not-yet-revealed* suffix is emitted through `hide(...)` (invisible
+        // but still occupying its exact layout space) instead of being dropped.
+        // Dropping it would re-flow the paragraph every frame — the line breaks
+        // and every later mobject's position would shift as characters appear
+        // (the "typewriter jitter"). With the hidden suffix the full string is
+        // always laid out, so the flow is byte-identical to the measurement pass
+        // and only the visible prefix grows. `fold` (not `join`) so an empty
+        // slice yields `""` rather than `none`.
         format!(
-            "{{ let __full = ({inner}); let __cp = str(__full).codepoints(); let __n = calc.min(int(sys.inputs.at(\"candy:{label}:reveal:len\", default: {full_len})), __cp.len()); __cp.slice(0, __n).join() }}",
+            "{{ let __full = ({inner}); let __cp = str(__full).codepoints(); let __n = calc.min(int(sys.inputs.at(\"candy:{label}:reveal:len\", default: {full_len})), __cp.len()); __cp.slice(0, __n).fold(\"\", (__a, __c) => __a + __c) + hide(__cp.slice(__n).fold(\"\", (__a, __c) => __a + __c)) }}",
             inner = inner,
             label = label,
             full_len = full_len,
@@ -711,8 +720,21 @@ impl Renderer {
         // slot). `scale`/`rotate` are absolute transforms with **origin: center**
         // so the object scales/rotates around its own centre (Manim semantics).
         // Opacity is NOT applied here — it is composited via the SVG bypass.
+        //
+        // Two distinct "not drawn" states:
+        // * `candy:<label>:absent` → `none`. The mobject does not exist on this
+        //   frame's layout at all (a parent scene's content while a child scene
+        //   is active). It must NOT reserve space — the measurement pass laid
+        //   the active scene out without it.
+        // * `candy:<label>:hide` → `hide(...)`. The mobject is only *visually*
+        //   suppressed (opacity fade drawn via the SVG bypass, `#transform`
+        //   target replaced by the per-glyph overlay, a `#play` block before its
+        //   FadeIn). It MUST keep occupying its exact flow box — emitting `none`
+        //   here collapsed the flow slot, shifting every later mobject up and
+        //   causing frame-to-frame jitter (and the overlay, positioned from the
+        //   measurement pass, then overlapped the shifted content).
         format!(
-            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ none }} else {{ move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[#scale(origin: center, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[#rotate(origin: center, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[#__b]]] }} }}",
+            "{{ let __b = ({inner}); if sys.inputs.at(\"candy:{label}:absent\", default: false) {{ none }} else {{ let __t = move(dx: sys.inputs.at(\"candy:{label}:dx\", default: 0) * 1cm, dy: sys.inputs.at(\"candy:{label}:dy\", default: 0) * 1cm)[#scale(origin: center, sys.inputs.at(\"candy:{label}:s\", default: 100) * 1%)[#rotate(origin: center, sys.inputs.at(\"candy:{label}:r\", default: 0) * 1deg)[#__b]]]; if sys.inputs.at(\"candy:{label}:hide\", default: false) {{ hide(__t) }} else {{ __t }} }} }}",
             inner = inner,
             label = label,
         )
@@ -853,14 +875,20 @@ impl Renderer {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
             if owner != active {
                 // A mobject owned by a non-active scene (e.g. a parent scene
-                // whose child is currently active) must be hidden so the active
+                // whose child is currently active) must be removed so the active
                 // scene visually replaces it ("parent auto-hide"). We emit
-                // `hide` (resolved to `none` by `wrap_mobject_inputs`) rather
-                // than skipping the input entirely, because the mobject's body
-                // is still reached when an ancestor scene is rendered — leaving
-                // it at its default transform would show it on top of the
-                // active scene.
-                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
+                // `absent` (resolved to `none` by `wrap_mobject_inputs`, NOT the
+                // space-preserving `hide`) because the measurement pass laid the
+                // active scene out *without* this content — reserving its box
+                // would push the active scene's own mobjects out of place. The
+                // input is emitted rather than skipped because the mobject's
+                // body is still reached when an ancestor scene's context is
+                // injected — leaving it at its default transform would show it
+                // on top of the active scene.
+                inputs.insert(
+                    format!("candy:{}:absent", label.0).into(),
+                    Value::Bool(true),
+                );
                 continue;
             }
             // Cross-page scenes: only draw mobjects that landed on the page
@@ -874,7 +902,11 @@ impl Renderer {
             let l = &label.0;
             if self.transform_hidden(label, time_ms) {
                 // The target/old mobjects are replaced by the interpolated
-                // per-glyph fragments, so hide them in the base document.
+                // per-glyph fragments, so suppress them in the base document.
+                // `hide` (not `absent`) so the formula keeps occupying its flow
+                // box during the window — otherwise every element below it
+                // jumps up for the duration of the transform and the overlay
+                // fragments land on top of the shifted content.
                 inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
                 continue;
             }
@@ -906,7 +938,17 @@ impl Renderer {
                 Value::Float(st.scale * 100.0),
             );
             inputs.insert(format!("candy:{l}:r").into(), Value::Float(st.rotation));
-            if hide_fading && st.opacity < 1.0 - 1e-4 {
+            // A `#play` block that is not fully rendered (before its FadeIn
+            // window, while fading, or after its trailing `Hide`) must be
+            // suppressed in BOTH the pixel path and the plain SVG draft path —
+            // otherwise the draft (`hide_fading = false`, the standard Typst
+            // SVG / viewer output) renders it at full opacity and the block
+            // flashes on screen outside its window. Generic fades only need
+            // `hide` on the pixel path (they are drawn by the opacity overlay),
+            // but a play block that is "not rendered" must be hidden everywhere.
+            // `hide` (not `none`) keeps the block's flow box reserved so the
+            // layout does not jitter and later mobjects stay put.
+            if (hide_fading || l.starts_with("__block_")) && st.opacity < 1.0 - 1e-4 {
                 inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
             }
         }

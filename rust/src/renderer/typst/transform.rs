@@ -555,13 +555,31 @@ impl Renderer {
         if time_ms < p.start_ms || time_ms > p.end_ms {
             return None;
         }
-        // The target's absolute top-left (cm). The label-anchor offset that keeps
+        // The target's absolute anchor (cm). The label-anchor offset that keeps
         // the overlay aligned with the base document is applied per-fragment in
-        // `transform_overlay_svg` (it differs between the old and new formula), so
-        // here we return the raw animated target only.
+        // `transform_overlay_svg` (it differs between the old and new formula).
+        //
+        // Position convention (mirrors `build_frame_inputs`): a mobject whose
+        // animated state is still `(0, 0)` is *un-positioned* — it sits in its
+        // flow slot, so the overlay must anchor at the measured `flow_pos` (the
+        // label point), NOT at the page origin. Using the raw `(0, 0)` here sent
+        // every fragment of a never-`#animate`d formula to the top-left corner,
+        // where it drifted over unrelated elements and ended the transform far
+        // from the formula's real position.
+        let flow_cm = self
+            .flow_pos
+            .get(&p.target)
+            .map(|(x, y)| (x / PT_PER_CM, y / PT_PER_CM))
+            .unwrap_or((0.0, 0.0));
         let (sx, sy, scale, rot) = match states.get(&p.target) {
-            Some(s) => (s.x, s.y, s.scale, s.rotation),
-            None => (0.0, 0.0, 1.0, 0.0),
+            Some(s) => {
+                if s.x.abs() < 1e-9 && s.y.abs() < 1e-9 {
+                    (flow_cm.0, flow_cm.1, s.scale, s.rotation)
+                } else {
+                    (s.x, s.y, s.scale, s.rotation)
+                }
+            }
+            None => (flow_cm.0, flow_cm.1, 1.0, 0.0),
         };
         // At the final frame (`end_ms`) the eased progress is forced to exactly
         // 1.0 so the overlay reconstructs the *target* formula pixel-for-pixel
