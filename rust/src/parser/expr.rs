@@ -228,6 +228,17 @@ pub(crate) fn expr_to_f64(e: &Expr) -> Option<f64> {
         Expr::Int(i) => Some(i.get() as f64),
         Expr::Float(f) => Some(f.get()),
         Expr::Numeric(n) => Some(n.get().0),
+        // `-x` / `+x` unary forms parse as `Unary`, not `Numeric`, so they must
+        // be unwrapped here — otherwise negative numbers silently return `None`
+        // and the surrounding directive (e.g. `dx: -2cm`) is dropped.
+        Expr::Unary(u) if matches!(u.op(), ast::UnOp::Pos | ast::UnOp::Neg) => {
+            let v = expr_to_f64(&u.expr())?;
+            Some(if matches!(u.op(), ast::UnOp::Neg) {
+                -v
+            } else {
+                v
+            })
+        }
         _ => None,
     }
 }
@@ -250,6 +261,14 @@ pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
                 ast::Unit::Percent => Some(val / 100.0),
                 _ => None,
             }
+        }
+        Expr::Unary(u) if matches!(u.op(), ast::UnOp::Pos | ast::UnOp::Neg) => {
+            let v = expr_to_ratio(&u.expr())?;
+            Some(if matches!(u.op(), ast::UnOp::Neg) {
+                -v
+            } else {
+                v
+            })
         }
         _ => None,
     }
@@ -276,6 +295,18 @@ pub(crate) fn expr_to_angle(e: &Expr) -> Option<f64> {
                 _ => None,
             }
         }
+        // `-90deg` parses as `Unary(Neg, Numeric(90, Deg))`, not `Numeric`, so a
+        // negative angle would otherwise return `None` and the `rotate:` (or
+        // `rotate-by:` / `degrees:` / camera / spiral-in rotate) directive would
+        // be silently dropped.
+        Expr::Unary(u) if matches!(u.op(), ast::UnOp::Pos | ast::UnOp::Neg) => {
+            let v = expr_to_angle(&u.expr())?;
+            Some(if matches!(u.op(), ast::UnOp::Neg) {
+                -v
+            } else {
+                v
+            })
+        }
         _ => None,
     }
 }
@@ -294,6 +325,14 @@ pub(crate) fn expr_to_i64(e: &Expr) -> Option<i64> {
         Expr::Int(i) => Some(i.get()),
         Expr::Float(f) => Some(f.get().round() as i64),
         Expr::Numeric(n) => Some(n.get().0.round() as i64),
+        Expr::Unary(u) if matches!(u.op(), ast::UnOp::Pos | ast::UnOp::Neg) => {
+            let v = expr_to_i64(&u.expr())?;
+            Some(if matches!(u.op(), ast::UnOp::Neg) {
+                -v
+            } else {
+                v
+            })
+        }
         _ => None,
     }
 }

@@ -18,7 +18,7 @@
   // The running equation. It is transformed in place at every step; the label
   // keeps the latest content, so we can keep transforming it.
   #mobject("eq", [$a x^2 + b x + c = 0$])
-  #animate("eq", to: (0cm, 1.5cm), duration: 600, easing: "smooth")
+  //#animate("eq", to: (0cm, 1.5cm), duration: 600, easing: "smooth")
   #subtitle([Start: a general quadratic, with $a != 0$.], position: "bottom")
   #pause(duration: 700)
 
