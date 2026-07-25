@@ -11,7 +11,7 @@
   // Central sun.
   #mobject("sun", circle(radius: 0.7cm, fill: rgb("#ffcf4d")))
   #animate("sun", to: (8cm, 4.5cm), duration: 1)
-  #flash("sun", factor: 1.3, duration: 500)
+  #flash("sun", factor: 130%, duration: 500)
 
   // A ring of eight moons (radius 3cm), placed at absolute points.
   #mobject("d0", circle(radius: 0.22cm, fill: white))
@@ -49,6 +49,6 @@
     duration: 4000, easing: "smooth")
 
   // Gentle camera push-in as the system settles.
-  #camera(zoom: 1.25, duration: 4000, easing: "smooth")
+  #camera(zoom: 125%, duration: 4000, easing: "smooth")
   #pause(duration: 800)
 ]

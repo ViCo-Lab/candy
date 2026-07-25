@@ -79,6 +79,7 @@ use crate::core::ast::PT_PER_CM;
 use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{FrameData, Label, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn, SourceLoc};
+use crate::core::easing::Easing;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
 use crate::parser::expr::strip_string_literal;
 use crate::warn;
@@ -89,7 +90,7 @@ use std::sync::{Arc, Mutex};
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
 use typst_library::foundations::{Dict, Smart, Value};
-use typst_library::visualize::Paint;
+use typst_library::visualize::{Color, Paint, ProcessColor, Rgb};
 use typst_svg::SvgOptions;
 #[cfg(test)]
 use typst_syntax::FileId;
@@ -117,6 +118,17 @@ const MORPH_MAX_SEGMENT: f64 = 3.0;
 /// documents + `jobs` in-flight RGBA frames + the (small, cropped) sprite
 /// cache — independent of the total frame count `N`.
 const BODY_CACHE_CAP: usize = 16;
+/// A single `#set-color` transition for one mobject: the paint lerps from `from`
+/// to `to` over `[start, end]` ms along `easing`. Built once (in `ensure_flow`)
+/// from the scene's `Action::SetColor` slides, so `build_frame_inputs` only does
+/// a cheap lookup + lerp per frame instead of re-resolving colors each time.
+pub(crate) struct ColorChange {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) from: [u8; 4],
+    pub(crate) to: [u8; 4],
+    pub(crate) easing: Easing,
+}
 
 /// Renders a [`Scene`] into frames, with auto-detected mobject positions.
 pub struct Renderer {
@@ -178,6 +190,14 @@ pub struct Renderer {
     body_cache: Mutex<LruCache<String, Arc<PagedDocument>>>,
     /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
     bg_cache: Mutex<HashMap<String, String>>,
+    /// `#set-color` transitions, built once in `ensure_flow` from the scene's
+    /// `Action::SetColor` slides. Keyed by mobject label; each value is the
+    /// ordered list of color transitions (oldest first) for that label.
+    color_changes: HashMap<Label, Vec<ColorChange>>,
+    /// Memoized color expression (`red`, `rgb(...)`, `luma(…)`, …) → resolved
+    /// `[r, g, b, a]` (0–255) bytes, via the real Typst compiler. Reused when
+    /// lerping between two `#set-color` endpoints frame-to-frame.
+    color_rgba_cache: Mutex<HashMap<String, [u8; 4]>>,
     /// The stable, *parameterized* whole-document source used by the
     /// flow-measurement pass. Built once (in [`Renderer::with_root`]) from the
     /// parsed artifacts: every animatable mobject body is wrapped in a
@@ -262,6 +282,8 @@ impl Renderer {
             parent_labels: std::collections::HashSet::new(),
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
             bg_cache: Mutex::new(HashMap::new()),
+            color_changes: HashMap::new(),
+            color_rgba_cache: Mutex::new(HashMap::new()),
             param_source,
             wrapped_bodies,
             scene_contexts,
@@ -468,6 +490,84 @@ impl Renderer {
         }
         Ok("white".to_string())
     }
+    /// Resolve a Typst color expression (`red`, `rgb(0,255,0)`, `luma(50)`,
+    /// `rgb("#7fe3ff")`, …) to its `[r, g, b, a]` bytes (0–255), using the real
+    /// Typst compiler (mirrors [`resolve_bg_hex`] but returns raw RGBA so the
+    /// `#set-color` path can lerp between two colors per frame). A non-solid
+    /// paint (e.g. a gradient) or an unresolvable expression falls back to
+    /// opaque white. Results are memoized per distinct expression.
+    fn resolve_color_rgba(&self, expr: &str) -> Result<[u8; 4], CandyError> {
+        if let Some(c) = self.color_rgba_cache.lock().unwrap().get(expr) {
+            return Ok(*c);
+        }
+        let resolved = parse_hex_color(expr).unwrap_or_else(|| {
+            // Evaluate the expression as a real Typst color via the page-fill
+            // trick (same mechanism as `resolve_bg_hex`).
+            let src =
+                format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {expr})\n#rect()");
+            let hex = self
+                .compile(&src, &Dict::new())
+                .ok()
+                .and_then(|d| {
+                    d.pages().first().and_then(|p| match &p.fill {
+                        Smart::Custom(Some(Paint::Solid(c))) => Some(c.to_hex().to_string()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| "white".to_string());
+            parse_hex_color(&hex).unwrap_or([255, 255, 255, 255])
+        });
+        self.color_rgba_cache
+            .lock()
+            .unwrap()
+            .insert(expr.to_string(), resolved);
+        Ok(resolved)
+    }
+    /// Test-only: the per-mobject `#set-color` transitions built by `ensure_flow`.
+    #[cfg(test)]
+    pub(crate) fn color_changes_debug(&self) -> &HashMap<Label, Vec<ColorChange>> {
+        &self.color_changes
+    }
+}
+
+/// Parse a `#rrggbb` / `#rrggbbaa` hex string (with optional leading `#`) into
+/// `[r, g, b, a]` bytes. Returns `None` if the string is not a valid hex color.
+pub(crate) fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
+    let h = s.trim().strip_prefix('#').unwrap_or(s.trim());
+    let pair = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    if h.len() == 6 {
+        Some([pair(0)?, pair(2)?, pair(4)?, 255])
+    } else if h.len() == 8 {
+        Some([pair(0)?, pair(2)?, pair(4)?, pair(6)?])
+    } else {
+        None
+    }
+}
+
+/// Linear-interpolate two `[r, g, b, a]` colors at progress `p ∈ [0, 1]`.
+pub(crate) fn lerp_color(from: [u8; 4], to: [u8; 4], p: f64) -> [u8; 4] {
+    let t = p.clamp(0.0, 1.0);
+    let ch = |a: u8, b: u8| {
+        let v = a as f64 + (b as f64 - a as f64) * t;
+        v.round().clamp(0.0, 255.0) as u8
+    };
+    [
+        ch(from[0], to[0]),
+        ch(from[1], to[1]),
+        ch(from[2], to[2]),
+        ch(from[3], to[3]),
+    ]
+}
+
+/// Build a `Value::Color` (sRGB, 0–255 bytes) for insertion into `sys.inputs`
+/// so a mobject body's `fill:`/`stroke:` can read it as a real Typst paint.
+pub(crate) fn rgba_to_value(c: [u8; 4]) -> Value {
+    Value::Color(Color::Process(ProcessColor::Rgb(Rgb::new(
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        c[3] as f32 / 255.0,
+    ))))
 }
 /// Resolve a Typst [`typst::diag::SourceDiagnostic`] to a candy [`SourceLoc`]
 /// via the compile `world`, so an `E005` can point the user at the exact
@@ -959,6 +1059,39 @@ fn transform_splits_inline_content_into_glyph_fragments() {
     std::fs::remove_file(&tmp).ok();
 }
 
+/// Regression for `#set-color` (the bug where the directive was a renderer
+/// no-op): the renderer must rewrite the mobject's `fill:`/`stroke:` to read a
+/// per-frame color from `sys.inputs`, and `ensure_flow` must record a lerp
+/// window from the original paint to the target color.
+#[test]
+fn set_color_recolors_body_and_lerps() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 16cm, height: 9cm)[\n\
+               #mobject(\"box\", rect(width: 2cm, height: 2cm, fill: red))\n\
+               #set-color(\"box\", color: green, duration: 300, easing: \"smooth\")\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_set_color.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    r.ensure_flow_public().unwrap();
+    // The recolor rewrites the body's paint to read the per-frame color.
+    let (doc_src, _bodies) = Renderer::build_parameterized_source(&r.scene);
+    assert!(
+        doc_src.contains("candy:box:color"),
+        "set_color body must read the per-frame color from sys.inputs"
+    );
+    // ensure_flow records a red -> green transition for "box".
+    let changes = r.color_changes_debug();
+    let ch = changes
+        .get(&Label("box".into()))
+        .expect("box must have a color change");
+    assert_eq!(ch.len(), 1, "exactly one transition");
+    assert_eq!(ch[0].from, [255, 65, 54, 255], "from = red (typst #ff4136)");
+    assert_eq!(ch[0].to, [46, 204, 64, 255], "to = green (typst #2ecc40)");
+    std::fs::remove_file(&tmp).ok();
+}
+
 /// Regression: after a per-glyph `transform` window the target must render its
 /// NEW content (the content-timeline swap), not disappear.
 #[test]
@@ -1333,7 +1466,7 @@ fn transform_composes_with_concurrent_animate() {
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
-               #animate(\"eq\", scale: 2.0, rotate: 30deg, duration: 60)\n\
+               #animate(\"eq\", scale: 200%, rotate: 30deg, duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_xf_compose.tyx");

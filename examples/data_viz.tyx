@@ -10,7 +10,7 @@
 #scene(width: 16cm, height: 9cm, bg: white)[
 
   #mobject("title", text(20pt, weight: "bold", fill: blue)[Quarterly revenue])
-  #spiral-in("title", scale: 1.6, rotate: 360deg, duration: 600, easing: "cubic-out")
+  #spiral-in("title", scale: 160%, rotate: 360deg, duration: 600, easing: "cubic-out")
   #pause(duration: 300)
 
   // Five horizontal bars (left-aligned, stacked). Each starts short.
@@ -30,7 +30,7 @@
   #pause(duration: 700)
 
   // Highlight the leader.
-  #indicate("b4", factor: 1.15, duration: 600)
+  #indicate("b4", factor: 115%, duration: 600)
   #pause(duration: 500)
 
   // Re-run the race with a different dataset (the labels are reused).
@@ -42,7 +42,7 @@
   #subtitle([Q2 — Purple takes the lead.], position: "bottom")
   #pause(duration: 700)
 
-  #indicate("b5", factor: 1.15, duration: 600)
+  #indicate("b5", factor: 115%, duration: 600)
   #pause(duration: 500)
 
   #mobject("outro", "Blue and Purple surged; Orange cooled off.")

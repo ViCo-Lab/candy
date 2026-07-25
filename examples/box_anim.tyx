@@ -5,4 +5,4 @@
 #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
 
 #animate("box", to: (3cm, 2cm), duration: 800, easing: "cubic-out")
-#animate("box", scale: 1.5, duration: 800, easing: "smooth")
+#animate("box", scale: 150%, duration: 800, easing: "smooth")

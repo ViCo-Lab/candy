@@ -16,5 +16,5 @@
 
   #mobject("wave", rect(width: 2cm, height: 2cm, fill: green))
   #animate("wave", to: (8cm, 2cm), duration: 1000, easing: "cubic-in-out")
-  #animate("wave", scale: 1.4, duration: 1000, easing: "smooth")
+  #animate("wave", scale: 140%, duration: 1000, easing: "smooth")
 ]

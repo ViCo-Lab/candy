@@ -1,6 +1,7 @@
 use super::*;
 use crate::core::ast::SceneInfo;
 use std::collections::HashSet;
+use typst_syntax::ast as typst_ast;
 
 impl Renderer {
     /// Build the stable, *parameterized* whole-document source from the parsed
@@ -63,6 +64,16 @@ impl Renderer {
         // Per-mobject wrapped body, collected so the per-page render documents
         // can be assembled without re-parsing the whole source.
         let mut wrapped_bodies: HashMap<Label, String> = HashMap::new();
+        // Labels targeted by a `#set-color`: their body's `fill:`/`stroke:` is
+        // rewritten (below) to read the per-frame color from `sys.inputs`.
+        let mut set_color_labels: HashSet<Label> = HashSet::new();
+        for slide in &scene.slides {
+            for a in &slide.actions {
+                if let crate::core::ast::Action::SetColor { target, .. } = a {
+                    set_color_labels.insert(target.clone());
+                }
+            }
+        }
         // 1. Wrap each mobject body with the `sys.inputs`-driven transform,
         //    rewriting `ecval(...)` reads and `reveal`/typewriter prefixes to
         //    inputs so the body source stays byte-stable.
@@ -88,6 +99,14 @@ impl Renderer {
                 // original body and each swapped body via a `…:body_idx` input.
                 if let Some(sel) = Self::content_selection_body(label, body, scene) {
                     inner = sel;
+                }
+            }
+            // `#set-color`: rewrite the body's paint so the live color comes from
+            // `sys.inputs` (lerped per frame by `build_frame_inputs`). Skipped
+            // when the body has no recolorable paint.
+            if set_color_labels.contains(label) {
+                if let Some((recolored, _orig)) = Self::recolor_body(&label.0, &inner) {
+                    inner = recolored;
                 }
             }
             let cs = src[..bs].chars().count();
@@ -780,6 +799,90 @@ impl Renderer {
         Some(s)
     }
 
+    /// Find the byte range + source text of the first `fill:` (or, failing that,
+    /// `stroke:`) paint argument inside a mobject body expression. Used by
+    /// `#set-color` to rewrite the paint to a per-frame `sys.inputs` reference.
+    /// A pre-order traversal visits the outermost call first, so for a body like
+    /// `group(rect(fill: …))` the innermost paint-bearing call is recolored —
+    /// which is the one that actually paints.
+    fn find_paint_value_range(body: &str) -> Option<(usize, usize, String)> {
+        let root = parse_code(body);
+        let node = LinkedNode::new(&root);
+        // Pre-order traversal (parent before children) so for a body like
+        // `group(rect(fill: …))` we visit the outer call first but still reach
+        // the innermost paint-bearing call.
+        let mut calls: Vec<LinkedNode> = Vec::new();
+        Self::collect_func_calls(node, &mut calls);
+        for n in calls {
+            let mut fill = None;
+            let mut stroke = None;
+            for args_node in n.children() {
+                if args_node.get().cast::<typst_ast::Args>().is_none() {
+                    continue;
+                }
+                for arg in args_node.children() {
+                    let Some(typst_ast::Arg::Named(_)) = arg.get().cast::<typst_ast::Arg>() else {
+                        continue;
+                    };
+                    // A `Named` arg node's children are `[Ident, Colon, Expr]`;
+                    // casting the syntax node to the `Expr` enum does not work,
+                    // so take the value as the last child (the expression) and
+                    // the name as the first `Ident` child.
+                    let name = arg
+                        .children()
+                        .find_map(|c| c.get().cast::<typst_ast::Ident>().map(|i| i.as_str()));
+                    let expr_node = arg.children().next_back();
+                    let (Some(name), Some(expr_node)) = (name, expr_node) else {
+                        continue;
+                    };
+                    let r = expr_node.range();
+                    let entry = (r.start, r.end, body[r.start..r.end].to_string());
+                    if name == "fill" {
+                        fill = Some(entry);
+                    } else if name == "stroke" {
+                        stroke = Some(entry);
+                    }
+                }
+            }
+            if let Some(f) = fill {
+                return Some(f);
+            }
+            if let Some(s) = stroke {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    /// Collect every `FuncCall` `LinkedNode` (pre-order) under `node`.
+    fn collect_func_calls<'a>(node: LinkedNode<'a>, out: &mut Vec<LinkedNode<'a>>) {
+        if node.get().cast::<typst_ast::FuncCall>().is_some() {
+            out.push(node.clone());
+        }
+        for c in node.children() {
+            Self::collect_func_calls(c, out);
+        }
+    }
+
+    /// The original paint expression of a body (for the `default:` of the
+    /// `sys.inputs.at(…)` reference), or `None` if the body has no paint to
+    /// recolor.
+    pub(crate) fn body_paint_expr(body: &str) -> Option<String> {
+        Self::find_paint_value_range(body).map(|(_, _, e)| e)
+    }
+
+    /// Rewrite a body's paint (`fill:`/`stroke:`) so it reads the per-frame color
+    /// from `sys.inputs.at("candy:<label>:color", default: <original paint>)`.
+    /// Returns the recolored body and the original paint expression. `None` when
+    /// the body has no recolorable paint.
+    fn recolor_body(label: &str, inner: &str) -> Option<(String, String)> {
+        let (s, e, orig) = Self::find_paint_value_range(inner)?;
+        let rep = format!("sys.inputs.at(\"candy:{label}:color\", default: {orig})");
+        let mut out = inner.to_string();
+        out.replace_range(s..e, &rep);
+        Some((out, orig))
+    }
+
     /// Build the set of *all* descendant scene ids for every scene, from the
     /// scene tree (`SceneInfo.parent` links). Used by the Rust-managed gating
     /// wrapper: when a descendant is the active scene, the ancestor wrapper emits
@@ -981,6 +1084,40 @@ impl Renderer {
                 inputs.insert(
                     format!("candy:{}:body_idx", label.0).into(),
                     Value::Int(idx as i64),
+                );
+            }
+        }
+        // `#set-color` transitions: lerp the paint per frame and feed the real
+        // `Value::Color` as a `sys.inputs` value (read by the recolored body's
+        // `fill:`/`stroke:`). Outside any window the input is omitted, so the
+        // body falls back to its original paint; after the last transition it
+        // holds the final color.
+        for (label, changes) in &self.color_changes {
+            let owner = self.label_scene.get(label).copied().unwrap_or(active);
+            if owner != active {
+                continue;
+            }
+            if let Some(p) = self.pages.page_of(label) {
+                if p != active_page {
+                    continue;
+                }
+            }
+            let mut chosen: Option<[u8; 4]> = None;
+            for ch in changes {
+                if time_ms >= ch.start && time_ms <= ch.end {
+                    let denom = (ch.end - ch.start).max(1) as f64;
+                    let p =
+                        ch.easing.resolve()(((time_ms - ch.start) as f64) / denom).clamp(0.0, 1.0);
+                    chosen = Some(lerp_color(ch.from, ch.to, p));
+                    break;
+                } else if time_ms > ch.end {
+                    chosen = Some(ch.to);
+                }
+            }
+            if let Some(rgba) = chosen {
+                inputs.insert(
+                    format!("candy:{}:color", label.0).into(),
+                    rgba_to_value(rgba),
                 );
             }
         }

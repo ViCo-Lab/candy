@@ -127,7 +127,7 @@
 ///
 /// Absolute transforms:
 /// - `to`: an absolute target point `(x, y)` (lengths, e.g. `(4cm, 0pt)`).
-/// - `scale`: an absolute scale factor (e.g. `1.5`).
+/// - `scale`: an absolute scale factor (e.g. `150%`).
 /// - `rotate`: an absolute clockwise rotation in degrees (e.g. `45deg`).
 /// - `opacity`: a target opacity as a ratio in `[0%, 100%]` (e.g. `50%` for
 ///   half-opaque). Pass `none` to leave opacity unchanged.
@@ -135,7 +135,7 @@
 /// Relative transforms (Manim-style `shift` / `scale` / `rotate`):
 /// - `dx`, `dy`: relative offset in cm (e.g. `dx: 2cm` moves right 2cm from
 ///   the current position). Either or both may be given.
-/// - `scale-by`: relative scale multiplier (e.g. `1.5` grows by 50%).
+/// - `scale-by`: relative scale multiplier (e.g. `130%` grows by 30%).
 /// - `rotate-by`: relative rotation in degrees (e.g. `15deg` adds 15° to the
 ///   current rotation).
 ///
@@ -184,6 +184,8 @@
   }
   if rotate != none { _assert_angle(rotate, "rotate") }
   if rotate-by != none { _assert_angle(rotate-by, "rotate-by") }
+  if scale != none { _assert_ratio(scale, "scale") }
+  if scale-by != none { _assert_ratio(scale-by, "scale-by") }
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)

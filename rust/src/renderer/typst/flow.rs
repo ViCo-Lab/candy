@@ -416,6 +416,57 @@ impl Renderer {
                 self.transform_fragments.push(tf);
             }
         }
+        // Build `#set-color` transitions once: for each `Action::SetColor` slide
+        // resolve the target + current paint and record a lerp window. The
+        // "from" color is the paint state just before the window (the body's
+        // original paint, or the previous transition's `to`), so chained
+        // `#set-color`s on the same label compose correctly. Only paint-bearing
+        // bodies (those with a `fill:`/`stroke:`) are recolored.
+        let mut color_changes: HashMap<Label, Vec<ColorChange>> = HashMap::new();
+        for slide in &self.scene.slides {
+            for act in &slide.actions {
+                let crate::core::ast::Action::SetColor {
+                    target,
+                    color,
+                    easing,
+                } = act
+                else {
+                    continue;
+                };
+                let Some(paint_expr) = self
+                    .scene
+                    .items
+                    .get(target)
+                    .and_then(|b| Self::body_paint_expr(b))
+                else {
+                    continue;
+                };
+                let Ok(to) = self.resolve_color_rgba(color) else {
+                    continue;
+                };
+                let start = slide.start_ms;
+                let from = color_changes
+                    .get(target)
+                    .and_then(|v| v.iter().rev().find(|ch| ch.end <= start))
+                    .map(|ch| ch.to)
+                    .unwrap_or_else(|| {
+                        self.resolve_color_rgba(&paint_expr)
+                            .unwrap_or([0, 0, 0, 255])
+                    });
+                let end = start + slide.duration_ms;
+                color_changes
+                    .entry(target.clone())
+                    .or_default()
+                    .push(ColorChange {
+                        start,
+                        end,
+                        from,
+                        to,
+                        easing: easing.clone(),
+                    });
+            }
+        }
+        self.color_changes = color_changes;
         // Precompute invariant per-frame data to avoid O(N·T) scans in prepare_states.
         // Camera start: first non-identity keyframe time.
         self.parent_labels = self.scene.groups.values().cloned().collect();

@@ -177,14 +177,16 @@ pub enum CandyError {
     Typst(String, Option<SourceLoc>),
     /// E009 — Rav1e / codec / mux encoding failure.
     Encode(String),
-    /// E008 — The `.tyx` does not import the candy package (or
-    /// imports it with a version that does not match the installed candy CLI
-    /// version), so its static content has no scene to own it. Candy can only
-    /// render documents that import `@<namespace>/candy:<version>` with a
-    /// matching version (compiled in from `CARGO_PKG_VERSION`). A bare Typst
-    /// document, a file-style import (`#import "candy"`), or a version mismatch
-    /// all trigger this error. Pass `--ignore-version` to skip the version
-    /// check (useful for development).
+    /// E008 — The `.tyx` does not import the candy package (or imports it
+    /// with a version incompatible with the installed candy CLI), so its
+    /// static content has no scene to own it. Candy can only render documents
+    /// that import `@<namespace>/candy:<version>` where the version satisfies
+    /// at least one semver requirement from the CLI's compatibility list
+    /// (`[package.metadata.tyx].compatible_versions` in the Rust `Cargo.toml`,
+    /// baked in by `build.rs` and matched via the `semver` crate). A bare
+    /// Typst document, a file-style import (`#import "candy"`), or an
+    /// incompatible version all trigger this error. Pass `--ignore-version`
+    /// to skip the version check (useful for development).
     CandyDumpedYou(String, Option<SourceLoc>),
     /// E006 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
     /// points to a mobject that was never registered via `#mobject`. Also used

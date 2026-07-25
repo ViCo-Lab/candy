@@ -282,16 +282,16 @@ fn process_animate(
             easing: easing.clone(),
         });
     }
-    // Absolute scale: `scale: 1.5`.
-    if let Some(s) = named.get("scale").and_then(expr_to_f64) {
+    // Absolute scale: `scale: 150%` (a ratio, e.g. `150%` = 1.5×).
+    if let Some(s) = named.get("scale").and_then(expr_to_ratio) {
         actions.push(Action::Scale {
             target: label.clone(),
             to: s,
             easing: easing.clone(),
         });
     }
-    // Relative scale: `scale-by: 1.5` (multiply current scale).
-    if let Some(f) = named.get("scale-by").and_then(expr_to_f64) {
+    // Relative scale: `scale-by: 130%` (a ratio; multiplies current scale).
+    if let Some(f) = named.get("scale-by").and_then(expr_to_ratio) {
         actions.push(Action::ScaleBy {
             target: label.clone(),
             factor: f,
@@ -495,7 +495,7 @@ fn process_restore(
     );
 }
 
-/// `indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 300, easing: "smooth")`
+/// `indicate(target, factor: 110%, dx: 0, dy: 0, duration: 300, easing: "smooth")`
 /// — briefly scale + shift, then return to original.
 fn process_indicate(
     pos: &[Expr],
@@ -510,7 +510,7 @@ fn process_indicate(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(1.1);
+    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
     let easing = resolve_easing(named, &label, Easing::Smooth);
@@ -529,7 +529,7 @@ fn process_indicate(
     );
 }
 
-/// `flash(target, factor: 2.0, duration: 200, easing: "smooth")` —
+/// `flash(target, factor: 200%, duration: 200, easing: "smooth")` —
 /// briefly enlarge + fade, then return to original.
 fn process_flash(
     pos: &[Expr],
@@ -544,7 +544,7 @@ fn process_flash(
         .and_then(expr_to_f64)
         .unwrap_or(200.0)
         .max(1.0) as u32;
-    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(2.0);
+    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(2.0);
     let easing = resolve_easing(named, &label, Easing::Smooth);
     emit_slide(
         ctx,
@@ -615,7 +615,8 @@ fn process_appear_disappear(
 }
 
 /// `set_color(target, color: black, duration: 1, easing: "linear")` —
-/// record a color change (tracked, renderer no-op for now).
+/// record a color change; the renderer lerps the mobject's `fill:`/`stroke:`
+/// from its current paint to `color` over `duration` along `easing`.
 fn process_set_color(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -706,7 +707,7 @@ fn process_blink(
     ctx.entry_close();
 }
 
-/// `spiral_in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")`
+/// `spiral_in(target, scale: 300%, rotate: 360deg, duration: 300, easing: "smooth")`
 /// — fly in from a scaled-up, rotated state to the flow position, fading in.
 /// Mirrors Manim's `SpiralIn`.
 fn process_spiral_in(
@@ -717,7 +718,7 @@ fn process_spiral_in(
     let Some(label) = target_arg(pos, named) else {
         return;
     };
-    let scale = named.get("scale").and_then(expr_to_f64).unwrap_or(3.0);
+    let scale = named.get("scale").and_then(expr_to_ratio).unwrap_or(3.0);
     let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(360.0);
     let duration = named
         .get("duration")
@@ -772,9 +773,9 @@ fn process_spiral_in(
     ctx.entry_close();
 }
 
-/// `focus_on(target, factor: 0.5, duration: 300, easing: "smooth")` —
-/// shrink a "spotlight" onto the target. Implemented as a scale-down + fade
-/// on the target. Mirrors Manim's `FocusOn`.
+/// `focus_on(target, factor: 1.25, duration: 300, easing: "smooth")` —
+/// zoom in (enlarge) onto the target to emphasize it. Implemented as a
+/// scale-up on the target. Mirrors Manim's `FocusOn`.
 fn process_focus_on(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
@@ -783,7 +784,7 @@ fn process_focus_on(
     let Some(label) = target_arg(pos, named) else {
         return;
     };
-    let factor = named.get("factor").and_then(expr_to_f64).unwrap_or(0.5);
+    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(1.25);
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -795,18 +796,11 @@ fn process_focus_on(
         parse_timing(named),
         parse_delay(named),
         duration,
-        vec![
-            Action::ScaleBy {
-                target: label.clone(),
-                factor,
-                easing: easing.clone(),
-            },
-            Action::FadeTo {
-                target: label,
-                opacity: 0.3,
-                easing: easing.clone(),
-            },
-        ],
+        vec![Action::ScaleBy {
+            target: label,
+            factor,
+            easing,
+        }],
     );
 }
 
@@ -994,7 +988,7 @@ fn process_camera(
     let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
     let zoom = named
         .get("zoom")
-        .and_then(expr_to_f64)
+        .and_then(expr_to_ratio)
         .unwrap_or(1.0)
         .max(1e-3);
     let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(0.0);

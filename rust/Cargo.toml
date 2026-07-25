@@ -28,6 +28,17 @@
         codename = "Ribose"
         secret   = "Built for Candy(TYX). In memory of CChO2025."
 
+    # Version gate for `.tyx` documents: a `@<ns>/candy:<version>` import is
+    # accepted iff the imported version matches AT LEAST ONE of these semver
+    # requirements (standard semver/Cargo syntax: `0.1.*`, `^0.1`, `~0.1.2`,
+    # `>=0.1, <0.3`, `=0.1.0`, …). Parsed by `build.rs` (via the `toml` crate),
+    # validated with the `semver` crate at build time, and baked into the
+    # binary as `CANDY_COMPATIBLE_VERSIONS`. Matching at runtime uses
+    # `semver::VersionReq::matches` — never hand-rolled comparison.
+    # If this table is absent, the gate falls back to `=<crate version>`.
+    [package.metadata.tyx]
+        compatible_versions = ["0.1.*"]
+
 [lib]
     name = "candy"
     path = "src/lib.rs"
@@ -37,15 +48,15 @@
     path = "src/main.rs"
 
 [dependencies]
-    clap       = { version = "4", features = ["derive"] }
-    serde      = { version = "1", features = ["derive"] }
+    clap       = { version = "4.6.4", features = ["derive"] }
+    serde      = { version = "1.0.229", features = ["derive"] }
     serde_json = "1"
 
     # Terminal coloring for diagnostic output (error / warn / info / debug).
     # Pure Rust, no native deps, so it cross-compiles like the rest of candy.
     # Coloring is applied only when the target stream is a TTY and `NO_COLOR`
     # (https://no-color.org) is unset, so piped / captured output stays ANSI-free.
-    colored = "2"
+    colored = "3.1.1"
 
     # Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
     # The internal typst crates are pulled in explicitly so we can build an in-memory
@@ -68,7 +79,7 @@
     # comemo only ever holds the current frame's transient sub-computations.
     # Version is pinned to match the comemo typst itself depends on, so the
     # `evict` call clears the *same* global cache typst's memoized fns use.
-    comemo = "=0.5.1"
+    comemo = "0.5.1"
 
     # typst-kit provides the same font discovery and package resolution that the
     # official `typst` CLI uses, so candy's in-process World behaves identically to
@@ -82,7 +93,7 @@
     # needs no OpenSSL, no perl and no native library on any platform (host or
     # cross). `system-files` is what actually wires package resolution into the
     # World; the downloader implementation is candy's own.
-    typst-kit = { version = "0.15", features = [
+    typst-kit = { version = "0.15.1", features = [
         "embedded-fonts",
         "scan-fonts",
         "system-files",
@@ -168,8 +179,8 @@
     # Rust (no native/C deps, no OpenSSL) so they cross-compile cleanly like the
     # rest of candy's self-contained pipeline. `gif` handles the animated-GIF
     # muxer; `png` handles single-frame RGBA bitmap export.
-    gif = "0.13"
-    png = "0.17"
+    gif = "0.14.2"
+    png = "0.18.1"
 
     # Linux-only `memfd_create` for the FFmpeg encoder's in-RAM seekable sink
     # (muxed container + stderr never touch disk). Used solely via cfg-gated
@@ -181,7 +192,24 @@
     # fs::read). Used solely via cfg-gated code on Linux.
     memmap2 = { version = "0.9", optional = true }
 
+    # Semver requirement matching for the `.tyx` import version gate. The
+    # accepted requirements come from `[package.metadata.tyx].compatible_versions`
+    # (baked in by `build.rs` as `CANDY_COMPATIBLE_VERSIONS`); the actual
+    # matching is `semver::VersionReq::matches` — no hand-rolled comparison.
+    semver = "1"
+
+
+
 [build-dependencies]
+    # `build.rs` parses this manifest to extract `[package.metadata.candy]`
+    # (codename) and `[package.metadata.tyx].compatible_versions` (version
+    # gate). A real TOML parser instead of line-scanning keeps the extraction
+    # robust against formatting/nesting changes.
+    toml = "1"
+    # Build-time validation: every `compatible_versions` entry must parse as a
+    # `semver::VersionReq`, so a typo fails the build instead of silently
+    # rejecting every `.tyx` at runtime.
+    semver = "1"
 
 [features]
     # AV1/H.264 video encoding. The build is fully self-contained: encoders run

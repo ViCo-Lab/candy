@@ -972,15 +972,47 @@ fn stream_encode_gpu(
 /// authoritative version for both sides.
 pub(crate) const CANDY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The candy package version as a `String` (for comparison with `.tyx` imports).
-pub(crate) fn runtime_typst_package_version() -> Result<String, CandyError> {
-    Ok(CANDY_VERSION.to_string())
+/// The semver requirements a `.tyx` candy import version must satisfy, baked
+/// in at compile time by `build.rs` from `[package.metadata.tyx]`'s
+/// `compatible_versions` array in the Rust crate's `Cargo.toml`. Entries are
+/// standard semver requirements (`0.1.*`, `^0.1`, `>=0.1, <0.3`, …) joined
+/// with `;` (which never occurs inside a requirement, unlike `,`). `build.rs`
+/// guarantees the list is non-empty and every entry parses.
+pub(crate) const CANDY_COMPATIBLE_VERSIONS: &str = env!("CANDY_COMPATIBLE_VERSIONS");
+
+/// The version gate for `.tyx` imports: `true` iff `imported` parses as a
+/// semver version and matches at least one requirement in
+/// [`CANDY_COMPATIBLE_VERSIONS`]. Matching is delegated entirely to the
+/// `semver` crate (`VersionReq::matches`) — no hand-rolled comparison. An
+/// unparsable import version is simply incompatible (the caller reports the
+/// accepted requirements either way).
+pub(crate) fn version_is_compatible(imported: &str) -> bool {
+    let Ok(v) = semver::Version::parse(imported) else {
+        return false;
+    };
+    CANDY_COMPATIBLE_VERSIONS
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .any(|req| {
+            semver::VersionReq::parse(req)
+                .map(|r| r.matches(&v))
+                // build.rs validated every entry; an unparsable one here can
+                // only mean a corrupted build — treat it as non-matching.
+                .unwrap_or(false)
+        })
 }
 
-/// Test-only alias for backward compatibility.
+/// Human-readable form of the accepted requirement list, for error messages.
+pub(crate) fn compatible_versions_display() -> String {
+    CANDY_COMPATIBLE_VERSIONS.replace(';', ", ")
+}
+
+/// Test-only helper: the version a generated test document should import so
+/// it always passes the gate (the crate's own version, which the default
+/// `compatible_versions` covers).
 #[cfg(test)]
 pub(crate) fn typst_package_version() -> Result<String, CandyError> {
-    runtime_typst_package_version()
+    Ok(CANDY_VERSION.to_string())
 }
 
 #[cfg(test)]
@@ -998,5 +1030,41 @@ mod version_tests {
             "version `{v}` is not plain semver"
         );
         assert!(v.contains('.'), "version `{v}` should contain a dot");
+    }
+
+    #[test]
+    fn compatible_versions_is_baked_in_and_valid() {
+        // build.rs guarantees a non-empty, parseable requirement list.
+        assert!(
+            !CANDY_COMPATIBLE_VERSIONS.is_empty(),
+            "CANDY_COMPATIBLE_VERSIONS must not be empty"
+        );
+        for req in CANDY_COMPATIBLE_VERSIONS.split(';') {
+            semver::VersionReq::parse(req)
+                .unwrap_or_else(|e| panic!("baked-in requirement `{req}` must parse: {e}"));
+        }
+    }
+
+    #[test]
+    fn own_version_is_compatible() {
+        // The gate must always accept the crate's own version, regardless of
+        // how `[package.metadata.tyx].compatible_versions` is configured.
+        assert!(
+            version_is_compatible(CANDY_VERSION),
+            "the installed CLI version `{CANDY_VERSION}` must satisfy \
+             compatible_versions `{CANDY_COMPATIBLE_VERSIONS}`"
+        );
+    }
+
+    #[test]
+    fn wildly_wrong_version_is_incompatible() {
+        // The `examples/expected-to-fail/wrong_version.tyx` sentinel version.
+        assert!(!version_is_compatible("11.45.14"));
+    }
+
+    #[test]
+    fn garbage_version_is_incompatible() {
+        assert!(!version_is_compatible("not-a-version"));
+        assert!(!version_is_compatible(""));
     }
 }

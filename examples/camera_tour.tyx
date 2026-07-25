@@ -9,7 +9,7 @@
 #scene(width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
 
   #mobject("cap", text(18pt, weight: "bold", fill: white)[Field survey])
-  #spiral-in("cap", scale: 1.6, rotate: 360deg, duration: 600, easing: "cubic-out")
+  #spiral-in("cap", scale: 160%, rotate: 360deg, duration: 600, easing: "cubic-out")
   #pause(duration: 300)
 
   // A scatter of "markers" to fly over.
@@ -25,17 +25,17 @@
   #animate("m5", to: (8cm, 7.5cm),duration: 1)
 
   // Phase 1 — zoom into the lower-left cluster.
-  #camera(zoom: 2.2, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+  #camera(zoom: 220%, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
   #subtitle([Zooming into the west cluster.], position: "bottom")
   #pause(duration: 700)
 
   // Phase 2 — pull back and pan to the east.
-  #camera(zoom: 1.0, x: 3cm, y: -1cm, duration: 1500, easing: "smooth")
+  #camera(zoom: 100%, x: 3cm, y: -1cm, duration: 1500, easing: "smooth")
   #subtitle([Panning east.], position: "bottom")
   #pause(duration: 700)
 
   // Phase 3 — a slow rotate for a dynamic angle.
-  #camera(zoom: 1.4, rotate: 30deg, duration: 1500, easing: "smooth")
+  #camera(zoom: 140%, rotate: 30deg, duration: 1500, easing: "smooth")
   #subtitle([Tilting the view.], position: "bottom")
   #pause(duration: 700)
 
@@ -43,7 +43,7 @@
   #transition(kind: "fade", duration: 400)
   #scene(width: 16cm, height: 9cm, bg: black)[
     #mobject("t", text(40pt, weight: "bold", fill: white)[Candy])
-    #spiral-in("t", scale: 2.5, rotate: 360deg, duration: 1000, easing: "cubic-out")
+    #spiral-in("t", scale: 250%, rotate: 360deg, duration: 1000, easing: "cubic-out")
     #subtitle([a code-oriented animation engine for Typst], position: "bottom")
     #pause(duration: 900)
   ]

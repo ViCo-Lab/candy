@@ -21,7 +21,7 @@
       + v(0.4cm)
       + text(14pt, fill: rgb(159, 179, 255))[a parabola, drawn and flown],
   )
-  #spiral-in("title", scale: 2.2, rotate: 360deg, duration: 800, easing: "cubic-out")
+  #spiral-in("title", scale: 220%, rotate: 360deg, duration: 800, easing: "cubic-out")
   #pause(duration: 900)
 
   // ── Main scene: nested *inside* the title scene. Candy's per-frame
@@ -43,7 +43,7 @@
     // The running equation, parked at the top.
     #mobject("eq", [$y(t) = v_y t - 1/2 g t^2$])
     #animate("eq", to: (8cm, 1.0cm), duration: 1)
-    #spiral-in("eq", scale: 1.4, rotate: 360deg, duration: 500, easing: "cubic-out")
+    #spiral-in("eq", scale: 140%, rotate: 360deg, duration: 500, easing: "cubic-out")
     #subtitle([The height of a projectile under gravity.], position: "bottom")
     #pause(duration: 400)
 
@@ -109,7 +109,7 @@
     // Apex marker.
     #mobject("apex", text(12pt, fill: red)[✕ apex])
     #animate("apex", to: (8cm, 2.6cm), duration: 1)
-    #spiral-in("apex", scale: 1.8, rotate: 360deg, duration: 400, easing: "cubic-out")
+    #spiral-in("apex", scale: 180%, rotate: 360deg, duration: 400, easing: "cubic-out")
     #pause(duration: 300)
 
     // ── Flight: a live timer + the ball on its track ──

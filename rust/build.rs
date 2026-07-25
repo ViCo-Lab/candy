@@ -1,5 +1,15 @@
-//! Build script: extract the release codename from `Cargo.toml` and expose it
-//! to the binary as the `CANDY_CODENAME` compile-time environment variable.
+//! Build script: extract build-time metadata from `Cargo.toml` and expose it
+//! to the binary as compile-time environment variables.
+//!
+//! * `CANDY_CODENAME` — release codename from `[package.metadata.candy]`.
+//! * `CANDY_COMPATIBLE_VERSIONS` — the `.tyx` import version gate from
+//!   `[package.metadata.tyx].compatible_versions`: a list of semver
+//!   requirements (Cargo syntax: `0.1.*`, `^0.1`, `>=0.1, <0.3`, …), joined
+//!   with `;` (a separator that never occurs inside a semver requirement —
+//!   `,` does, in multi-comparator requirements). Every entry is validated
+//!   with `semver::VersionReq::parse` here, so a typo fails the build instead
+//!   of silently rejecting every `.tyx` at runtime. If the table is absent or
+//!   empty, the gate falls back to exactly the crate version (`=<version>`).
 //!
 //! Also enables architecture-specific ISA extensions for native builds:
 //! - x86_64: x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE, F16C)
@@ -11,9 +21,63 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let toml = fs::read_to_string(format!("{manifest_dir}/Cargo.toml")).unwrap_or_default();
-    let codename = extract_codename(&toml).unwrap_or_else(|| "unknown".to_string());
+    let raw = fs::read_to_string(format!("{manifest_dir}/Cargo.toml")).unwrap_or_default();
+    // Real TOML parsing (no hand-rolled line scanning): robust against
+    // formatting, indentation and nesting changes in the manifest.
+    let manifest: toml::Table = raw
+        .parse()
+        .expect("Cargo.toml must be valid TOML (build.rs metadata extraction)");
+    let metadata = manifest.get("package").and_then(|p| p.get("metadata"));
+
+    // ---- CANDY_CODENAME (easter-egg metadata, [package.metadata.candy]) ----
+    let codename = metadata
+        .and_then(|m| m.get("candy"))
+        .and_then(|c| c.get("codename"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     println!("cargo:rustc-env=CANDY_CODENAME={codename}");
+
+    // ---- CANDY_COMPATIBLE_VERSIONS (version gate, [package.metadata.tyx]) ----
+    let mut reqs: Vec<String> = metadata
+        .and_then(|m| m.get("tyx"))
+        .and_then(|t| t.get("compatible_versions"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|x| {
+                    x.as_str()
+                        .expect(
+                            "[package.metadata.tyx] compatible_versions entries must be strings",
+                        )
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if reqs.is_empty() {
+        // No table / empty list: gate on exactly the crate's own version.
+        let v = std::env::var("CARGO_PKG_VERSION").expect("cargo always sets CARGO_PKG_VERSION");
+        reqs.push(format!("={v}"));
+    }
+    for r in &reqs {
+        // Fail the build on an invalid requirement — never ship a gate that
+        // can't match anything.
+        if let Err(e) = semver::VersionReq::parse(r) {
+            panic!(
+                "[package.metadata.tyx] compatible_versions entry `{r}` is not \
+                 a valid semver requirement: {e}"
+            );
+        }
+        assert!(
+            !r.contains(';'),
+            "[package.metadata.tyx] compatible_versions entry `{r}` must not contain `;` \
+             (used as the baked-in list separator)"
+        );
+    }
+    println!(
+        "cargo:rustc-env=CANDY_COMPATIBLE_VERSIONS={}",
+        reqs.join(";")
+    );
 
     // Enable ISA extensions for native builds only (TARGET == HOST).
     // Skip if the user already set target-cpu or target-feature.
@@ -26,24 +90,4 @@ fn main() {
         // x86-64-v3: AVX2 + BMI1/2 + FMA + MOVBE + F16C
         println!("cargo:rustc-flag=-C target-feature=+avx2,+bmi1,+bmi2,+fma,+movbe,+f16c");
     }
-}
-
-fn extract_codename(toml: &str) -> Option<String> {
-    let mut in_section = false;
-    for line in toml.lines() {
-        let t = line.trim();
-        if t.starts_with('[') {
-            in_section = t == "[package.metadata.candy]";
-            continue;
-        }
-        if in_section && t.starts_with("codename") {
-            if let Some(eq) = t.find('=') {
-                let v = t[eq + 1..].trim().trim_matches('"').to_string();
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
 }

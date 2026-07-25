@@ -16,5 +16,5 @@
   #morph("square", "circle", duration: 1000, easing: "smooth")
 
   // Indicate the ball.
-  #indicate("ball", factor: 1.5, duration: 500)
+  #indicate("ball", factor: 150%, duration: 500)
 ]

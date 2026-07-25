@@ -1,8 +1,8 @@
 #import "@preview/candy:0.1.0": *
 
 // Feature: helpers & constants — docs/reference/directives.md
-// Direction vectors (cm): dir-left/right/up/down/...; scale factors: grow (1.5)
-// / shrink (0.5) / original (1.0); turns: quarter-turn (90) / half-turn (180)
+// Direction vectors (cm): dir-left/right/up/down/...; scale factors: grow (150%)
+// / shrink (50%) / original (100%); turns: quarter-turn (90) / half-turn (180)
 // / full-turn (360); opacity presets: visible/half-visible/invisible.
 #scene(width: 16cm, height: 9cm, bg: white)[
   #mobject("dot", circle(radius: 1cm, fill: blue))

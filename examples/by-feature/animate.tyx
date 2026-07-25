@@ -6,6 +6,6 @@
 #scene(width: 16cm, height: 9cm, bg: white)[
   #mobject("dot", circle(radius: 1cm, fill: blue))
   #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
-  #animate("dot", scale: 1.5, duration: 800, easing: "smooth")
+  #animate("dot", scale: 150%, duration: 800, easing: "smooth")
   #animate("dot", rotate: 90deg, duration: 600, easing: "cubic-in-out")
 ]

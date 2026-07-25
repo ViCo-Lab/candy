@@ -69,10 +69,9 @@ impl Label {
 ///   object to draw attention, then returns to the original state (Manim's
 ///   `Indicate`). [`Action::Flash`] briefly enlarges and fades out (Manim's
 ///   `Flash`). [`Action::Wiggle`] oscillates the rotation (Manim's `Wiggle`).
-/// - **Color**: [`Action::SetColor`] is a no-op transform that records a
-///   color change for the renderer (Typst bodies are opaque, so candy can't
-///   truly recolor arbitrary content, but the action is tracked so future
-///   versions with structured mobjects can apply it).
+/// - **Color**: [`Action::SetColor`] lerps the mobject's `fill:`/`stroke:`
+///   from its current paint to the target color over `duration` milliseconds
+///   along `easing`, so the color change is animated by the renderer.
 /// - **Visibility**: [`Action::Show`] / [`Action::Hide`] are instantaneous
 ///   (0-duration) visibility toggles, useful for "appear/disappear without
 ///   fading" effects.
@@ -151,7 +150,7 @@ pub enum Action {
         to: f64,
         easing: Easing,
     },
-    /// Scale the target by a relative factor (e.g. 1.5 = grow 50%). The final
+    /// Scale the target by a relative factor (e.g. 130% = grow 30%). The final
     /// scale is `current * factor`. Mirrors Manim's `mobject.scale(factor)`.
     ScaleBy {
         target: Label,
@@ -261,11 +260,10 @@ pub enum Action {
     /// combined with a subsequent `FadeIn`.
     Hide { target: Label },
 
-    // ---- Color (tracked for future structured mobjects) ----
-    /// Record a color change for the target. The renderer currently treats
-    /// this as a no-op (Typst bodies are opaque strings), but the action is
-    /// tracked in the timeline so future versions with structured mobjects
-    /// can apply it. Mirrors Manim's `set_color`.
+    // ---- Color (animated by the renderer) ----
+    /// Record a color change for the target. The renderer lerps the mobject's
+    /// `fill:`/`stroke:` from its current paint to `color` over `duration`
+    /// milliseconds along `easing`. Mirrors Manim's `set_color`.
     SetColor {
         target: Label,
         color: String,

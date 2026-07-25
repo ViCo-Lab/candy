@@ -108,9 +108,11 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
 
     // CandyDumpedYou: a `.tyx` must import candy via a Typst package import
     // of the form `@<namespace>/candy:<version>`. File-style imports
-    // (`#import "candy"`) are rejected. The version must match the installed
-    // candy CLI version (unless `--ignore-version` is passed, which also
-    // accepts file-style imports for development/testing).
+    // (`#import "candy"`) are rejected. The imported version must satisfy at
+    // least one semver requirement from the CLI's baked-in compatibility list
+    // (`[package.metadata.tyx].compatible_versions` in the Rust Cargo.toml;
+    // matched via the `semver` crate), unless `--ignore-version` is passed —
+    // which also accepts file-style imports for development/testing.
     if !ignore_version && ctx.file_style_candy_import {
         return Err(CandyError::CandyDumpedYou(
             "file-style candy import detected; candy must be imported as a \
@@ -131,13 +133,15 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     }
     if !ignore_version {
         if let Some(ref imported_v) = ctx.candy_import_version {
-            let expected = crate::runtime_typst_package_version()?;
-            if imported_v != &expected {
+            if !crate::version_is_compatible(imported_v) {
                 return Err(CandyError::CandyDumpedYou(
                     format!(
                         "candy version mismatch: .tyx imports candy:{imported_v} \
-                         but the installed candy CLI is version {expected}; \
-                         pass --ignore-version to skip this check"
+                         but the installed candy CLI {cli} only accepts versions \
+                         matching `{reqs}`; pass --ignore-version to skip this \
+                         check",
+                        cli = crate::CANDY_VERSION,
+                        reqs = crate::compatible_versions_display(),
                     ),
                     None,
                 ));
@@ -226,7 +230,8 @@ pub(crate) struct ParseCtx {
     /// are NOT recognized — they trigger CandyDumpedYou.
     pub(crate) candy_imported: bool,
     /// The version string from the detected `@preview/candy:<version>` import,
-    /// if any. Used to verify it matches the installed candy CLI version.
+    /// if any. Used to verify it satisfies the installed candy CLI's semver
+    /// compatibility list (`[package.metadata.tyx].compatible_versions`).
     pub(crate) candy_import_version: Option<String>,
     /// Whether a file-style candy import (`#import "candy"` / `#import ".../candy"`)
     /// was seen — these trigger CandyDumpedYou.
@@ -895,7 +900,7 @@ mod tests {
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #mobject("dot2", rect(width: 1cm, height: 1cm))
 #animate("dot", to: (4cm, 0pt), duration: 30, easing: "linear")
-#animate("dot2", scale: 1.5, duration: 20)
+#animate("dot2", scale: 150%, duration: 20)
 #pause(duration: 15)
 #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
 "#;
@@ -1011,7 +1016,7 @@ mod tests {
 #import "candy": animate as anim, mobject as mob
 #mob("box", rect(width: 2cm, height: 2cm, fill: red))
 #anim("box", to: (3cm, 2cm), duration: 20)
-#anim("box", scale: 1.5, duration: 20)
+#anim("box", scale: 150%, duration: 20)
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_box.tyx");
@@ -1119,7 +1124,7 @@ mod tests {
 #save_state("dot", slot: "home")
 #animate("dot", to: (4cm, 0pt), duration: 20)
 #restore("dot", slot: "home", duration: 20, easing: "smooth")
-#indicate("dot", factor: 1.2, duration: 18)
+#indicate("dot", factor: 120%, duration: 18)
 #flash("dot", factor: 1.8, duration: 12)
 #wiggle("dot", degrees: 12, duration: 16)
 #disappear("dot")
@@ -1286,8 +1291,8 @@ mod tests {
 #mobject("dot", circle(radius: 1cm))
 #save-state("dot", slot: "home")
 #restore("dot", slot: "home", duration: 10, easing: "smooth")
-#indicate("dot", factor: 1.2, duration: 12)
-#flash("dot", factor: 2.0, duration: 10)
+#indicate("dot", factor: 120%, duration: 12)
+#flash("dot", factor: 200%, duration: 10)
 #wiggle("dot", degrees: 10deg, duration: 14)
 #disappear("dot")
 #appear("dot")

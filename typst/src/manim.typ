@@ -55,7 +55,8 @@
 /// "look here" effect.
 ///
 /// - `target`: the `name` of the object to indicate.
-/// - `factor`: scale multiplier at the peak (default `1.1`).
+/// - `factor`: peak scale ratio (default `110%` — enlarges by 10%). Pass a
+///   Typst ratio literal such as `110%`, not a bare number.
 /// - `dx`, `dy`: offset in cm at the peak (default `0`).
 /// - `duration`: number of milliseconds (default `300`).
 /// - `easing`: rate curve for the "out" half (default `"smooth"`).
@@ -65,9 +66,9 @@
 ///   (default `0`).
 ///
 /// Mirrors Manim's `Indicate`. Inert under standard Typst.
-#let indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+#let indicate(target, factor: 110%, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
-  _assert_number(factor, "factor")
+  _assert_ratio(factor, "factor")
   _assert_scalar(dx, "indicate dx")
   _assert_scalar(dy, "indicate dy")
   _assert_nonneg(duration, "duration")
@@ -81,7 +82,8 @@
 /// restore it to the original state. A "flash" attention effect.
 ///
 /// - `target`: the `name` of the object to flash.
-/// - `factor`: peak scale multiplier (default `2.0`).
+/// - `factor`: peak scale ratio (default `200%` — enlarges by 100%). Pass a
+///   Typst ratio literal such as `200%`, not a bare number.
 /// - `duration`: number of milliseconds (default `200`).
 /// - `easing`: rate curve (default `"smooth"`).
 /// - `timing`: sequencing relative to the previous animation — `"after"`
@@ -90,9 +92,9 @@
 ///   (default `0`).
 ///
 /// Mirrors Manim's `Flash`. Inert under standard Typst.
-#let flash(target, factor: 2.0, duration: 200, easing: "smooth", timing: "after", delay: 0) = {
+#let flash(target, factor: 200%, duration: 200, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
-  _assert_number(factor, "factor")
+  _assert_ratio(factor, "factor")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)
@@ -130,9 +132,9 @@
   none
 }
 
-/// Record a color change for a mobject. The color is tracked in the timeline
-/// but the current renderer treats it as a no-op (Typst bodies are opaque
-/// strings). Future versions with structured mobjects will apply it.
+/// Record a color change for a mobject. The renderer lerps the mobject's
+/// `fill:`/`stroke:` from its current paint to `color` over `duration`
+/// milliseconds along `easing`, so the color animates smoothly.
 ///
 /// - `target`: the `name` of the object to recolor.
 /// - `color`: a native Typst color (e.g. `red`, `white`, `rgb(255,0,0)`,
@@ -180,7 +182,7 @@
 /// position. Mirrors Manim's `SpiralIn`.
 ///
 /// - `target`: the `name` of the object to spiral in.
-/// - `scale`: initial scale factor (default `3.0` — starts 3× size).
+/// - `scale`: initial scale factor (default `300%` — starts 3× size).
 /// - `rotate`: initial rotation in degrees (default `360deg` — one full turn).
 /// - `duration`: milliseconds for the spiral-in (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
@@ -188,9 +190,9 @@
 ///   (default) or `"with"` (parallel). See `animate` for details.
 /// - `delay`: extra wait in milliseconds before this animation begins
 ///   (default `0`).
-#let spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+#let spiral-in(target, scale: 300%, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
-  _assert_number(scale, "scale")
+  _assert_ratio(scale, "scale")
   _assert_angle(rotate, "rotate")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
@@ -199,20 +201,22 @@
   none
 }
 
-/// Focus-on: shrink a "spotlight" onto the target (scale down + dim).
+/// Focus-on: zoom in (enlarge) onto the target to emphasize it.
 /// Mirrors Manim's `FocusOn`.
 ///
 /// - `target`: the `name` of the object to focus on.
-/// - `factor`: scale-down factor (default `0.5` — shrinks to half size).
+/// - `factor`: scale ratio (default `125%` — enlarges by 25%). Values
+///   greater than `100%` zoom in, less than `100%` shrink. Pass a Typst
+///   ratio literal such as `125%`, not a bare number.
 /// - `duration`: milliseconds (default `300`).
 /// - `easing`: rate curve (default `"smooth"`).
 /// - `timing`: sequencing relative to the previous animation — `"after"`
 ///   (default) or `"with"` (parallel). See `animate` for details.
 /// - `delay`: extra wait in milliseconds before this animation begins
 ///   (default `0`).
-#let focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
+#let focus-on(target, factor: 125%, duration: 300, easing: "smooth", timing: "after", delay: 0) = {
   _assert_str(target, "Animation target")
-  _assert_number(factor, "factor")
+  _assert_ratio(factor, "factor")
   _assert_nonneg(duration, "duration")
   _assert_easing(easing, "easing")
   _assert_timing(timing)
