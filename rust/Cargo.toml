@@ -136,19 +136,21 @@
     openh264 = "0.9.7"
 
     # Optional GPU rasterization via vello (GPU compute 2D renderer) + wgpu.
+    #
     # Disabled by default — enable with `--features gpu`. When active, the
     # `--gpu` CLI flag rasterizes SVG frames on the GPU instead of via
     # `typst-render` (CPU). Falls back to CPU automatically if no GPU device.
     #
-    # Version pinning is critical here: `vello_svg` 0.9.x depends on `vello`
-    # ^0.7, and `vello` 0.7's GPU `Renderer` is gated behind vello's own `wgpu`
-    # feature — so we must match `vello` 0.7 (NOT 0.8/0.9) and enable that
-    # feature. `vello` 0.7 in turn requires `wgpu` ^27. Mixing a newer `vello`
-    # or `wgpu` with `vello_svg` produces incompatible `Scene`/`Renderer` types
-    # from two different crate versions and fails to compile.
-    vello     = { version = "0.7", features = ["wgpu"], optional = true }
-    wgpu      = { version = "27", optional = true }
-    vello_svg = { version = "0.9", optional = true }
+    # Version pinning is critical here: `vello_svg` 0.10.x depends on `vello`
+    # ^0.9, and `vello` 0.9's GPU `Renderer` is gated behind vello's own `wgpu`
+    # feature — so we must match `vello` 0.9 and enable that feature. `vello`
+    # 0.9 in turn requires `wgpu` ^29 (NOT 30, even though wgpu 30 exists).
+    # Mixing a newer `vello` or `wgpu` with `vello_svg` produces incompatible
+    # `Scene`/`Renderer` types from two different crate versions and fails to
+    # compile.
+    vello     = { version = "0.9", features = ["wgpu"], optional = true }
+    wgpu      = { version = "29", optional = true }
+    vello_svg = { version = "0.10", optional = true }
     # Lightweight blocking executor for wgpu's async device-creation API.
     pollster = { version = "1.0.1", optional = true }
 

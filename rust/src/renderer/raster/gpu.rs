@@ -56,15 +56,16 @@ impl GpuRenderer {
     pub fn new() -> Result<Self, CandyError> {
         // Use pollster to block on wgpu's async device-creation futures.
         pollster::block_on(async {
-            // InstanceDescriptor with all backends, default flags, default
-            // backend options. wgpu 27's Instance::new takes &InstanceDescriptor.
+            // InstanceDescriptor with all backends and no display handle
+            // (offscreen rendering only — wgpu 29 added a `display` field for
+            // surface presentation, which candy never does). wgpu 29's
+            // Instance::new takes the descriptor by value.
             let desc = wgpu::InstanceDescriptor {
                 backends: Backends::all(),
                 flags: InstanceFlags::default(),
-                memory_budget_thresholds: Default::default(),
-                backend_options: Default::default(),
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
             };
-            let instance = Instance::new(&desc);
+            let instance = Instance::new(desc);
 
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
@@ -77,7 +78,7 @@ impl GpuRenderer {
 
             // Request the adapter's actual limits rather than the conservative
             // `downlevel_defaults()`, which caps `max_storage_buffers_per_shader_stage`
-            // at 4 — vello 0.7's compute shaders need 5, so the lower limit made
+            // at 4 — vello's compute shaders need 5, so the lower limit made
             // device creation panic. The adapter's own limits always satisfy the
             // device request and cover everything vello requires.
             let required_limits = adapter.limits().clone();

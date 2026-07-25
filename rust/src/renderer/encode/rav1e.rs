@@ -6,16 +6,23 @@
 //! units are returned as [`crate::renderer::EncodedVideo`] for the container
 //! muxer to package into MP4 / Matroska (WebM/MKV).
 
-use crate::core::diag::{CandyError, CandyWarn};
+use crate::core::diag::CandyError;
+#[cfg(feature = "video")]
+use crate::core::diag::CandyWarn;
 use crate::renderer::EncodedVideo;
 use crate::renderer::RenderedFrame;
+#[cfg(feature = "video")]
 use crate::warn;
+#[cfg(feature = "video")]
 use std::fs::File;
+#[cfg(feature = "video")]
 use std::io::Write;
+#[cfg(feature = "video")]
 use std::path::PathBuf;
 
 #[cfg(feature = "video")]
 use rav1e::prelude::*;
+#[cfg(feature = "video")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Encode rasterized frames into AV1 and return an [`EncodedVideo`].
@@ -248,6 +255,45 @@ impl Rav1eStream {
             codec_private: file.codec_private,
             keyframes: file.keyframes,
         })
+    }
+}
+
+/// Stub `Rav1eStream` for builds without the `video` feature. Construction
+/// always fails with `E009`, matching the batch [`encode`] behaviour, so the
+/// streaming dispatch in `video.rs` compiles unchanged and surfaces the same
+/// clean error when `--codec av1` is requested in a video-less build.
+#[cfg(not(feature = "video"))]
+pub(crate) struct Rav1eStream {
+    _private: (),
+}
+
+#[cfg(not(feature = "video"))]
+impl Rav1eStream {
+    pub(crate) fn new(
+        _width: usize,
+        _height: usize,
+        _fps: u32,
+        _all_intra: bool,
+    ) -> Result<Self, CandyError> {
+        Err(CandyError::Encode(
+            "video encoding is disabled in this build (E009). Rebuild `candy` with the \
+             default `video` feature to enable AV1 encoding."
+                .into(),
+        ))
+    }
+
+    pub(crate) fn push(&mut self, _frame: &RenderedFrame) -> Result<(), CandyError> {
+        unreachable!("Rav1eStream cannot be constructed without the `video` feature")
+    }
+
+    pub(crate) fn finish_file(
+        self,
+    ) -> Result<crate::renderer::encode::video::EncodedVideoFile, CandyError> {
+        unreachable!("Rav1eStream cannot be constructed without the `video` feature")
+    }
+
+    pub(crate) fn finish(self) -> Result<EncodedVideo, CandyError> {
+        unreachable!("Rav1eStream cannot be constructed without the `video` feature")
     }
 }
 
