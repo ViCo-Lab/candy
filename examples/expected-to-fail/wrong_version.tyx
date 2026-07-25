@@ -1,2 +1,6 @@
+// Expected to fail: E008 (CandyDumpedYou, version mismatch). The imported
+// candy version (11.45.14) does not satisfy the CLI's compatible_versions
+// range, so the document is rejected before any rendering. Pass --ignore-version
+// to bypass. (Also used as the sentinel version in lib.rs unit tests.)
 #import "@preview/candy:11.45.14": *
 What a stinky version...

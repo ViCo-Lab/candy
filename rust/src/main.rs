@@ -17,18 +17,18 @@
 //! automatically after a successful run unless `--keep-intermediates` is passed.
 
 #![allow(clippy::result_large_err)]
-use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Instant;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
-use candy::core::diag::{CandyWarn, Color, cargo_finished, cargo_status, paint_err_head};
+use candy::core::diag::{
+    CandyWarn, bold, cargo_finished, cargo_status, eprint_styled, report_error,
+};
 use candy::{
     CandyError, Codec, Input, OutputFormat, build_input_with_gpu, check_input, migrate_file,
 };
 use candy::{error, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use colored::Colorize;
 
 #[derive(Parser)]
 #[command(
@@ -270,11 +270,7 @@ fn run() -> Result<(), CandyError> {
         Commands::Candy => {
             // Hidden easter egg: `candy candy` / `candy tyx`.
             const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";
-            if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
-                eprintln!("{}", SECRET.bold());
-            } else {
-                eprintln!("{SECRET}");
-            }
+            eprint_styled(&bold(SECRET));
         }
         Commands::Build {
             inputs,
@@ -324,6 +320,7 @@ fn run() -> Result<(), CandyError> {
             // with [`BATCH_ERROR_EXIT`] (111) if *any* input failed; for a single
             // input the specific `E00x` code is preserved.
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            let mut succeeded = 0usize;
             let build_start = Instant::now();
             for (i, input) in inputs.iter().enumerate() {
                 let input_path = input.0.clone();
@@ -448,8 +445,17 @@ fn run() -> Result<(), CandyError> {
                     }
                     Ok(())
                 })();
-                if let Err(e) = result {
-                    failures.push((input_path, e));
+                match result {
+                    Ok(()) => succeeded += 1,
+                    Err(e) => {
+                        // In batch mode surface the failure immediately
+                        // (real-time); for a single input the diagnostic is
+                        // printed once at the end via `error!` below.
+                        if inputs.len() > 1 {
+                            report_error(&e);
+                        }
+                        failures.push((input_path, e));
+                    }
                 }
             }
             // A clean build prints a single cargo-style `Finished … in Xs` summary
@@ -459,43 +465,20 @@ fn run() -> Result<(), CandyError> {
                     &format!("{} animation(s)", inputs.len()),
                     build_start.elapsed(),
                 );
-            }
-            // Surface any collected batch failures. In batch mode (more than one
-            // input) a midway error forces the exit code to `BATCH_ERROR_EXIT`
-            // (111) so callers can detect partial failure; for a single input we
-            // keep the specific `E00x` code.
-            if !failures.is_empty() {
-                if inputs.len() > 1 {
-                    // Batch mode: list every input that failed. This runs only
-                    // *after* all inputs have been attempted (batch mode never
-                    // aborts early), so the complete failure set is known here.
-                    eprintln!(
-                        "{}",
-                        format!("Batch failed on {} input(s):", failures.len())
-                            .red()
-                            .bold()
-                    );
-                    for (path, e) in &failures {
-                        eprintln!(
-                            "  - {}: {} {}",
-                            path.display(),
-                            paint_err_head("error", e.code(), Color::Red),
-                            e.message()
-                        );
-                    }
-                    // Batch partial failure: surface through the unified
-                    // diagnostic pipeline as `EYEE` (exit code 111, which
-                    // deliberately bypasses the `64`-based rule). `111` ≈
-                    // "yī yī yī" → "yee~": the strangled little noise you make
-                    // after biting into something spoiled.
-                    error!(CandyError::Yee(
-                        "build: yee~ Batch build failed. \\(!_!)/".to_string()
-                    ));
-                } else {
-                    // Single input (non-batch): keep the specific `E00x` code
-                    // via the diagnostic pipeline — no "Batch failed" summary.
-                    error!(failures.into_iter().next().unwrap().1);
-                }
+            } else if inputs.len() > 1 {
+                // Batch mode: each failure was already printed in real time
+                // above, so the final summary is cargo-style — both success and
+                // failure counts, no repeated error text — and forces exit code
+                // `BATCH_ERROR_EXIT` (111) so callers can detect partial failure.
+                let failed = failures.len();
+                error!(CandyError::Yee(format!(
+                    "yee~ Batch build failed. \\(!_!)/ {succeeded} succeeded, {failed} failed in {:.2}s",
+                    build_start.elapsed().as_secs_f64()
+                )));
+            } else {
+                // Single input (non-batch): keep the specific `E00x` code via the
+                // diagnostic pipeline — no "Batch failed" summary.
+                error!(failures.into_iter().next().unwrap().1);
             }
         }
         Commands::Migrate { inputs, version } => {
@@ -516,37 +499,38 @@ fn run() -> Result<(), CandyError> {
             // input the process exits with `BATCH_ERROR_EXIT` (111) if *any*
             // input failed; for a single input the specific `E00x` code is kept.
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            let mut succeeded = 0usize;
+            let migrate_start = Instant::now();
             for input in &inputs {
                 let path = input.0.clone();
                 cargo_status("Migrating", &path.display().to_string());
                 match migrate_file(&path, version.as_deref()) {
-                    Ok(0) => cargo_status("Finished", &format!("{} up to date", path.display())),
-                    Ok(n) => cargo_status(
-                        "Finished",
-                        &format!("{} rewrote {n} import line(s)", path.display()),
-                    ),
-                    Err(e) => failures.push((path, e)),
+                    Ok(0) => {
+                        cargo_status("Finished", &format!("{} up to date", path.display()));
+                        succeeded += 1;
+                    }
+                    Ok(n) => {
+                        cargo_status(
+                            "Finished",
+                            &format!("{} rewrote {n} import line(s)", path.display()),
+                        );
+                        succeeded += 1;
+                    }
+                    Err(e) => {
+                        if inputs.len() > 1 {
+                            report_error(&e);
+                        }
+                        failures.push((path, e));
+                    }
                 }
             }
             if !failures.is_empty() {
                 if inputs.len() > 1 {
-                    eprintln!(
-                        "{}",
-                        format!("Migrate failed on {} input(s):", failures.len())
-                            .red()
-                            .bold()
-                    );
-                    for (path, e) in &failures {
-                        eprintln!(
-                            "  - {}: {} {}",
-                            path.display(),
-                            paint_err_head("error", e.code(), Color::Red),
-                            e.message()
-                        );
-                    }
-                    error!(CandyError::Yee(
-                        "migrate: yee~ Batch migrate failed. \\(!_!)/".to_string()
-                    ));
+                    let failed = failures.len();
+                    error!(CandyError::Yee(format!(
+                        "yee~ Batch migrate failed. \\(!_!)/ {succeeded} succeeded, {failed} failed in {:.2}s",
+                        migrate_start.elapsed().as_secs_f64()
+                    )));
                 } else {
                     error!(failures.into_iter().next().unwrap().1);
                 }
@@ -571,39 +555,30 @@ fn run() -> Result<(), CandyError> {
             // Batch mode is non-fatal per input (same as build): every input is
             // attempted, failures are collected and surfaced together at the end.
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            let mut succeeded = 0usize;
             let check_start = Instant::now();
             for input in &inputs {
                 let path = input.0.clone();
                 cargo_status("Checking", &path.display().to_string());
                 if let Err(e) = check_input(Input::from(path.as_path()), ignore_version, fps) {
+                    if inputs.len() > 1 {
+                        report_error(&e);
+                    }
                     failures.push((path, e));
+                } else {
+                    succeeded += 1;
                 }
             }
             if failures.is_empty() {
                 cargo_finished(&format!("{} file(s)", inputs.len()), check_start.elapsed());
-            }
-            if !failures.is_empty() {
-                if inputs.len() > 1 {
-                    eprintln!(
-                        "{}",
-                        format!("Check failed on {} input(s):", failures.len())
-                            .red()
-                            .bold()
-                    );
-                    for (path, e) in &failures {
-                        eprintln!(
-                            "  - {}: {} {}",
-                            path.display(),
-                            paint_err_head("error", e.code(), Color::Red),
-                            e.message()
-                        );
-                    }
-                    error!(CandyError::Yee(
-                        "check: yee~ Batch check failed. \\(!_!)/".to_string()
-                    ));
-                } else {
-                    error!(failures.into_iter().next().unwrap().1);
-                }
+            } else if inputs.len() > 1 {
+                let failed = failures.len();
+                error!(CandyError::Yee(format!(
+                    "yee~ Batch check failed. \\(!_!)/ {succeeded} succeeded, {failed} failed in {:.2}s",
+                    check_start.elapsed().as_secs_f64()
+                )));
+            } else {
+                error!(failures.into_iter().next().unwrap().1);
             }
         }
     }

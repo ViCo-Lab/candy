@@ -431,7 +431,7 @@ pub(crate) fn spawn_ffmpeg(
 /// inherits the fd across `exec`, so the path stays valid even though our own
 /// `File` only owns the write end).
 #[cfg(target_os = "linux")]
-pub(crate) fn spawn_ffmpeg_with_memfd(
+pub(crate) fn spawn_ffmpeg_streaming(
     codec: Codec,
     container: Container,
     w: u32,
@@ -571,7 +571,7 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
 
     crate::core::diag::cargo_status(
         "Running",
-        &format!("`ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)`"),
+        &format!("`ffmpeg -c:v {encoder} -f {format}` (pipe input, vmsplice)"),
     );
     Ok((child, write_file, mux, err_log))
 }
@@ -613,7 +613,7 @@ pub(crate) fn vmsplice_frame(writer: &mut std::fs::File, data: &[u8]) -> std::io
 
     // `vmsplice` may write less than requested if the pipe is full (the kernel
     // pipe buffer has a bounded capacity, default 64 KiB, grown via
-    // F_SETPIPE_SZ in `spawn_ffmpeg_with_memfd`). Retry until all bytes are
+    // F_SETPIPE_SZ in `spawn_ffmpeg_streaming`). Retry until all bytes are
     // gifted, blocking in between (the kernel blocks `vmsplice` on a full pipe,
     // just like `write`). Each retry passes the remaining slice — but the
     // pointer must stay page-aligned, so we advance in page multiples.

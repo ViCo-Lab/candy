@@ -53,11 +53,15 @@
     serde      = { version = "1.0.229", features = ["derive"] }
     serde_json = "1"
 
-    # Terminal coloring for diagnostic output (error / warn / info / debug).
-    # Pure Rust, no native deps, so it cross-compiles like the rest of candy.
-    # Coloring is applied only when the target stream is a TTY and `NO_COLOR`
-    # (https://no-color.org) is unset, so piped / captured output stays ANSI-free.
-    colored = "3.1.1"
+    # Terminal styling for diagnostic output (error / warn / info / debug).
+    # `anstyle` builds the ANSI style codes; `anstream` strips them
+    # automatically when the destination isn't a terminal or `NO_COLOR`
+    # (https://no-color.org) is set, so piped / captured output stays
+    # ANSI-free with no per-call TTY checks. Both are pure Rust, no native deps,
+    # and already present transitively (via `clap`), so they cross-compile like
+    # the rest of candy. Replaces the old `colored` crate.
+    anstyle = "1.0.14"
+    anstream = "1.0.0"
 
     # Direct page rendering via the Typst compiler library (bypasses the `typst` CLI).
     # The internal typst crates are pulled in explicitly so we can build an in-memory

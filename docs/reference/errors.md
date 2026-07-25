@@ -42,11 +42,13 @@ style) and terminates the process with `CandyError::exit_code()`:
 
 **Where `111` (and `yee~`) comes from.** `111` reads as "yī yī yī" → *"yee~"*, the strangled
 little noise you make after biting into something spoiled — a fitting sound for a batch that
-mostly worked but had a bad input somewhere in the middle. When a batch fails, Candy lists
-every failed input (`Batch failed on N input(s):` + `- <path>: <error>`) and then surfaces the
-marker through the diag pipeline as `error[EYEE]: yee~ Batch failed` before exiting with
-`111`. A **single** failed input keeps its specific `E00x` code (e.g. `72` for `E009`) rather
-than `111`.
+mostly worked but had a bad input somewhere in the middle. When a batch fails, each failed
+input is reported **in real time** (its `error[Exxx]: …` with source location) as the batch
+runs, and once every input has been attempted Candy surfaces a single cargo-style summary
+through the diag pipeline as `error[EYEE]: <cmd>: yee~ Batch <cmd> failed. \(!_!)/ <s> succeeded, <f> failed in X.XXs`
+before exiting with `111`. A **single** failed input keeps its specific `E00x` code (e.g. `72`
+for `E009`) rather than `111` — the real-time report + `EYEE` summary only triggers for batches
+of more than one input.
 
 ## Warnings (W001–W016)
 

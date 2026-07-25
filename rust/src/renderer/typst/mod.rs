@@ -594,9 +594,16 @@ pub(crate) fn typst_diag_loc(
     let src = world.source(id).ok()?;
     let file_id = src.id();
     let vpath = file_id.vpath().get_without_slash();
-    // The main document is always the detached `main.typ`; rewrite it to the
-    // user's real `.tyx` so the location points at their file.
-    let path = if vpath == "main.typ" && !source_path.as_os_str().is_empty() {
+    // The main document is always the detached synthetic source; rewrite it to
+    // the user's real `.tyx` so the location points at their file rather than a
+    // bare / synthetic path. We match the detached main source both by its
+    // synthetic vpath AND by comparing its `FileId` to `world.main()` — the
+    // vpath typst uses for detached sources is not guaranteed to be `"main.typ"`
+    // (it was empty / inconsistent in release builds), which previously left the
+    // source diagnostic pointing at a synthetic path and made it effectively
+    // invisible in release. `id == world.main()` is the reliable discriminator.
+    let is_main = id == world.main() || vpath == "main.typ" || vpath.is_empty();
+    let path = if is_main && !source_path.as_os_str().is_empty() {
         source_path
     } else {
         Path::new(vpath)

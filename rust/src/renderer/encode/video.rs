@@ -46,7 +46,7 @@ use crate::renderer::RenderedFrame;
 use crate::renderer::audio::{self, AudioData};
 use crate::renderer::encode::container;
 #[cfg(target_os = "linux")]
-use crate::renderer::encode::ffmpeg::spawn_ffmpeg_with_memfd;
+use crate::renderer::encode::ffmpeg::spawn_ffmpeg_streaming;
 use crate::renderer::encode::ffmpeg::{ErrLog, MuxSink};
 use crate::warn;
 
@@ -265,8 +265,8 @@ impl Codec {
     }
 }
 
-/// On Linux, ffmpeg frame input uses an anonymous `memfd` per frame (zero-copy,
-/// tmpfs-resident) instead of a bounded OS pipe — see [`ffmpeg::spawn_ffmpeg_with_memfd`].
+/// On Linux, ffmpeg frame input is streamed through a pipe (zero-copy via
+/// `vmsplice`) — see [`ffmpeg::spawn_ffmpeg_streaming`].
 pub(crate) struct StreamingVideo {
     container: Container,
     meta: PrivateMeta,
@@ -318,9 +318,9 @@ impl StreamingVideo {
         if uses_ffmpeg {
             #[cfg(target_os = "linux")]
             {
-                // On Linux, use memfd-based frame input for zero-copy data sharing
+                // On Linux, stream frames through a pipe (zero-copy via vmsplice).
                 let (child, frame_fd, mux, err_log) =
-                    spawn_ffmpeg_with_memfd(codec, container, tw as u32, th as u32, fps, meta)?;
+                    spawn_ffmpeg_streaming(codec, container, tw as u32, th as u32, fps, meta)?;
                 Ok(Self {
                     container,
                     meta: meta.clone(),

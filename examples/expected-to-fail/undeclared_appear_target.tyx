@@ -1,0 +1,6 @@
+// Expected to fail: E006 (undeclared mobject). #appear targeting a label that
+// was never declared via #mobject must be rejected with the same UnknownKey /
+// E006 code as #animate on an undeclared target — confirming the code is
+// assigned by the *kind of failure* (undeclared key), not by the directive used.
+#import "@preview/candy:0.1.0": *
+#appear("ghost")
