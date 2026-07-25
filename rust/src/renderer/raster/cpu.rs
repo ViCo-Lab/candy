@@ -23,9 +23,9 @@ pub(crate) fn rasterize_svg(
 ) -> Result<RenderedFrame, CandyError> {
     let svg = set_svg_viewport_px(svg, width, height);
     let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())
-        .map_err(|e| CandyError::Encode(format!("usvg parse: {e}")))?;
+        .map_err(|e| CandyError::Raster(format!("usvg parse: {e}")))?;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)
-        .ok_or_else(|| CandyError::Encode("failed to allocate pixmap".into()))?;
+        .ok_or_else(|| CandyError::Raster("failed to allocate pixmap".into()))?;
     resvg::render(
         &tree,
         tiny_skia::Transform::identity(),

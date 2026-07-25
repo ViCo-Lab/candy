@@ -18,7 +18,7 @@
 //! without wrapping every message in `format!`.
 
 use std::fmt;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 /// `Color` is re-exported (pub) so the `error!` / `warn!` macros can refer to
@@ -100,54 +100,67 @@ impl SourceLoc {
         }
     }
 
-    /// Render as:
+    /// Render the location in the cargo/rustc snippet style:
     /// ```text
-    /// path:line:col
-    ///   <line_text>
-    ///   <spaces>^^^^^
+    ///  --> path:line:col
+    ///   |
+    /// 5 |   <line_text>
+    ///   |   ^^^^^
     /// ```
+    /// The caret column is computed from `char_span` (Unicode scalar count),
+    /// not byte length, so multi-byte characters (Chinese, Emoji, …) are
+    /// underlined correctly.
     pub fn render(&self) -> String {
+        self.render_block(None, false)
+    }
+
+    /// Render with color, mimicking rustc: the ` --> ` arrow and the `|` gutter
+    /// are dim (bright-black), the line number is dim + bold, and the caret is
+    /// drawn in `caret_color` (red for errors, yellow for warnings). Only applies
+    /// when `is_tty` is true and `NO_COLOR` (https://no-color.org) is unset;
+    /// otherwise falls back to the plain [`SourceLoc::render`] so piped / captured
+    /// output stays ANSI-free (and matches the uncolored `error!` / `warn!`
+    /// behavior on non-terminals).
+    pub fn render_colored(&self, caret_color: Color, is_tty: bool) -> String {
+        self.render_block(Some(caret_color), is_tty)
+    }
+
+    /// Shared implementation for [`SourceLoc::render`] (plain) and
+    /// [`SourceLoc::render_colored`] (colored). When `caret_color` is `None` (or
+    /// `is_tty` is false / `NO_COLOR` is set) the output is ANSI-free; otherwise
+    /// the arrow, gutter, and line number are dim and the caret is colored.
+    fn render_block(&self, caret_color: Option<Color>, is_tty: bool) -> String {
+        let line_str = self.line.to_string();
         let line_len = self.line_text.chars().count();
         let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
         let caret_len = self.char_span.clamp(1, avail);
         let indent = " ".repeat(self.col.saturating_sub(1));
         let caret = "^".repeat(caret_len);
+
+        let colored = caret_color.is_some() && is_tty && std::env::var_os("NO_COLOR").is_none();
+        let (arrow, bar, lineno, caret_str) = if colored {
+            let c = caret_color.unwrap();
+            (
+                " -->".bright_black().to_string(),
+                "  |".bright_black().to_string(),
+                line_str.bright_black().bold().to_string(),
+                caret.color(c).bold().to_string(),
+            )
+        } else {
+            (" -->".to_string(), "  |".to_string(), line_str, caret)
+        };
         format!(
-            "{}:{}:{}\n  {}\n  {}{}",
+            "{} {}:{}:{}\n{}\n{} | {}\n{} {}{}",
+            arrow,
             self.path.display(),
             self.line,
             self.col,
+            bar,
+            lineno,
             self.line_text,
+            bar,
             indent,
-            caret
-        )
-    }
-
-    /// Render with color: the `path:line:col` header in **cyan** and the caret
-    /// in `caret_color` (the level color — red for errors, yellow for warnings).
-    /// Only applies when `is_tty` is true and `NO_COLOR` (https://no-color.org)
-    /// is unset; otherwise falls back to the plain [`SourceLoc::render`] so
-    /// piped / captured output stays ANSI-free (and matches the uncolored
-    /// `error!` / `warn!` behavior on non-terminals).
-    pub fn render_colored(&self, caret_color: Color, is_tty: bool) -> String {
-        if !is_tty || std::env::var_os("NO_COLOR").is_some() {
-            return self.render();
-        }
-        let line_len = self.line_text.chars().count();
-        let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
-        let caret_len = self.char_span.clamp(1, avail);
-        let indent = " ".repeat(self.col.saturating_sub(1));
-        let caret = "^".repeat(caret_len);
-        let header = format!("{}:{}:{}", self.path.display(), self.line, self.col)
-            .color(Color::Cyan)
-            .bold()
-            .to_string();
-        format!(
-            "{}\n  {}\n  {}{}",
-            header,
-            self.line_text,
-            indent,
-            caret.color(caret_color).bold()
+            caret_str
         )
     }
 }
@@ -155,7 +168,7 @@ impl SourceLoc {
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E009 (E008 is the fixed easter-egg slot).
+/// variant to the mandatory error codes E001–E010 (E008 is the fixed easter-egg slot).
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
@@ -177,6 +190,14 @@ pub enum CandyError {
     Typst(String, Option<SourceLoc>),
     /// E009 — Rav1e / codec / mux encoding failure.
     Encode(String),
+    /// E010 — SVG frame **rasterization** failure. This is the *render* stage
+    /// (usvg parse, wgpu adapter/device, vello scene render/poll) that turns a
+    /// compiled SVG frame into RGBA pixels — distinct from `Encode` (E009), which
+    /// is the later codec/mux stage. Mislabeling a raster failure as `Encode`
+    /// sent users hunting in the wrong subsystem (codec vs. rasterizer) and
+    /// printed a misleading `encode:` prefix, exactly the kind of code/message
+    /// mismatch that was fixed for `validate()` (E002 vs E006).
+    Raster(String),
     /// E008 — The `.tyx` does not import the candy package (or imports it
     /// with a version incompatible with the installed candy CLI), so its
     /// static content has no scene to own it. Candy can only render documents
@@ -208,7 +229,7 @@ pub enum CandyError {
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E009).
+    /// Mandatory error code (E001–E010).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
@@ -218,6 +239,7 @@ impl CandyError {
             CandyError::LabelNotFound(_, _) => "E004",
             CandyError::Typst(_, _) => "E005",
             CandyError::Encode(_) => "E009",
+            CandyError::Raster(_) => "E010",
             CandyError::CandyDumpedYou(_, _) => "E008",
             CandyError::UnknownKey(_, _, _) => "E006",
             CandyError::InvalidKey(_, _) => "E007",
@@ -236,6 +258,7 @@ impl CandyError {
             CandyError::LabelNotFound(_, _) => 4,
             CandyError::Typst(_, _) => 5,
             CandyError::Encode(_) => 9,
+            CandyError::Raster(_) => 10,
             CandyError::CandyDumpedYou(_, _) => 8,
             CandyError::UnknownKey(_, _, _) => 6,
             CandyError::InvalidKey(_, _) => 7,
@@ -269,6 +292,7 @@ impl CandyError {
             }
             CandyError::Typst(e, _) => format!("typst: {e}"),
             CandyError::Encode(e) => format!("encode: {e}"),
+            CandyError::Raster(e) => format!("raster: {e}"),
             CandyError::CandyDumpedYou(e, _) => format!("candy: {e}. She dumped you! (-_-)"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!(
@@ -544,8 +568,8 @@ impl fmt::Display for CandyWarn {
 ///   - `2`     clap usage error (argument parsing)
 ///   - `101`   Rust panic — also avoided (not in our range)
 ///   - `64..`  candy fatal errors: `ERROR_EXIT_BASE + number() - 1`
-///     (`E001` → `64` … `E009` → `72`; the `64` prefix is the requested
-///     segment; room up to ~`E014` before 78)
+///     (`E001` → `64` … `E009` → `72`, `E010` → `73`; the `64` prefix is the
+///     requested segment; room up to ~`E014` before 78)
 ///   - `111`   batch failure: `candy build a.tyx b.tyx …` ran every input but at
 ///     least one failed midway. Individual failures keep their own `E00x`
 ///     code for logging, but the overall process exit code is forced to
@@ -570,14 +594,6 @@ fn paint_level(label: &str, color: Color, is_tty: bool) -> String {
     }
 }
 
-/// Colored `error` level prefix (stderr).
-pub fn level_error() -> String {
-    paint_level("error", Color::Red, std::io::stderr().is_terminal())
-}
-/// Colored `warn` level prefix (stderr).
-pub fn level_warn() -> String {
-    paint_level("warn", Color::Yellow, std::io::stderr().is_terminal())
-}
 /// Colored `info` level prefix (stdout).
 pub fn level_info() -> String {
     paint_level("info", Color::Green, std::io::stdout().is_terminal())
@@ -587,26 +603,20 @@ pub fn level_debug() -> String {
     paint_level("debug", Color::BrightBlack, std::io::stdout().is_terminal())
 }
 
-/// Color a `[code]` token bold in `color`, but only when the target stream is a
-/// terminal and `NO_COLOR` (https://no-color.org) is unset; otherwise returns the
-/// plain `[code]`. Shared by the `error!` / `warn!` macros so the `Exxx` / `Wxxx`
-/// code is rendered bold in its level color (errors red, warnings yellow).
-fn paint_code(code: &str, color: Color, is_tty: bool) -> String {
+/// Build the cargo/rustc-style level+code head token, e.g. `error[E002]:`
+/// (red + bold on a TTY) or `warn[W014]:` (yellow + bold). Mirrors the way
+/// rustc prints `error[E0308]:` / `warning: ...`. Only colors when stderr is a
+/// terminal and `NO_COLOR` (https://no-color.org) is unset, so piped / captured
+/// output stays ANSI-free. Used by the `error!` / `warn!` macros and by the
+/// batch-failure summary in `main`.
+pub fn paint_err_head(level: &str, code: &str, color: Color) -> String {
+    let token = format!("{}[{}]:", level, code);
+    let is_tty = std::io::stderr().is_terminal();
     if is_tty && std::env::var_os("NO_COLOR").is_none() {
-        format!("[{}]", code).color(color).bold().to_string()
+        token.color(color).bold().to_string()
     } else {
-        format!("[{}]", code)
+        token
     }
-}
-
-/// Bold error code `[Exxx]` / `[EYEE]` in red (stderr). TTY + NO_COLOR aware.
-pub fn code_error(code: &str) -> String {
-    paint_code(code, Color::Red, std::io::stderr().is_terminal())
-}
-
-/// Bold warning code `[Wxxx]` in yellow (stderr). TTY + NO_COLOR aware.
-pub fn code_warn(code: &str) -> String {
-    paint_code(code, Color::Yellow, std::io::stderr().is_terminal())
 }
 
 /// Render an error's source location with a **red** caret (used by `error!`).
@@ -616,27 +626,103 @@ pub fn render_error_loc(loc: &SourceLoc) -> String {
     loc.render_colored(Color::Red, std::io::stderr().is_terminal())
 }
 
+/// Print a cargo/rustc-style build-status line to **stdout**:
+/// ```text
+///    Compiling candy v0.1.0 (/path)
+///     Running `ffmpeg ...`
+///    Building example.tyx
+///    Checking example.tyx
+/// ```
+/// The verb is right-aligned in a 12-column field so the message text always
+/// starts at the same column, exactly like cargo build. On a TTY the verb is
+/// colored green and bold; otherwise, or when NO_COLOR is set, the output
+/// stays free of ANSI codes. The build, check, migrate, and encode progress
+/// all surface through these lines, so the build output reads like cargo build.
+pub fn cargo_status(verb: &str, message: &str) {
+    let is_tty = std::io::stdout().is_terminal();
+    // Right-align the *visible* verb in a 12-column field first, then color the
+    // whole padded token — coloring after `{:>12}` would count the ANSI escape
+    // bytes and break the alignment cargo relies on.
+    let padded = format!("{verb:>12}");
+    let verb_str = if is_tty && std::env::var_os("NO_COLOR").is_none() {
+        padded.green().bold().to_string()
+    } else {
+        padded
+    };
+    println!("{verb_str} {message}");
+}
+
+/// Print the cargo/rustc-style final summary line to **stdout**:
+/// ```text
+///     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.26s
+///     Finished example.mp4 in 2.34s
+/// ```
+/// `label` is the thing that finished (e.g. the output path or `N animations`);
+/// `elapsed` is the wall-clock time, rendered as `in X.XXs`. Only the
+/// `Finished` verb is colored **green** + bold on a TTY; the rest of the line
+/// (including the `in X.XXs` timing) stays plain — exactly how cargo prints
+/// `Finished \`dev\` profile … target(s) in 1.26s`. Off a TTY or under
+/// `NO_COLOR` the whole line is plain ANSI-free text. Mirrors the `Finished`
+/// line cargo prints at the end of every build.
+pub fn cargo_finished(label: &str, elapsed: std::time::Duration) {
+    let is_tty = std::io::stdout().is_terminal();
+    let secs = elapsed.as_secs_f64();
+    // Pad the visible verb to 12 columns *before* coloring (same reason as
+    // [`cargo_status`]).
+    let padded = format!("{:>12}", "Finished");
+    let fin = if is_tty && std::env::var_os("NO_COLOR").is_none() {
+        padded.green().bold().to_string()
+    } else {
+        padded
+    };
+    println!("{fin} {label} in {secs:.2}s");
+}
+
+/// Print an in-place cargo/rustc-style progress line to **stdout** (carriage
+/// return, no trailing newline):
+/// ```text
+///     Frame scene 1/3  frame 12/45  (12/61)
+/// ```
+/// Mirrors the way cargo refreshes its progress bars / spinners: the verb is
+/// right-aligned in a 12-column field (green + bold on a TTY, like
+/// [`cargo_status`]) and the cursor returns to column 0 on the *same* line, so
+/// the next call overwrites it. The caller must print a newline (`println!()`)
+/// once the unit is done, so the next discrete status line (and the final
+/// `Finished`) starts on a fresh line. This helper is a no-op when stdout is not
+/// a TTY or `NO_COLOR` is set, so piped / captured output stays clean — cargo
+/// likewise suppresses progress bars off a TTY.
+pub fn cargo_progress(verb: &str, message: &str) {
+    let is_tty = std::io::stdout().is_terminal();
+    if !(is_tty && std::env::var_os("NO_COLOR").is_none()) {
+        return;
+    }
+    // Right-align the *visible* verb first, then color (same reason as
+    // [`cargo_status`]); `\r` returns to column 0 of the current line so the
+    // next `cargo_progress` call overwrites this one.
+    let padded = format!("{verb:>12}");
+    let verb_str = padded.green().bold().to_string();
+    print!("\r{verb_str} {message}");
+    let _ = std::io::stdout().flush();
+}
+
 /// Render a warning's source location with a **yellow** caret (used by `warn!`).
 /// See [`render_error_loc`] for why the TTY check lives here.
 pub fn render_warn_loc(loc: &SourceLoc) -> String {
     loc.render_colored(Color::Yellow, std::io::stderr().is_terminal())
 }
 
-/// Fatal error — the "panic" path. Prints `error: [Exxx] <message>` to
-/// **stderr** (the `error` prefix and the `[Exxx]` code are both red + bold on a
-/// TTY) and terminates the process with the error's exit code
+/// Fatal error — the "panic" path. Prints `error[Exxx]: <message>` to
+/// **stderr** in the cargo/rustc style (the `error[Exxx]:` head is red + bold on
+/// a TTY) and terminates the process with the error's exit code
 /// ([`CandyError::exit_code`]: `E001` → `64` … `E008` → `71`, and the special
 /// `EYEE` → `111`). Invoked exactly once at the process boundary (see `main`).
 #[macro_export]
 macro_rules! error {
     ($err:expr $(,)?) => {{
         let __e = &$err;
-        let mut __line = ::std::format!(
-            "{}: {} {}",
-            $crate::core::diag::level_error(),
-            $crate::core::diag::code_error(__e.code()),
-            __e.message()
-        );
+        let __head =
+            $crate::core::diag::paint_err_head("error", __e.code(), $crate::core::diag::Color::Red);
+        let mut __line = ::std::format!("{} {}", __head, __e.message());
         if let Some(__loc) = __e.loc() {
             __line.push_str(&::std::format!(
                 "\n{}",
@@ -648,19 +734,19 @@ macro_rules! error {
     }};
 }
 
-/// Non-fatal warning. Prints `warn: [Wxxx] <message>` to **stderr** (the `warn`
-/// prefix and the `[Wxxx]` code are both yellow + bold on a TTY) and returns
-/// normally so the render continues.
+/// Non-fatal warning. Prints `warn[Wxxx]: <message>` to **stderr** in the
+/// cargo/rustc style (the `warn[Wxxx]:` head is yellow + bold on a TTY) and
+/// returns normally so the render continues.
 #[macro_export]
 macro_rules! warn {
     ($w:expr $(,)?) => {{
         let __w: $crate::core::diag::CandyWarn = $w;
-        let mut __line = ::std::format!(
-            "{}: {} {}",
-            $crate::core::diag::level_warn(),
-            $crate::core::diag::code_warn(__w.code()),
-            __w.message()
+        let __head = $crate::core::diag::paint_err_head(
+            "warn",
+            __w.code(),
+            $crate::core::diag::Color::Yellow,
         );
+        let mut __line = ::std::format!("{} {}", __head, __w.message());
         if let Some(__loc) = __w.loc() {
             __line.push_str(&::std::format!(
                 "\n{}",

@@ -1,0 +1,4 @@
+// Expected to fail: E006 (unknown ec counter). A lifecycle event on a counter
+// that was never declared via #ecnew must be rejected.
+#import "@preview/candy:0.1.0": *
+#ecpause("nonexistent")

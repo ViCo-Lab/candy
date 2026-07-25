@@ -209,7 +209,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         },
         private_metadata: private,
     };
-    scene.validate().map_err(|m| CandyError::Parse(m, None))?; // E002
+    scene.validate()?;
     Ok(scene)
 }
 
@@ -1232,6 +1232,75 @@ mod tests {
             scene.morph_pairs
         );
         assert_eq!(scene.morph_pairs[0].to.0, "box");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Regression for `#fade-transform`: `to` must start hidden (opacity 0) and
+    /// fade IN to 1 across the crossfade window while `from` fades OUT from 1 to
+    /// 0. A naive implementation that only emits `FadeOut(from)` + `FadeIn(to)`
+    /// leaves `to` at its default opacity 1 for the whole timeline (a plain
+    /// mobject is visible by default), so `to` shows at full color during
+    /// `from`'s fade-out — the reported "to 一直是全量着色" bug.
+    #[test]
+    fn fade_transform_crossfades_opacity() {
+        let src = with_auto_version(
+            r#"
+#import "candy": *
+#mobject("old", circle(radius: 1cm, fill: blue))
+#mobject("new", rect(width: 2cm, height: 2cm, fill: red))
+#fade-transform("old", "new", duration: 300, easing: "smooth")
+"#,
+        );
+        let tmp = std::env::temp_dir().join("candy_test_fade_transform.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
+        let raw = crate::core::scheduler::schedule(&scene).unwrap();
+        // The renderer interpolates the sparse scheduler keyframes into one
+        // dense frame per sample time before building per-frame states (see
+        // `prepare_states`); a fade-in only exists on the *interpolated* curve,
+        // not on the raw keyframes (which keep a frame-0 seed at opacity 1).
+        let frames = crate::core::interpolator::interpolate(raw);
+
+        let to: Vec<&FrameData> = frames.iter().filter(|f| f.target.0 == "new").collect();
+        let from: Vec<&FrameData> = frames.iter().filter(|f| f.target.0 == "old").collect();
+        assert!(!to.is_empty(), "expected keyframes for `new` (to)");
+        assert!(!from.is_empty(), "expected keyframes for `old` (from)");
+
+        // `to` starts hidden and ends fully visible.
+        assert!(
+            (to[0].opacity - 0.0).abs() < 1e-6,
+            "`to` must start hidden, got opacity {}",
+            to[0].opacity
+        );
+        assert!(
+            (to.last().unwrap().opacity - 1.0).abs() < 1e-6,
+            "`to` must end fully visible, got opacity {}",
+            to.last().unwrap().opacity
+        );
+        // A genuine crossfade passes through an intermediate opacity (not an
+        // instant switch), proving `to` actually fades IN.
+        assert!(
+            to.iter().any(|f| (0.4..0.6).contains(&f.opacity)),
+            "`to` should crossfade through ~0.5; opacities: {:?}",
+            to.iter().map(|f| f.opacity).collect::<Vec<_>>()
+        );
+
+        // `from` starts fully visible and ends hidden.
+        assert!(
+            (from[0].opacity - 1.0).abs() < 1e-6,
+            "`from` must start fully visible, got opacity {}",
+            from[0].opacity
+        );
+        assert!(
+            (from.last().unwrap().opacity - 0.0).abs() < 1e-6,
+            "`from` must end hidden, got opacity {}",
+            from.last().unwrap().opacity
+        );
+        assert!(
+            from.iter().any(|f| (0.4..0.6).contains(&f.opacity)),
+            "`from` should crossfade through ~0.5; opacities: {:?}",
+            from.iter().map(|f| f.opacity).collect::<Vec<_>>()
+        );
         std::fs::remove_file(&tmp).ok();
     }
 

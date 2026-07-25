@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::diag::SourceLoc;
+use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::easing::Easing;
 use crate::core::meta::PrivateMeta;
 
@@ -790,11 +790,18 @@ impl Scene {
 }
 
 impl Scene {
-    /// Mandatory pipeline assertion: every `duration_ms ≥ 1`.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Mandatory pipeline assertion. Returns the precise [`CandyError`] so callers
+    /// can propagate it directly (no `map_err` that would flatten everything to
+    /// `Parse`/E002): a bad `duration_ms` is `Parse` (E002), while an undeclared
+    /// `mobject`/`counter` reference is `UnknownKey` (E006) — matching the error
+    /// code the message always advertised.
+    pub fn validate(&self) -> Result<(), CandyError> {
         for (i, s) in self.slides.iter().enumerate() {
             if s.duration_ms < 1 {
-                return Err(format!("slide {i}: duration_ms must be >= 1"));
+                return Err(CandyError::Parse(
+                    format!("slide {i}: duration_ms must be >= 1"),
+                    None,
+                ));
             }
         }
         // Validate counter lifecycle events reference declared counters.
@@ -802,9 +809,10 @@ impl Scene {
             self.counters.iter().map(|c| c.name.as_str()).collect();
         for ev in &self.counter_events {
             if !counter_names.contains(ev.name.as_str()) {
-                return Err(format!(
-                    "E006: counter \"{name}\" does not exist (never declared or already destroyed)",
-                    name = ev.name
+                return Err(CandyError::UnknownKey(
+                    "ecnew".to_string(),
+                    ev.name.clone(),
+                    None,
                 ));
             }
         }
@@ -816,9 +824,10 @@ impl Scene {
             for action in &s.actions {
                 if let Some(target) = action.target() {
                     if !mobject_names.contains(target.0.as_str()) {
-                        return Err(format!(
-                            "E006: mobject \"@{label}\" not found in Typst layout",
-                            label = target.0
+                        return Err(CandyError::UnknownKey(
+                            "mobject".to_string(),
+                            target.0.clone(),
+                            None,
                         ));
                     }
                 }

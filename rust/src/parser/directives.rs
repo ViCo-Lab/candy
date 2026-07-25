@@ -837,20 +837,50 @@ fn process_fade_transform(
         .unwrap_or(300.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &from, Easing::Smooth);
+
+    // `FadeIn` interpolates the target's *current* opacity → 1. Since a plain
+    // mobject starts fully opaque, the crossfade would be a no-op on `to`
+    // (rendered at full opacity throughout). Keep `to` hidden from the very
+    // start of the timeline unless something already controls it (an earlier
+    // `appear`/`animate`/… targeting it) — mirrors Manim's FadeTransform where
+    // the incoming object is not on screen before the transform.
+    let appeared_earlier = ctx
+        .slides
+        .iter()
+        .any(|s| s.actions.iter().any(|a| a.target() == Some(&to)));
+    if !appeared_earlier {
+        ctx.slides.push(Slide {
+            start_ms: 0,
+            duration_ms: 1,
+            actions: vec![Action::Hide { target: to.clone() }],
+        });
+    }
+
+    let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
+    // Force `to` to opacity 0 right before the crossfade (same pattern as
+    // `morph`) so the FadeIn below always has a 0 → 1 window, even when the
+    // object was made visible earlier.
+    ctx.slides.push(Slide {
+        start_ms: ctx.entry_end,
+        duration_ms: 1,
+        actions: vec![Action::Hide { target: to.clone() }],
+    });
+    ctx.entry_advance(1);
+
     // Fade out `from` and fade in `to` in the same slide (parallel).
-    emit_slide(
-        ctx,
-        parse_timing(named),
-        parse_delay(named),
-        duration,
-        vec![
+    ctx.slides.push(Slide {
+        start_ms: ctx.entry_end,
+        duration_ms: duration,
+        actions: vec![
             Action::FadeOut {
                 target: from,
                 easing: easing.clone(),
             },
             Action::FadeIn { target: to, easing },
         ],
-    );
+    });
+    ctx.entry_advance(duration);
+    ctx.entry_close();
 }
 
 /// `move_along_path(target, path, duration: 500, easing: "linear", mode: "polyline", orient: false)`

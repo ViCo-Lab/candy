@@ -1,0 +1,4 @@
+// Expected to fail: E005 (Typst compile error). A mobject body that does not
+// compile in Typst must surface the underlying Typst diagnostic.
+#import "@preview/candy:0.1.0": *
+#mobject("a", none.foo())

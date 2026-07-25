@@ -74,7 +74,7 @@ impl GpuRenderer {
                     force_fallback_adapter: false,
                 })
                 .await
-                .map_err(|e| CandyError::Encode(format!("wgpu adapter: {e}")))?;
+                .map_err(|e| CandyError::Raster(format!("wgpu adapter: {e}")))?;
 
             // Request the adapter's actual limits rather than the conservative
             // `downlevel_defaults()`, which caps `max_storage_buffers_per_shader_stage`
@@ -92,10 +92,10 @@ impl GpuRenderer {
                     trace: wgpu::Trace::Off,
                 })
                 .await
-                .map_err(|e| CandyError::Encode(format!("wgpu device: {e}")))?;
+                .map_err(|e| CandyError::Raster(format!("wgpu device: {e}")))?;
 
             let vello = VelloRenderer::new(&device, vello::RendererOptions::default())
-                .map_err(|e| CandyError::Encode(format!("vello renderer: {e}")))?;
+                .map_err(|e| CandyError::Raster(format!("vello renderer: {e}")))?;
 
             Ok(GpuRenderer {
                 device,
@@ -128,7 +128,7 @@ impl GpuRenderer {
         // scene fills the whole texture.
         let svg = set_svg_viewport_px(svg, width, height);
         let scene: Scene = vello_svg::render(&svg)
-            .map_err(|e| CandyError::Encode(format!("vello_svg parse: {e:?}")))?;
+            .map_err(|e| CandyError::Raster(format!("vello_svg parse: {e:?}")))?;
 
         // 2. Create target texture (Rgba8Unorm, render target + copy source).
         let texture = self.device.create_texture(&TextureDescriptor {
@@ -158,7 +158,7 @@ impl GpuRenderer {
         };
         self.vello
             .render_to_texture(&self.device, &self.queue, &scene, &view, &params)
-            .map_err(|e| CandyError::Encode(format!("vello render: {e}")))?;
+            .map_err(|e| CandyError::Raster(format!("vello render: {e}")))?;
 
         // 4. Copy texture → buffer → CPU.
         //
@@ -209,7 +209,7 @@ impl GpuRenderer {
         slice.map_async(MapMode::Read, |_| {});
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| CandyError::Encode(format!("wgpu poll: {e}")))?;
+            .map_err(|e| CandyError::Raster(format!("wgpu poll: {e}")))?;
 
         let rgba = {
             let data = slice.get_mapped_range();

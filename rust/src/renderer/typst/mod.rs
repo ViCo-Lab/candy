@@ -248,7 +248,7 @@ impl Renderer {
     }
     /// Like [`new`] but with an explicit project root for local imports.
     pub fn with_root(scene: Scene, project_root: PathBuf) -> Result<Self, CandyError> {
-        scene.validate().map_err(|m| CandyError::Parse(m, None))?;
+        scene.validate()?;
         // Hand-built scenes (unit tests, programmatic callers) carry no parsed
         // `.tyx`, so `artifacts.source` is empty. Synthesize a whole-document
         // source from `scene.items` so the single whole-doc render path can

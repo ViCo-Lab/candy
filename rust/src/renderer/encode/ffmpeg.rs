@@ -49,7 +49,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::diag::CandyError;
 use crate::core::meta::PrivateMeta;
-use crate::info;
 use crate::renderer::RenderedFrame;
 use crate::renderer::encode::{Codec, Container};
 
@@ -361,7 +360,10 @@ pub(crate) fn spawn_ffmpeg(
         .take()
         .ok_or_else(|| CandyError::Encode("ffmpeg stdin not captured".into()))?;
 
-    info!("encode: spawned ffmpeg -c:v {encoder} -f {format} (streaming)");
+    crate::core::diag::cargo_status(
+        "Running",
+        &format!("`ffmpeg -c:v {encoder} -f {format} (streaming)`"),
+    );
     Ok((child, stdin, mux, err_log))
 }
 
@@ -567,7 +569,10 @@ pub(crate) fn spawn_ffmpeg_with_memfd(
     // the caller drops the write end, ffmpeg sees the real EOF and finalises.
     drop(read_file);
 
-    info!("encode: spawned ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)");
+    crate::core::diag::cargo_status(
+        "Running",
+        &format!("`ffmpeg -c:v {encoder} -f {format} (pipe input, vmsplice)`"),
+    );
     Ok((child, write_file, mux, err_log))
 }
 

@@ -1,0 +1,4 @@
+// Expected to fail: E008 (file-style import). Candy must be imported as a Typst
+// package (`@<ns>/candy:<version>`), not via a local file path.
+#import "candy": *
+#animate("a", to: (4cm, 0pt), duration: 30)

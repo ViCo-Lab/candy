@@ -19,13 +19,14 @@
 #![allow(clippy::result_large_err)]
 use std::io::IsTerminal;
 use std::path::Path;
+use std::time::Instant;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
-use candy::core::diag::CandyWarn;
+use candy::core::diag::{CandyWarn, Color, cargo_finished, cargo_status, paint_err_head};
 use candy::{
     CandyError, Codec, Input, OutputFormat, build_input_with_gpu, check_input, migrate_file,
 };
-use candy::{error, info, warn};
+use candy::{error, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 
@@ -167,7 +168,7 @@ enum Commands {
     },
     /// Generate a shell completion script for the candy CLI and print it to
     /// stdout. Redirect it into your shell's completion directory, e.g.
-    /// `candy completions zsh > ~/.zfunc/_candy` or
+    /// `candy completions zsh > ~/.zsh/completions/_candy` or
     /// `candy completions bash > /etc/bash_completion.d/candy`.
     Completions {
         /// Target shell (bash, elvish, fish, powershell, zsh).
@@ -323,9 +324,10 @@ fn run() -> Result<(), CandyError> {
             // with [`BATCH_ERROR_EXIT`] (111) if *any* input failed; for a single
             // input the specific `E00x` code is preserved.
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            let build_start = Instant::now();
             for (i, input) in inputs.iter().enumerate() {
                 let input_path = input.0.clone();
-                info!("build: Started building {}", input_path.display());
+                cargo_status("Building", &input_path.display().to_string());
                 // Run one input; `?` inside collects into `result` instead of
                 // aborting the whole batch.
                 let result: Result<(), CandyError> = (|| {
@@ -409,9 +411,9 @@ fn run() -> Result<(), CandyError> {
                             keep_intermediates,
                             ignore_version,
                         )?;
-                        info!(
-                            "build: Genrated SVG draft {}/frame_*.svg",
-                            intermediate_dir.display()
+                        cargo_status(
+                            "Finished",
+                            &format!("SVG draft at {}/frame_*.svg", intermediate_dir.display()),
                         );
                         return Ok(());
                     }
@@ -444,12 +446,19 @@ fn run() -> Result<(), CandyError> {
                     if !keep_intermediates {
                         cleanup_intermediate(&intermediate_dir);
                     }
-                    info!("build: Successfully built {}", out_path.display());
                     Ok(())
                 })();
                 if let Err(e) = result {
                     failures.push((input_path, e));
                 }
+            }
+            // A clean build prints a single cargo-style `Finished … in Xs` summary
+            // (just like `cargo build`), naming the count of animations produced.
+            if failures.is_empty() {
+                cargo_finished(
+                    &format!("{} animation(s)", inputs.len()),
+                    build_start.elapsed(),
+                );
             }
             // Surface any collected batch failures. In batch mode (more than one
             // input) a midway error forces the exit code to `BATCH_ERROR_EXIT`
@@ -470,7 +479,7 @@ fn run() -> Result<(), CandyError> {
                         eprintln!(
                             "  - {}: {} {}",
                             path.display(),
-                            candy::core::diag::code_error(e.code()),
+                            paint_err_head("error", e.code(), Color::Red),
                             e.message()
                         );
                     }
@@ -509,10 +518,13 @@ fn run() -> Result<(), CandyError> {
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
             for input in &inputs {
                 let path = input.0.clone();
-                info!("migrate: Started migrating {}", path.display());
+                cargo_status("Migrating", &path.display().to_string());
                 match migrate_file(&path, version.as_deref()) {
-                    Ok(0) => info!("migrate: {} is already at target version", path.display()),
-                    Ok(n) => info!("migrate: rewrote {n} import line(s) in {}", path.display()),
+                    Ok(0) => cargo_status("Finished", &format!("{} up to date", path.display())),
+                    Ok(n) => cargo_status(
+                        "Finished",
+                        &format!("{} rewrote {n} import line(s)", path.display()),
+                    ),
                     Err(e) => failures.push((path, e)),
                 }
             }
@@ -528,7 +540,7 @@ fn run() -> Result<(), CandyError> {
                         eprintln!(
                             "  - {}: {} {}",
                             path.display(),
-                            candy::core::diag::code_error(e.code()),
+                            paint_err_head("error", e.code(), Color::Red),
                             e.message()
                         );
                     }
@@ -559,12 +571,16 @@ fn run() -> Result<(), CandyError> {
             // Batch mode is non-fatal per input (same as build): every input is
             // attempted, failures are collected and surfaced together at the end.
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
+            let check_start = Instant::now();
             for input in &inputs {
                 let path = input.0.clone();
-                info!("check: Started checking {}", path.display());
+                cargo_status("Checking", &path.display().to_string());
                 if let Err(e) = check_input(Input::from(path.as_path()), ignore_version, fps) {
                     failures.push((path, e));
                 }
+            }
+            if failures.is_empty() {
+                cargo_finished(&format!("{} file(s)", inputs.len()), check_start.elapsed());
             }
             if !failures.is_empty() {
                 if inputs.len() > 1 {
@@ -578,7 +594,7 @@ fn run() -> Result<(), CandyError> {
                         eprintln!(
                             "  - {}: {} {}",
                             path.display(),
-                            candy::core::diag::code_error(e.code()),
+                            paint_err_head("error", e.code(), Color::Red),
                             e.message()
                         );
                     }

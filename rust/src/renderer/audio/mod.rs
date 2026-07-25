@@ -24,7 +24,7 @@ use memmap2::Mmap;
 
 use crate::core::ast::AudioTrack;
 use crate::core::diag::{CandyError, CandyWarn};
-use crate::{info, warn};
+use crate::warn;
 
 /// Audio codec carried by an [`AudioData`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,9 +336,9 @@ pub fn transcode_via_ffmpeg(
         .output()
         .ok()?;
     if output.status.success() && tmp.exists() {
-        info!(
-            "audio: transcoded '{}' to {} via ffmpeg",
-            input_path, codec_name
+        crate::core::diag::cargo_status(
+            "Running",
+            &format!("`ffmpeg` transcoded '{input_path}' to {codec_name}"),
         );
         Some(tmp)
     } else {

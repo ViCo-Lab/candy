@@ -38,7 +38,7 @@ pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -324,7 +324,7 @@ pub fn build_input_with_gpu(
     if gpu_ok {
         match crate::renderer::raster::gpu::GpuRenderer::new() {
             Ok(g) => {
-                info!("gpu: GPU rasterization enabled (vello + wgpu)");
+                crate::core::diag::cargo_status("Running", "GPU rasterization (vello + wgpu)");
                 gpu_renderer = Some(g);
             }
             Err(e) => {
@@ -372,6 +372,10 @@ pub fn build_input_with_gpu(
         std::fs::create_dir_all(parent)?;
     }
 
+    // Map each frame to its scene so the encoder can report `Scene k/N` +
+    // `frame a/b` in cargo's build style. Cheap; computed once here.
+    let progress = build_encode_progress(&scene, &sample_times);
+
     // GPU path (feature-gated, serial): render one frame at a time on the GPU
     // and push it straight into the streaming encoder, so at most one frame's
     // RGBA is ever live. The CPU path below does the same with bounded
@@ -395,11 +399,12 @@ pub fn build_input_with_gpu(
             intermediate_dir,
             output,
             g,
+            &progress,
         ) {
             Ok(()) => return Ok(()),
             // Encode failure is non-fatal: fall back to an SVG draft under
             // `.candy/` and surface W004 instead of aborting the build.
-            Err(e) if matches!(e, CandyError::Encode(_)) => {
+            Err(e) if matches!(e, CandyError::Encode(_) | CandyError::Raster(_)) => {
                 write_svg_draft_on_encode_fail(
                     &mut renderer,
                     &frames,
@@ -435,6 +440,7 @@ pub fn build_input_with_gpu(
         keep_intermediates,
         intermediate_dir,
         output,
+        progress,
     ) {
         Ok(()) => {}
         // Encode failure is non-fatal: fall back to an SVG draft under `.candy/`
@@ -546,7 +552,7 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
     for &t in &times {
         renderer.render_frame_at(t, &frames)?;
     }
-    info!("check: {} frame(s) composed successfully", times.len());
+    crate::core::diag::cargo_status("Verified", &format!("{} frame(s) composed", times.len()));
     Ok(())
 }
 
@@ -686,6 +692,66 @@ impl StreamEncoder {
     }
 }
 
+/// Maps the global `sample_times` of a build to per-scene frame progress so the
+/// encoder can report `Scene k/N` + `frame a/b` in cargo's build style. Cheap
+/// (a single linear scan over `sample_times`); computed once in
+/// [`build_input_with_gpu`] and threaded into the streaming encoder.
+struct EncodeProgress {
+    /// Number of scenes in the document (the `scene.scenes` vector length, or 1
+    /// for a legacy single-scene document).
+    n_scenes: usize,
+    /// For each frame (index parallel to `sample_times`), the index of the scene
+    /// it belongs to.
+    frame_scene: Vec<usize>,
+    /// Per-scene frame count, indexed by scene index.
+    scene_frame_total: Vec<usize>,
+    /// Display name per scene (`#scene(name: …)` or `#<id>` when anonymous).
+    scene_names: Vec<String>,
+}
+
+/// Build an [`EncodeProgress`] from the document's scene intervals and the
+/// per-frame sample times. A frame is attributed to the *most specific* scene
+/// whose `[start_ms, end_ms]` contains its time (smallest interval wins, so a
+/// nested child scene is reported instead of its enclosing parent). Frames that
+/// fall outside every interval (should not happen) default to scene 0 (root).
+fn build_encode_progress(scene: &Scene, sample_times: &[u32]) -> EncodeProgress {
+    let scenes = &scene.scenes;
+    let n = scenes.len().max(1);
+    let mut frame_scene = Vec::with_capacity(sample_times.len());
+    let mut scene_frame_total = vec![0usize; n];
+    let infos: Vec<&crate::core::ast::SceneInfo> = scenes.iter().collect();
+    for &t in sample_times {
+        let mut best: Option<usize> = None;
+        let mut best_len = u64::MAX;
+        for (si, s) in infos.iter().enumerate() {
+            if t >= s.start_ms && t <= s.end_ms {
+                let len = (s.end_ms - s.start_ms) as u64;
+                if len < best_len {
+                    best_len = len;
+                    best = Some(si);
+                }
+            }
+        }
+        let sid = best.unwrap_or(0).min(n - 1);
+        frame_scene.push(sid);
+        scene_frame_total[sid] += 1;
+    }
+    let scene_names: Vec<String> = if scenes.is_empty() {
+        vec!["scene".to_string()]
+    } else {
+        scenes
+            .iter()
+            .map(|s| s.name.clone().unwrap_or_else(|| format!("#{}", s.id)))
+            .collect()
+    };
+    EncodeProgress {
+        n_scenes: n,
+        frame_scene,
+        scene_frame_total,
+        scene_names,
+    }
+}
+
 /// Consumer side of the streaming pipeline: pulls frames from `rx`, writes the
 /// optional RGBA draft incrementally, and pushes each frame into the encoder
 /// (which writes it out / drops its RGBA immediately). Runs on its own thread so
@@ -706,6 +772,7 @@ fn consume_frames(
     intermediate_dir: PathBuf,
     output: PathBuf,
     frame_count: usize,
+    progress: EncodeProgress,
 ) -> Result<(), CandyError> {
     let mut enc = StreamEncoder::new(is_gif, fps, codec, container, &meta, tw, th, audio, &output)?;
     let mut draft = if keep {
@@ -729,54 +796,120 @@ fn consume_frames(
     let mut next: usize = 0;
     let mut pending: std::collections::HashMap<usize, Result<RenderedFrame, CandyError>> =
         std::collections::HashMap::new();
+
+    // Scene + frame progress, cargo build style. `progress.scene_frame_total[sid]`
+    // scopes each scene's `frame a/b` to that scene; the trailing `(g/G)` keeps
+    // the global picture. Off a TTY or under `NO_COLOR`, `cargo_progress` is a
+    // no-op, so piped / captured output stays clean (the discrete `Scene` lines
+    // from `cargo_status` still print, plain).
+    let use_progress = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let mut cur_scene: Option<usize> = None;
+    let mut scene_frame_idx: usize = 0;
+    let mut progress_open = false;
+
+    // Encode one frame that is now in order (global index `idx`), updating the
+    // RGBA draft and the scene/frame progress. Collected into a closure so the
+    // fast path and the reorder-buffer drain stay in lock-step.
+    #[allow(clippy::too_many_arguments)]
+    let emit_one = |idx: usize,
+                    frame: Result<RenderedFrame, CandyError>,
+                    enc: &mut StreamEncoder,
+                    draft: &mut Option<std::fs::File>,
+                    first_err: &mut Option<CandyError>,
+                    cur_scene: &mut Option<usize>,
+                    scene_frame_idx: &mut usize,
+                    progress_open: &mut bool| {
+        if first_err.is_none() {
+            if let Some(d) = draft {
+                if let Ok(f) = &frame {
+                    let _ = d
+                        .write_all(&(f.width as u32).to_le_bytes())
+                        .and_then(|()| d.write_all(&(f.height as u32).to_le_bytes()))
+                        .and_then(|()| d.write_all(&f.rgba));
+                }
+            }
+        }
+        if first_err.is_none() {
+            match frame {
+                Ok(f) => {
+                    if let Err(e) = enc.push(&f) {
+                        *first_err = Some(e);
+                    }
+                }
+                Err(e) => *first_err = Some(e),
+            }
+        }
+        if first_err.is_some() {
+            return;
+        }
+        // Scene boundary: emit a discrete `Scene k/N (name)` line when the active
+        // scene changes, then reset the per-scene frame counter.
+        let sid = progress.frame_scene[idx];
+        if *cur_scene != Some(sid) {
+            if *progress_open {
+                println!();
+                *progress_open = false;
+            }
+            let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
+            crate::core::diag::cargo_status(
+                "Scene",
+                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+            );
+            *cur_scene = Some(sid);
+            *scene_frame_idx = 0;
+        }
+        *scene_frame_idx += 1;
+        if use_progress {
+            let total = progress.scene_frame_total.get(sid).copied().unwrap_or(0);
+            crate::core::diag::cargo_progress(
+                "Frame",
+                &format!(
+                    "scene {}/{}  frame {}/{}  ({}/{})",
+                    sid + 1,
+                    progress.n_scenes,
+                    *scene_frame_idx,
+                    total,
+                    idx + 1,
+                    frame_count
+                ),
+            );
+            *progress_open = true;
+        }
+    };
+
     for item in rx {
         let (i, frame) = item;
         if i == next {
-            // Fast path: in order. Emit it, then drain any now-contiguous
-            // buffered frames.
-            if let Some(d) = draft.as_mut() {
-                if first_err.is_none() {
-                    if let Ok(f) = &frame {
-                        d.write_all(&(f.width as u32).to_le_bytes())?;
-                        d.write_all(&(f.height as u32).to_le_bytes())?;
-                        d.write_all(&f.rgba)?;
-                    }
-                }
-            }
-            if first_err.is_none() {
-                if let Ok(f) = frame {
-                    if let Err(e) = enc.push(&f) {
-                        first_err = Some(e);
-                    }
-                } else if let Err(e) = frame {
-                    first_err = Some(e);
-                }
-            }
+            emit_one(
+                i,
+                frame,
+                &mut enc,
+                &mut draft,
+                &mut first_err,
+                &mut cur_scene,
+                &mut scene_frame_idx,
+                &mut progress_open,
+            );
             next += 1;
             while let Some(f) = pending.remove(&next) {
-                if let Some(d) = draft.as_mut() {
-                    if first_err.is_none() {
-                        if let Ok(fr) = &f {
-                            d.write_all(&(fr.width as u32).to_le_bytes())?;
-                            d.write_all(&(fr.height as u32).to_le_bytes())?;
-                            d.write_all(&fr.rgba)?;
-                        }
-                    }
-                }
-                if first_err.is_none() {
-                    if let Ok(fr) = f {
-                        if let Err(e) = enc.push(&fr) {
-                            first_err = Some(e);
-                        }
-                    } else if let Err(e) = f {
-                        first_err = Some(e);
-                    }
-                }
+                emit_one(
+                    next,
+                    f,
+                    &mut enc,
+                    &mut draft,
+                    &mut first_err,
+                    &mut cur_scene,
+                    &mut scene_frame_idx,
+                    &mut progress_open,
+                );
                 next += 1;
             }
         } else {
             pending.insert(i, frame);
         }
+    }
+    if progress_open {
+        println!();
     }
     if let Some(e) = first_err {
         return Err(e);
@@ -806,6 +939,7 @@ fn stream_encode_cpu(
     keep: bool,
     intermediate_dir: &Path,
     output: &Path,
+    progress: EncodeProgress,
 ) -> Result<(), CandyError> {
     // Bounded channel: at most `jobs` frames may be buffered between producer
     // and consumer, so in-flight RGBA is capped regardless of `N`.
@@ -869,6 +1003,7 @@ fn stream_encode_cpu(
                 idir,
                 opath,
                 frame_count,
+                progress,
             )
         })
         .map_err(|e| CandyError::Encode(format!("spawn encoder thread: {e}")))?;
@@ -939,6 +1074,7 @@ fn stream_encode_gpu(
     intermediate_dir: &Path,
     output: &Path,
     gpu: &mut crate::renderer::raster::gpu::GpuRenderer,
+    progress: &EncodeProgress,
 ) -> Result<(), CandyError> {
     let mut enc = StreamEncoder::new(is_gif, fps, codec, container, meta, tw, th, audio, output)?;
     let mut draft = if keep {
@@ -951,7 +1087,14 @@ fn stream_encode_gpu(
     } else {
         None
     };
-    for &t in sample_times {
+    // Scene + frame progress (cargo build style); see `consume_frames` for the
+    // rationale. Off a TTY / under `NO_COLOR`, `cargo_progress` is a no-op.
+    let frame_count = sample_times.len();
+    let use_progress = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let mut cur_scene: Option<usize> = None;
+    let mut scene_frame_idx: usize = 0;
+    let mut progress_open = false;
+    for (idx, &t) in sample_times.iter().enumerate() {
         // Same single source of truth as the CPU path: one standard SVG per
         // frame, rasterized on the GPU at the uniform canvas size.
         let svg = renderer.render_frame_at(t, frames)?;
@@ -961,7 +1104,46 @@ fn stream_encode_gpu(
             d.write_all(&(f.height as u32).to_le_bytes())?;
             d.write_all(&f.rgba)?;
         }
-        enc.push(&f)?;
+        let sid = progress.frame_scene[idx];
+        if cur_scene != Some(sid) {
+            if progress_open {
+                println!();
+                progress_open = false;
+            }
+            let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
+            crate::core::diag::cargo_status(
+                "Scene",
+                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+            );
+            cur_scene = Some(sid);
+            scene_frame_idx = 0;
+        }
+        scene_frame_idx += 1;
+        if use_progress {
+            let total = progress.scene_frame_total.get(sid).copied().unwrap_or(0);
+            crate::core::diag::cargo_progress(
+                "Frame",
+                &format!(
+                    "scene {}/{}  frame {}/{}  ({}/{})",
+                    sid + 1,
+                    progress.n_scenes,
+                    scene_frame_idx,
+                    total,
+                    idx + 1,
+                    frame_count
+                ),
+            );
+            progress_open = true;
+        }
+        if let Err(e) = enc.push(&f) {
+            if progress_open {
+                println!();
+            }
+            return Err(e);
+        }
+    }
+    if progress_open {
+        println!();
     }
     enc.finish(output)
 }

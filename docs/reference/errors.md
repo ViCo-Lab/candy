@@ -1,12 +1,13 @@
-# Error model (E001–E009, EYEE)
+# Error model (E001–E010, EYEE)
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic.
 `CandyError::code()` maps each variant to a mandatory error code:
 
 > **Source location:** diagnostics that originate from a specific piece of user
 > source point at it. When a warning/error carries a location, the reporter
-> prints `path:line:col`, the offending source line, and a `^` caret under the
-> exact span — e.g. `W014` (duplicate mobject/ecnew name) and `E004`
+> prints a cargo/rustc-style snippet: a ` --> path:line:col` header, a `|`
+> gutter with the line number, the offending source line, and a `^` caret under
+> the exact span — e.g. `W014` (duplicate mobject/ecnew name) and `E004`
 > (LabelNotFound) both do. This lets you jump straight to the problematic code
 > instead of guessing from the message alone.
 
@@ -21,15 +22,16 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 | E006 | `UnknownKey` | A key reference (`@label`, `target:`, `animate(target:)`, etc.) points to a mobject that was never registered via `#mobject`. Also used when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`, …) reference an unknown counter name. |
 | E007 | `InvalidKey` | A key parameter evaluated to a non-string type (e.g., number, boolean, array). Keys must always resolve to strings. |
 | E008 | `CandyDumpedYou` | The `.tyx` does not `#import` the candy package (or imports it with a version incompatible with the installed candy CLI — the imported version must satisfy at least one semver requirement in the CLI's `compatible_versions` list, e.g. `0.1.*`). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
-| E009 | `Encode` | Rav1e/openh264 encoding failure. |
+| E009 | `Encode` | Rav1e/openh264 encoding failure (the codec/mux stage). |
+| E010 | `Raster` | SVG frame **rasterization** failure during the *render* stage — usvg parse, wgpu adapter/device, vello scene render/poll — turning a compiled SVG frame into RGBA pixels. Distinct from `E009`, which is the later codec/mux stage. Previously mislabeled as `E009` (printed a misleading `encode:` prefix); fixed so a raster failure reports its true code. |
 
 ## Process exit codes
 
-The terminal `error!` reporter prints `error: [Exxx] <message>` to **stderr** and terminates
-the process with `CandyError::exit_code()`:
+The terminal `error!` reporter prints `error[Exxx]: <message>` to **stderr** (cargo/rustc
+style) and terminates the process with `CandyError::exit_code()`:
 
 - **E001–E009** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
-  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E006` → `69`, `E007` → `70`, `E008` → `71`, `E009` → `72`. `E008` is the fixed
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E006` → `69`, `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`. `E008` is the fixed
   easter-egg slot (`candy dumped you`). This keeps all
   Candy fatal codes in a dedicated `64–72` segment that does not collide with `0` (success),
   `1` (generic), `2` (clap usage), or `101` (Rust panic).
@@ -42,13 +44,14 @@ the process with `CandyError::exit_code()`:
 little noise you make after biting into something spoiled — a fitting sound for a batch that
 mostly worked but had a bad input somewhere in the middle. When a batch fails, Candy lists
 every failed input (`Batch failed on N input(s):` + `- <path>: <error>`) and then surfaces the
-marker through the diag pipeline as `error: [EYEE] yee~ Batch failed` before exiting with
+marker through the diag pipeline as `error[EYEE]: yee~ Batch failed` before exiting with
 `111`. A **single** failed input keeps its specific `E00x` code (e.g. `72` for `E009`) rather
 than `111`.
 
 ## Warnings (W001–W016)
 
-Warnings are **non-fatal**: they are printed to **stderr** as `warn: [Wxxx] …` and the render
+Warnings are **non-fatal**: they are printed to **stderr** as `warn[Wxxx]: …` (cargo/rustc
+style) and the render
 continues. They describe recoverable or merely undesirable conditions. `CandyWarn::code()` maps
 each variant to its `W` code.
 

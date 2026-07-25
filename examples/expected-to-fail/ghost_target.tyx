@@ -1,0 +1,4 @@
+// Expected to fail: E006 (undeclared mobject). Animating a label that was never
+// declared via #mobject must be rejected before any rendering happens.
+#import "@preview/candy:0.1.0": *
+#animate("ghost", to: (4cm, 0pt), duration: 30)
