@@ -808,18 +808,26 @@ fn process_focus_on(
 /// — crossfade two mobjects: fade out `from` while fading in `to`. Both
 /// must be registered via `mobject`. Mirrors Manim's `FadeTransform`.
 fn process_fade_transform(
-    _pos: &[Expr],
+    pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
     ctx: &mut ParseCtx,
 ) {
-    let from = named.get("from").and_then(|e| match e {
-        Expr::Str(s) => Some(Label(s.get().to_string())),
-        _ => None,
-    });
-    let to = named.get("to").and_then(|e| match e {
-        Expr::Str(s) => Some(Label(s.get().to_string())),
-        _ => None,
-    });
+    // `from` / `to` are positional per the Typst signature
+    // (`#fade-transform(from, to, ...)`); accept named as a fallback.
+    let from = pos
+        .first()
+        .or_else(|| named.get("from"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(Label(s.get().to_string())),
+            _ => None,
+        });
+    let to = pos
+        .get(1)
+        .or_else(|| named.get("to"))
+        .and_then(|e| match e {
+            Expr::Str(s) => Some(Label(s.get().to_string())),
+            _ => None,
+        });
     let (Some(from), Some(to)) = (from, to) else {
         return;
     };

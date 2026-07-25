@@ -165,6 +165,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         ignore_version: bool,
     },
+    /// Generate a shell completion script for the candy CLI and print it to
+    /// stdout. Redirect it into your shell's completion directory, e.g.
+    /// `candy completions zsh > ~/.zfunc/_candy` or
+    /// `candy completions bash > /etc/bash_completion.d/candy`.
+    Completions {
+        /// Target shell (bash, elvish, fish, powershell, zsh).
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     /// Hidden easter-egg command. Invoked as `candy candy` or `candy tyx`.
     #[command(alias = "tyx", hide = true)]
     Candy,
@@ -249,6 +258,14 @@ fn main() {
 fn run() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Completions { shell } => {
+            // Delegate entirely to clap_complete: it walks the full `Cli`
+            // command tree (subcommands, flags, value enums) and emits the
+            // native completion script for the chosen shell on stdout.
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+        }
         Commands::Candy => {
             // Hidden easter egg: `candy candy` / `candy tyx`.
             const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";

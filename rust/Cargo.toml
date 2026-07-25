@@ -6,18 +6,15 @@
     version = "0.1.0"
     edition = "2024"
     # Minimum Supported Rust Version: edition 2024 requires Rust 1.85+.
-    rust-version = "1.85"
-    description = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
-    license = "MIT OR Apache-2.0"
-    authors = [
-        "Shining Yang <97453940+ShiningYangYXN@users.noreply.github.com>",
-    ]
-    readme = "README.md"
-    homepage = "https://github.com/ViCo-Lab/candy"
-    repository = "https://github.com/ViCo-Lab/candy"
+    rust-version  = "1.85"
+    description   = "Code-oriented Animation eNgine Designed for tYpst — Rust rendering & encoding backend"
+    license       = "MIT OR Apache-2.0"
+    readme        = "README.md"
+    homepage      = "https://github.com/ViCo-Lab/candy"
+    repository    = "https://github.com/ViCo-Lab/candy"
     documentation = "https://docs.rs/candy-animation"
-    keywords = ["animation", "typst", "graphics", "manim", "video"]
-    categories = ["graphics", "multimedia::video", "command-line-utilities"]
+    keywords      = ["animation", "typst", "graphics", "manim", "video"]
+    categories    = ["graphics", "multimedia::video", "command-line-utilities"]
     # Keep the published crate lean: CI config, build intermediates and large
     # example assets are not needed by consumers.
     exclude = ["/.github", "/target", "/.candy", "/dist"]
@@ -49,6 +46,10 @@
 
 [dependencies]
     clap       = { version = "4.6.4", features = ["derive"] }
+    # Shell completion script generation (`candy completions <shell>`). Official
+    # clap companion crate — mature, always in lockstep with clap 4.x, and pure
+    # Rust (no native deps), so it cross-compiles like the rest of candy.
+    clap_complete = "4.6.4"
     serde      = { version = "1.0.229", features = ["derive"] }
     serde_json = "1"
 
@@ -104,12 +105,13 @@
         "emit-diagnostics",
     ] }
 
-    # HTTP client for candy's @preview package downloader. The `tls` feature uses
-    # the pure-Rust `rustls` + `webpki-roots` (bundled CA roots) backend — no
-    # OpenSSL, no `native-tls`, no system cert store, no perl. This replaces
-    # typst-kit's `native-tls`-based downloader.
-    ureq = { version = "2", default-features = false, features = [
-        "tls",
+    # HTTP client for candy's @preview package downloader. In ureq 3.x the
+    # `rustls` feature (default) uses the pure-Rust `rustls` + `webpki-roots`
+    # (bundled CA roots) backend — no OpenSSL, no `native-tls`, no system cert
+    # store, no perl. This replaces typst-kit's `native-tls`-based downloader.
+    ureq = { version = "3.3.0", default-features = false, features = [
+        "rustls",
+        "rustls-webpki-roots",
         "gzip",
     ] }
 
@@ -182,16 +184,6 @@
     gif = "0.14.2"
     png = "0.18.1"
 
-    # Linux-only `memfd_create` for the FFmpeg encoder's in-RAM seekable sink
-    # (muxed container + stderr never touch disk). Used solely via cfg-gated
-    # code on Linux; the crate still builds (and falls back to temp files) on
-    # every other platform without pulling in this dependency.
-    libc = "0.2"
-
-    # Linux-only `memmap2` for zero-copy audio file loading (mmap instead of
-    # fs::read). Used solely via cfg-gated code on Linux.
-    memmap2 = { version = "0.9", optional = true }
-
     # Semver requirement matching for the `.tyx` import version gate. The
     # accepted requirements come from `[package.metadata.tyx].compatible_versions`
     # (baked in by `build.rs` as `CANDY_COMPATIBLE_VERSIONS`); the actual
@@ -199,6 +191,19 @@
     semver = "1"
 
 
+# Linux-only dependencies. These are pulled in *only* when compiling for a Linux
+# target, so every other platform (macOS, Windows, BSD, …) never downloads or
+# builds them. The corresponding code is additionally cfg-gated, so the crate
+# still compiles everywhere and simply falls back to the portable paths (temp
+# files instead of `memfd`, `fs::read` instead of `mmap`) off Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+    # `memfd_create` / `sendfile` / `vmsplice` for the FFmpeg encoder's in-RAM
+    # seekable sink (muxed container + stderr never touch disk).
+    libc = "0.2"
+
+    # `memmap2` for zero-copy audio file loading (mmap instead of fs::read),
+    # behind the `zero-copy-audio` feature.
+    memmap2 = { version = "0.9", optional = true }
 
 [build-dependencies]
     # `build.rs` parses this manifest to extract `[package.metadata.candy]`

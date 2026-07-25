@@ -80,13 +80,15 @@ impl Downloader for NoDownload {
 #[cfg(feature = "system-downloader")]
 pub(crate) struct RustlsDownloader {
     agent: Agent,
+    user_agent: String,
 }
 
 #[cfg(feature = "system-downloader")]
 impl RustlsDownloader {
     fn new(user_agent: &str) -> Self {
         Self {
-            agent: ureq::AgentBuilder::new().user_agent(user_agent).build(),
+            agent: Agent::new_with_defaults(),
+            user_agent: user_agent.to_string(),
         }
     }
 }
@@ -98,14 +100,20 @@ impl Downloader for RustlsDownloader {
         _key: &dyn std::any::Any,
         url: &str,
     ) -> std::io::Result<(Option<usize>, Box<dyn std::io::Read>)> {
-        let response = self.agent.get(url).call().map_err(|err| match err {
-            ureq::Error::Status(404, _) => std::io::Error::new(std::io::ErrorKind::NotFound, err),
-            err => std::io::Error::other(err),
-        })?;
-        let content_len: Option<usize> = response
-            .header("Content-Length")
-            .and_then(|header| header.parse().ok());
-        Ok((content_len, Box::new(response.into_reader())))
+        let response = self
+            .agent
+            .get(url)
+            .header("User-Agent", self.user_agent.as_str())
+            .call()
+            .map_err(|err| match err {
+                ureq::Error::StatusCode(404) => {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, err)
+                }
+                err => std::io::Error::other(err),
+            })?;
+        let content_len: Option<usize> = response.body().content_length().map(|n| n as usize);
+        let reader = response.into_body().into_reader();
+        Ok((content_len, Box::new(reader)))
     }
 }
 
