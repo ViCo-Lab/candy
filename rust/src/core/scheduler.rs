@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 use crate::core::ast::ParseArtifacts;
 use crate::core::ast::{Action, FrameData, Label, PathMode, Scene};
-use crate::core::diag::CandyError;
+use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::easing::Easing;
 
 /// Per-target animation state. Internal to the scheduler.
@@ -677,7 +677,11 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
 
     // Mandatory validation: monotonic time_ms per target. Returns E002
     // (Parse) instead of panicking, honoring spec §6.
-    validate_monotonic(&all)?;
+    validate_monotonic(
+        &all,
+        &scene.artifacts.name_ref_locs,
+        &scene.artifacts.label_locs,
+    )?;
     Ok(all)
 }
 
@@ -793,8 +797,13 @@ fn flush_core(
 }
 
 /// Validation helper: within each target's keyframe list, `time_ms` must be
-/// non-decreasing. Returns `CandyError::Parse` (E002) on violation.
-fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
+/// non-decreasing. Returns `CandyError::Parse` (E002) on violation, pointing
+/// at the offending target's *usage* site (falling back to its declaration).
+fn validate_monotonic(
+    frames: &[FrameData],
+    name_ref_locs: &HashMap<String, SourceLoc>,
+    label_locs: &HashMap<Label, SourceLoc>,
+) -> Result<(), CandyError> {
     let mut last: Option<(Label, u32)> = None;
     for f in frames {
         if let Some((ref lbl, idx)) = last {
@@ -804,7 +813,10 @@ fn validate_monotonic(frames: &[FrameData]) -> Result<(), CandyError> {
                         "scheduler: non-monotonic time_ms for @{} ({} < {})",
                         f.target.0, f.time_ms, idx
                     ),
-                    None,
+                    name_ref_locs
+                        .get(&f.target.0)
+                        .or_else(|| label_locs.get(&f.target))
+                        .cloned(),
                 ));
             }
         }
@@ -867,6 +879,7 @@ mod tests {
                         to: (3.0, 0.0),
                         easing: Easing::Linear,
                     }],
+                    loc: None,
                 },
                 Slide {
                     start_ms: 10000,
@@ -875,6 +888,7 @@ mod tests {
                         target: Label("a".into()),
                         easing: Easing::Smooth,
                     }],
+                    loc: None,
                 },
             ],
             items: {
@@ -948,7 +962,12 @@ mod tests {
                 easing: Easing::Linear,
             },
         ];
-        let err = validate_monotonic(&frames).unwrap_err();
+        let err = validate_monotonic(
+            &frames,
+            &HashMap::<String, SourceLoc>::new(),
+            &HashMap::<Label, SourceLoc>::new(),
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "E002");
         assert!(err.to_string().contains("non-monotonic"));
     }

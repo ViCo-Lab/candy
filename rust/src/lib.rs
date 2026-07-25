@@ -324,7 +324,7 @@ pub fn build_input_with_gpu(
     if gpu_ok {
         match crate::renderer::raster::gpu::GpuRenderer::new() {
             Ok(g) => {
-                crate::core::diag::cargo_status("Running", "GPU rasterization (vello + wgpu)");
+                crate::core::diag::cargo_status!("Running", "GPU rasterization (vello + wgpu)");
                 gpu_renderer = Some(g);
             }
             Err(e) => {
@@ -571,9 +571,12 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
                 progress_open = false;
             }
             let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
-            crate::core::diag::cargo_status(
+            crate::core::diag::cargo_status!(
                 "Scene",
-                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+                "{}/{}  {}",
+                sid + 1,
+                progress.n_scenes,
+                name
             );
             cur_scene = Some(sid);
             scene_frame_idx = 0;
@@ -600,7 +603,7 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
     if progress_open {
         println!();
     }
-    crate::core::diag::cargo_status("Verified", &format!("{} frame(s)", total_frames));
+    crate::core::diag::cargo_status!("Verified", "{} frame(s)", total_frames);
     Ok(())
 }
 
@@ -899,9 +902,12 @@ fn consume_frames(
                 *progress_open = false;
             }
             let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
-            crate::core::diag::cargo_status(
+            crate::core::diag::cargo_status!(
                 "Scene",
-                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+                "{}/{}  {}",
+                sid + 1,
+                progress.n_scenes,
+                name
             );
             *cur_scene = Some(sid);
             *scene_frame_idx = 0;
@@ -1159,9 +1165,12 @@ fn stream_encode_gpu(
                 progress_open = false;
             }
             let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
-            crate::core::diag::cargo_status(
+            crate::core::diag::cargo_status!(
                 "Scene",
-                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+                "{}/{}  {}",
+                sid + 1,
+                progress.n_scenes,
+                name
             );
             cur_scene = Some(sid);
             scene_frame_idx = 0;

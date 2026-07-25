@@ -64,6 +64,7 @@ mod tests {
                     to: (1.0, 2.0),
                     easing: Easing::Smooth,
                 }],
+                loc: None,
             }],
             items: {
                 let mut m = HashMap::new();

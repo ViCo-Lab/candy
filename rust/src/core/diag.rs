@@ -21,7 +21,11 @@ use std::fmt;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-use anstream::{AutoStream, ColorChoice};
+pub use anstream::{AutoStream, ColorChoice};
+// Re-export the `#[macro_export]` macros at the `core::diag` path so existing
+// call sites (`crate::core::diag::cargo_status!`, `candy::core::diag::bold!`, …)
+// keep working.
+pub use crate::{bold, cargo_finished, cargo_status, eprint_styled, print_styled};
 use anstyle::Style;
 
 /// `Color` is re-exported (pub) so the `error!` / `warn!` macros can refer to
@@ -41,7 +45,7 @@ pub use anstyle::AnsiColor as Color;
 
 /// Wrap `text` in `style` and a matching reset (`{style:#}`), so the color
 /// never bleeds past the end of the text.
-fn paint(style: Style, text: &str) -> String {
+pub fn paint(style: Style, text: &str) -> String {
     format!("{style}{text}{style:#}")
 }
 
@@ -56,7 +60,7 @@ fn style_caret(c: Color) -> Style {
 }
 
 /// Bold + green (cargo `Finished` / `Compiling` verb style).
-fn style_green_bold() -> Style {
+pub fn style_green_bold() -> Style {
     Style::new()
         .bold()
         .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)))
@@ -700,10 +704,19 @@ pub fn render_error_loc(loc: &SourceLoc) -> String {
 /// colored green and bold; otherwise, or when NO_COLOR is set, the output
 /// stays free of ANSI codes. The build, check, migrate, and encode progress
 /// all surface through these lines, so the build output reads like cargo build.
-pub fn cargo_status(verb: &str, message: &str) {
-    let padded = format!("{verb:>12}");
-    let verb_str = paint(style_green_bold(), &padded);
-    print_styled(&format!("{verb_str} {message}"));
+/// Defined as a macro (like `println!`) so call sites pass args directly; the
+/// verb is right-aligned to 12 columns and painted green+bold on a TTY.
+#[macro_export]
+macro_rules! cargo_status {
+    ($verb:expr, $($message:tt)*) => {{
+        let __padded = ::std::format!("{:>12}", $verb);
+        let __verb_str = $crate::core::diag::paint(
+            $crate::core::diag::style_green_bold(),
+            &__padded,
+        );
+        let __msg = ::std::format!($($message)*);
+        $crate::print_styled!("{} {}", __verb_str, __msg);
+    }};
 }
 
 /// Print the cargo/rustc-style final summary line to **stdout**:
@@ -717,14 +730,19 @@ pub fn cargo_status(verb: &str, message: &str) {
 /// (including the `in X.XXs` timing) stays plain — exactly how cargo prints
 /// `Finished \`dev\` profile … target(s) in 1.26s`. Off a TTY or under
 /// `NO_COLOR` the whole line is plain ANSI-free text. Mirrors the `Finished`
-/// line cargo prints at the end of every build.
-pub fn cargo_finished(label: &str, elapsed: std::time::Duration) {
-    let secs = elapsed.as_secs_f64();
-    // Pad the visible verb to 12 columns *before* coloring (same reason as
-    // [`cargo_status`]).
-    let padded = format!("{:>12}", "Finished");
-    let fin = paint(style_green_bold(), &padded);
-    print_styled(&format!("{fin} {label} in {secs:.2}s"));
+/// line cargo prints at the end of every build. Defined as a macro (like
+/// `println!`) so call sites pass args directly.
+#[macro_export]
+macro_rules! cargo_finished {
+    ($elapsed:expr, $($label:tt)*) => {{
+        let __secs = ($elapsed).as_secs_f64();
+        // Pad the visible verb to 12 columns *before* coloring (same reason as
+        // [`cargo_status`]).
+        let __padded = ::std::format!("{:>12}", "Finished");
+        let __fin = $crate::core::diag::paint($crate::core::diag::style_green_bold(), &__padded);
+        let __label = ::std::format!($($label)*);
+        $crate::print_styled!("{} {} in {:.2}s", __fin, __label, __secs);
+    }};
 }
 
 /// Print an in-place cargo/rustc-style progress line to **stdout** (carriage
@@ -773,23 +791,53 @@ pub fn render_warn_loc(loc: &SourceLoc) -> String {
 
 /// Write a fully-styled line to **stderr**, stripping ANSI when not a TTY /
 /// `NO_COLOR`. Flushes so a following `process::exit` cannot drop the bytes.
-pub fn eprint_styled(s: &str) {
-    let mut w = AutoStream::new(std::io::stderr(), ColorChoice::Auto);
-    let _ = writeln!(w, "{s}");
-    let _ = w.flush();
+/// Defined as a macro (like `eprintln!`) so call sites pass format args
+/// directly without wrapping every message in `format!`. The `AutoStream`
+/// writer strips the ANSI codes when the destination isn't a terminal or
+/// `NO_COLOR` (https://no-color.org) is set, so the same code path serves both
+/// colored (TTY) and plain (piped / CI) output.
+#[macro_export]
+macro_rules! eprint_styled {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let mut __w = $crate::core::diag::AutoStream::new(
+            ::std::io::stderr(),
+            $crate::core::diag::ColorChoice::Auto,
+        );
+        let _ = ::std::writeln!(__w, "{}", ::std::format!($($arg)*));
+        let _ = ::std::io::Write::flush(&mut __w);
+    }};
 }
 
 /// Write a fully-styled line to **stdout**, stripping ANSI when not a TTY /
-/// `NO_COLOR`.
-pub fn print_styled(s: &str) {
-    let mut w = AutoStream::new(std::io::stdout(), ColorChoice::Auto);
-    let _ = writeln!(w, "{s}");
-    let _ = w.flush();
+/// `NO_COLOR`. See [`eprint_styled`] for the styling/ANSI semantics.
+#[macro_export]
+macro_rules! print_styled {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let mut __w = $crate::core::diag::AutoStream::new(
+            ::std::io::stdout(),
+            $crate::core::diag::ColorChoice::Auto,
+        );
+        let _ = ::std::writeln!(__w, "{}", ::std::format!($($arg)*));
+        let _ = ::std::io::Write::flush(&mut __w);
+    }};
+}
+
+/// Bold style (ANSI codes always emitted; stripped off-TTY by the writers).
+pub fn style_bold() -> Style {
+    Style::new().bold()
 }
 
 /// Bold a string (ANSI codes always emitted; stripped off-TTY by the writers).
-pub fn bold(s: &str) -> String {
-    paint(Style::new().bold(), s)
+/// Defined as a macro (like `format!`) so call sites pass args directly without
+/// pre-wrapping in `format!`; the `AutoStream` writers strip the codes off a
+/// TTY / under `NO_COLOR`.
+#[macro_export]
+macro_rules! bold {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_bold(), &::std::format!($($arg)*))
+    };
 }
 
 /// Print a fatal-style error to stderr **without exiting**. Used by batch mode
@@ -797,16 +845,16 @@ pub fn bold(s: &str) -> String {
 /// building; the final batch summary (cargo-style) is printed once at the end.
 pub fn report_error(e: &CandyError) {
     let head = paint_err_head("error", e.code(), Color::Red);
-    let mut line = format!("{} {}", head, e.message());
+    let mut line = format!("{} {}", head, bold!("{}", e.message()));
     if let Some(loc) = e.loc() {
         line.push('\n');
         line.push_str(&render_error_loc(loc));
     }
     if let Some(h) = e.hint() {
         line.push('\n');
-        line.push_str(&format!("  hint: {}", h));
+        line.push_str(&format!("  {} {}", bold!("{}:", "hint"), h));
     }
-    eprint_styled(&line);
+    eprint_styled!("{}", line);
 }
 
 /// Fatal error — the "panic" path. Prints `error[Exxx]: <message>` to
@@ -820,16 +868,20 @@ macro_rules! error {
         let __e = &$err;
         let __head =
             $crate::core::diag::paint_err_head("error", __e.code(), $crate::core::diag::Color::Red);
-        let mut __line = ::std::format!("{} {}", __head, __e.message());
+        let mut __line = ::std::format!("{} {}", __head, $crate::bold!("{}", __e.message()));
         if let Some(__loc) = __e.loc() {
             __line.push('\n');
             __line.push_str(&$crate::core::diag::render_error_loc(__loc));
         }
         if let Some(__h) = __e.hint() {
             __line.push('\n');
-            __line.push_str(&::std::format!("  hint: {}", __h));
+            __line.push_str(&::std::format!(
+                "  {} {}",
+                $crate::bold!("{}:", "hint"),
+                __h
+            ));
         }
-        $crate::core::diag::eprint_styled(&__line);
+        $crate::core::diag::eprint_styled!("{}", __line);
         ::std::process::exit($crate::core::diag::CandyError::exit_code(__e));
     }};
 }
@@ -846,12 +898,12 @@ macro_rules! warn {
             __w.code(),
             $crate::core::diag::Color::Yellow,
         );
-        let mut __line = ::std::format!("{} {}", __head, __w.message());
+        let mut __line = ::std::format!("{} {}", __head, $crate::bold!("{}", __w.message()));
         if let Some(__loc) = __w.loc() {
             __line.push('\n');
             __line.push_str(&$crate::core::diag::render_warn_loc(__loc));
         }
-        $crate::core::diag::eprint_styled(&__line);
+        $crate::core::diag::eprint_styled!("{}", __line);
     }};
 }
 
@@ -860,11 +912,11 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {{
-        $crate::core::diag::print_styled(&::std::format!(
+        $crate::core::diag::print_styled!(
             "{}: {}",
             $crate::core::diag::level_debug(),
             format_args!($($arg)*)
-        ));
+        );
     }};
 }
 
@@ -873,10 +925,10 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {{
-        $crate::core::diag::print_styled(&::std::format!(
+        $crate::core::diag::print_styled!(
             "{}: {}",
             $crate::core::diag::level_info(),
             format_args!($($arg)*)
-        ));
+        );
     }};
 }

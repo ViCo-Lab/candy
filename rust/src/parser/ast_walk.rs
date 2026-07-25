@@ -57,6 +57,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     // Record the source file path so diagnostics can point at the real file.
     let mut ctx = ParseCtx {
         file_path: path.to_path_buf(),
+        source: raw.clone(),
         ..Default::default()
     };
     // The whole document is the implicit root scope (id 0).
@@ -120,7 +121,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
              file path (e.g. `#import \"candy\"`); pass --ignore-version to \
              bypass this check"
                 .into(),
-            None,
+            ctx.file_style_import_loc.clone(),
         ));
     }
     if !ctx.candy_imported && !ctx.file_style_candy_import {
@@ -143,7 +144,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
                         cli = crate::CANDY_VERSION,
                         reqs = crate::compatible_versions_display(),
                     ),
-                    None,
+                    ctx.candy_import_loc.clone(),
                 ));
             }
         }
@@ -165,6 +166,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             start_ms: 0,
             duration_ms: 500,
             actions: Vec::new(),
+            loc: None,
         });
     }
 
@@ -206,6 +208,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             scene_call: ctx.scene_call_ranges.clone(),
             subtitle_call: ctx.subtitle_call_ranges.clone(),
             label_locs: ctx.label_locs.clone(),
+            name_ref_locs: ctx.name_ref_locs.clone(),
         },
         private_metadata: private,
     };
@@ -236,6 +239,16 @@ pub(crate) struct ParseCtx {
     /// Whether a file-style candy import (`#import "candy"` / `#import ".../candy"`)
     /// was seen — these trigger CandyDumpedYou.
     pub(crate) file_style_candy_import: bool,
+    /// The raw `.tyx` source text, retained so diagnostics (e.g. E008 import /
+    /// version errors) can build a [`SourceLoc`] pointing at the offending
+    /// `#import` line instead of just emitting a message.
+    pub(crate) source: String,
+    /// Source location of the detected `@<ns>/candy:<version>` package import,
+    /// used to point E008 (version mismatch) at the real import line.
+    pub(crate) candy_import_loc: Option<SourceLoc>,
+    /// Source location of a file-style candy import (`#import "candy"`), used to
+    /// point E008 at the offending import.
+    pub(crate) file_style_import_loc: Option<SourceLoc>,
     /// label -> raw body source text.
     pub(crate) items: HashMap<Label, String>,
     /// label -> frame-0 visual state.
@@ -297,6 +310,18 @@ pub(crate) struct ParseCtx {
     /// keyed by label. Fed into `Scene::artifacts.label_locs` so later
     /// diagnostics (e.g. `E004` LabelNotFound) can point at the declaration.
     pub(crate) label_locs: HashMap<Label, SourceLoc>,
+    /// Source location of every *name reference* (a `#mobject`/`#ecnew` target
+    /// label or easing-counter name written inside a directive such as
+    /// `#animate(target: "x")`, `#ecpause("c")`, …), keyed by the resolved name
+    /// string. Fed into `Scene::artifacts.name_ref_locs` so name-anomaly errors
+    /// (`E004` LabelNotFound / `E006` UnknownKey) can point at the *usage* site
+    /// rather than only at declarations (which don't exist for an unknown name).
+    pub(crate) name_ref_locs: HashMap<String, SourceLoc>,
+    /// Source location of the directive currently being processed. `process_call`
+    /// sets it from the call node's range; `emit_slide` copies it onto each
+    /// produced `Slide` so structural `E002`/`Parse` errors (e.g. a bad
+    /// `duration_ms`) can point at the offending directive.
+    pub(crate) current_directive_loc: Option<SourceLoc>,
     /// Lexical scope intervals (finalized on scope exit / at end of parse).
     pub(crate) scopes: Vec<crate::core::ast::ScopeInfo>,
     /// Nested scene tree (see `SceneInfo`). `current_scene` is the scene that
@@ -558,7 +583,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 }
             }
         }
-        process_import(imp, ctx);
+        process_import(imp, node.range(), ctx);
     } else if let Some(call) = node.get().cast::<ast::FuncCall>() {
         process_call(call, node, raw, ctx);
     }
@@ -612,7 +637,7 @@ fn module_import_path(imp: &ast::ModuleImport) -> Option<String> {
 }
 
 /// Record imported Candy symbols so later calls can be resolved.
-fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
+fn process_import(imp: ast::ModuleImport, range: std::ops::Range<usize>, ctx: &mut ParseCtx) {
     // Detect candy package imports. Any Typst package import of the form
     // `@<namespace>/candy:<version>` is accepted (e.g. `@preview/candy:0.1.0`,
     // `@local/candy:0.1.0`). File-style imports (`#import "candy"` or
@@ -626,10 +651,13 @@ fn process_import(imp: ast::ModuleImport, ctx: &mut ParseCtx) {
                 if path.ends_with("/candy") {
                     ctx.candy_imported = true;
                     ctx.candy_import_version = Some(version.to_string());
+                    ctx.candy_import_loc =
+                        Some(SourceLoc::at(&ctx.file_path, &ctx.source, range.clone()));
                 }
             }
         } else if src == "candy" || src.ends_with("/candy") {
             ctx.file_style_candy_import = true;
+            ctx.file_style_import_loc = Some(SourceLoc::at(&ctx.file_path, &ctx.source, range));
         }
     }
     match imp.imports() {

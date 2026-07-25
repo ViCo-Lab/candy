@@ -64,6 +64,7 @@ fn emit_slide(
         start_ms: start,
         duration_ms: duration,
         actions,
+        loc: ctx.current_directive_loc.clone(),
     });
     ctx.entry_advance(duration);
     ctx.entry_close();
@@ -86,6 +87,10 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         return;
     };
 
+    // Record this directive's source location so `emit_slide` can attach it to
+    // the `Slide`(s) it produces — used by the `E002`/`Parse` `duration_ms` error.
+    ctx.current_directive_loc = Some(SourceLoc::at(&ctx.file_path, raw, node.range()));
+
     let args = call.args();
     let mut pos: Vec<Expr> = Vec::new();
     let mut named: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
@@ -98,6 +103,10 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
             ast::Arg::Spread(_) => {}
         }
     }
+
+    // Record the source location of the directive's name reference (target
+    // label / counter name) so name-anomaly errors can point at the usage.
+    record_name_refs(node, &sym, &pos, &named, raw, ctx);
 
     match sym.as_str() {
         "track" => process_track(&pos, &named, ctx),
@@ -141,6 +150,72 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         }
         _ => {}
     }
+}
+
+/// Record the source location of a *name reference* (a target label or
+/// easing-counter name written inside a directive such as `#animate(target:
+/// "x")`, `#ecpause("c")`, …) so name-anomaly errors (`E004` LabelNotFound /
+/// `E006` UnknownKey) can point at the *usage* site rather than only at a
+/// declaration (which does not exist for an unknown name). We resolve the
+/// directive's name argument, then locate the matching string-literal node in
+/// the call's syntax subtree.
+fn record_name_refs(
+    node: &LinkedNode,
+    sym: &str,
+    pos: &[Expr],
+    named: &std::collections::HashMap<String, Expr>,
+    raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    // Directives whose first positional or `target:`/`name:` argument is a name
+    // reference. The resolution below mirrors each directive's actual argument
+    // handling (see `target_arg` in `expr.rs` and the per-directive parsers) so a
+    // reference is recorded whether the user wrote it positionally
+    // (`#animate("ghost", …)`) or as a named arg (`#animate(target: "ghost")`).
+    // Declarations / directives without a name argument (`mobject`, `group`,
+    // `subtitle`, `pause`, `audio`, `camera`) are skipped to avoid recording
+    // non-name string literals (e.g. subtitle text) as name references.
+    let name_expr: Option<&Expr> = match sym {
+        // Resolve via `target_arg`: positional OR `target:`.
+        "animate" | "track" | "indicate" | "flash" | "wiggle" | "appear" | "disappear"
+        | "set-color" | "blink" | "spiral-in" | "focus-on" | "fade-transform"
+        | "move-along-path" | "morph" | "transform" | "reveal" | "typewriter" => {
+            pos.first().or_else(|| named.get("target"))
+        }
+        // scene-switch: `target:` OR `name:` (no positional form).
+        "scene-switch" => named.get("target").or_else(|| named.get("name")),
+        // Easing-counter directives: positional OR `name:`.
+        "ecnew" | "ecval" | "ecpause" | "ecresume" | "ecdestroy" | "ecadd" | "ecset" => {
+            pos.first().or_else(|| named.get("name"))
+        }
+        // Declarations / no name argument — never a usage site, skip.
+        "mobject" | "group" | "subtitle" | "pause" | "audio" | "camera" => return,
+        // Anything else — be conservative and don't record a phantom name ref.
+        _ => return,
+    };
+    let name = match name_expr {
+        Some(Expr::Str(s)) => s.get().to_string(),
+        _ => return,
+    };
+    if let Some(loc) = find_str_loc(node, &name, raw, ctx) {
+        ctx.name_ref_locs.insert(name, loc);
+    }
+}
+
+/// Recursively search `node`'s subtree for an `ast::Str` whose value equals
+/// `name`, returning its source range as a [`SourceLoc`].
+fn find_str_loc(node: &LinkedNode, name: &str, raw: &str, ctx: &ParseCtx) -> Option<SourceLoc> {
+    if let Some(s) = node.get().cast::<ast::Str>() {
+        if s.get() == name {
+            return Some(SourceLoc::at(&ctx.file_path, raw, node.range()));
+        }
+    }
+    for child in node.children() {
+        if let Some(loc) = find_str_loc(&child, name, raw, ctx) {
+            return Some(loc);
+        }
+    }
+    None
 }
 
 /// `mobject(label, body)`: register `items[label] = body` (raw source) with a
@@ -691,6 +766,7 @@ fn process_blink(
                 opacity: 0.0,
                 easing: easing.clone(),
             }],
+            loc: None,
         });
         ctx.entry_advance(per_blink);
         ctx.slides.push(Slide {
@@ -701,6 +777,7 @@ fn process_blink(
                 opacity: 1.0,
                 easing: easing.clone(),
             }],
+            loc: None,
         });
         ctx.entry_advance(per_blink);
     }
@@ -746,6 +823,7 @@ fn process_spiral_in(
                 target: label.clone(),
             },
         ],
+        loc: None,
     });
     ctx.entry_advance(1);
     // Animate to natural state: scale 1, rotate 0, visible.
@@ -768,6 +846,7 @@ fn process_spiral_in(
                 easing: easing.clone(),
             },
         ],
+        loc: None,
     });
     ctx.entry_advance(duration);
     ctx.entry_close();
@@ -853,6 +932,7 @@ fn process_fade_transform(
             start_ms: 0,
             duration_ms: 1,
             actions: vec![Action::Hide { target: to.clone() }],
+            loc: None,
         });
     }
 
@@ -864,6 +944,7 @@ fn process_fade_transform(
         start_ms: ctx.entry_end,
         duration_ms: 1,
         actions: vec![Action::Hide { target: to.clone() }],
+        loc: None,
     });
     ctx.entry_advance(1);
 
@@ -878,6 +959,7 @@ fn process_fade_transform(
             },
             Action::FadeIn { target: to, easing },
         ],
+        loc: None,
     });
     ctx.entry_advance(duration);
     ctx.entry_close();
@@ -1186,6 +1268,7 @@ fn process_reveal(
         start_ms: start,
         duration_ms: duration,
         actions: vec![],
+        loc: None,
     });
     ctx.entry_advance(duration);
     ctx.entry_close();
@@ -1246,6 +1329,7 @@ fn process_morph(
         start_ms: ctx.entry_end,
         duration_ms: 1,
         actions: vec![Action::Hide { target: to.clone() }],
+        loc: None,
     });
     ctx.entry_advance(1);
 
@@ -1272,6 +1356,7 @@ fn process_morph(
                 easing: easing.clone(),
             },
         ],
+        loc: None,
     });
     ctx.morph_pairs.push(crate::core::ast::MorphPair {
         from: from.clone(),
@@ -1389,6 +1474,7 @@ fn process_transform(
                 target: label,
                 easing: easing.clone(),
             }],
+            loc: None,
         });
         ctx.entry_advance(duration);
         ctx.entry_close();
@@ -1477,6 +1563,7 @@ fn process_transform(
             old: tmp,
             easing: easing.clone(),
         }],
+        loc: None,
     });
     ctx.entry_advance(duration);
     ctx.entry_close();

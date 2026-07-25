@@ -405,7 +405,11 @@ impl Renderer {
         {
             return Err(CandyError::LabelNotFound(
                 frame.target.clone(),
-                self.scene.artifacts.label_locs.get(&frame.target).cloned(),
+                self.scene
+                    .artifacts
+                    .name_ref_locs
+                    .get(&frame.target.0)
+                    .cloned(),
             ));
         }
         self.ensure_flow()?;
@@ -432,7 +436,11 @@ impl Renderer {
             return Err(CandyError::UnknownKey(
                 "ecnew".to_string(),
                 counter_name.clone(),
-                None,
+                self.scene
+                    .artifacts
+                    .name_ref_locs
+                    .get(counter_name)
+                    .cloned(),
             ));
         }
 

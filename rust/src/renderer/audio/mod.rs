@@ -336,9 +336,9 @@ pub fn transcode_via_ffmpeg(
         .output()
         .ok()?;
     if output.status.success() && tmp.exists() {
-        crate::core::diag::cargo_status(
+        crate::core::diag::cargo_status!(
             "Running",
-            &format!("`ffmpeg` transcoded '{input_path}' to {codec_name}"),
+            "`ffmpeg` transcoded '{input_path}' to {codec_name}"
         );
         Some(tmp)
     } else {

@@ -21,13 +21,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
-use candy::core::diag::{
-    CandyWarn, bold, cargo_finished, cargo_status, eprint_styled, report_error,
-};
+use candy::core::diag::{CandyWarn, bold, cargo_finished, cargo_status, report_error};
 use candy::{
     CandyError, Codec, Input, OutputFormat, build_input_with_gpu, check_input, migrate_file,
 };
-use candy::{error, warn};
+use candy::{eprint_styled, error, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -270,7 +268,7 @@ fn run() -> Result<(), CandyError> {
         Commands::Candy => {
             // Hidden easter egg: `candy candy` / `candy tyx`.
             const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";
-            eprint_styled(&bold(SECRET));
+            eprint_styled!("{}", bold!("{}", SECRET));
         }
         Commands::Build {
             inputs,
@@ -324,7 +322,7 @@ fn run() -> Result<(), CandyError> {
             let build_start = Instant::now();
             for (i, input) in inputs.iter().enumerate() {
                 let input_path = input.0.clone();
-                cargo_status("Building", &input_path.display().to_string());
+                cargo_status!("Building", "{}", input_path.display());
                 // Run one input; `?` inside collects into `result` instead of
                 // aborting the whole batch.
                 let result: Result<(), CandyError> = (|| {
@@ -408,9 +406,10 @@ fn run() -> Result<(), CandyError> {
                             keep_intermediates,
                             ignore_version,
                         )?;
-                        cargo_status(
+                        cargo_status!(
                             "Finished",
-                            &format!("SVG draft at {}/frame_*.svg", intermediate_dir.display()),
+                            "SVG draft at {}/frame_*.svg",
+                            intermediate_dir.display()
                         );
                         return Ok(());
                     }
@@ -461,10 +460,7 @@ fn run() -> Result<(), CandyError> {
             // A clean build prints a single cargo-style `Finished … in Xs` summary
             // (just like `cargo build`), naming the count of animations produced.
             if failures.is_empty() {
-                cargo_finished(
-                    &format!("{} animation(s)", inputs.len()),
-                    build_start.elapsed(),
-                );
+                cargo_finished!(build_start.elapsed(), "{} animation(s)", inputs.len());
             } else if inputs.len() > 1 {
                 // Batch mode: each failure was already printed in real time
                 // above, so the final summary is cargo-style — both success and
@@ -503,17 +499,14 @@ fn run() -> Result<(), CandyError> {
             let migrate_start = Instant::now();
             for input in &inputs {
                 let path = input.0.clone();
-                cargo_status("Migrating", &path.display().to_string());
+                cargo_status!("Migrating", "{}", path.display());
                 match migrate_file(&path, version.as_deref()) {
                     Ok(0) => {
-                        cargo_status("Finished", &format!("{} up to date", path.display()));
+                        cargo_status!("Finished", "{} up to date", path.display());
                         succeeded += 1;
                     }
                     Ok(n) => {
-                        cargo_status(
-                            "Finished",
-                            &format!("{} rewrote {n} import line(s)", path.display()),
-                        );
+                        cargo_status!("Finished", "{} rewrote {n} import line(s)", path.display());
                         succeeded += 1;
                     }
                     Err(e) => {
@@ -559,7 +552,7 @@ fn run() -> Result<(), CandyError> {
             let check_start = Instant::now();
             for input in &inputs {
                 let path = input.0.clone();
-                cargo_status("Checking", &path.display().to_string());
+                cargo_status!("Checking", "{}", path.display());
                 if let Err(e) = check_input(Input::from(path.as_path()), ignore_version, fps) {
                     if inputs.len() > 1 {
                         report_error(&e);
@@ -570,7 +563,7 @@ fn run() -> Result<(), CandyError> {
                 }
             }
             if failures.is_empty() {
-                cargo_finished(&format!("{} file(s)", inputs.len()), check_start.elapsed());
+                cargo_finished!(check_start.elapsed(), "{} file(s)", inputs.len());
             } else if inputs.len() > 1 {
                 let failed = failures.len();
                 error!(CandyError::Yee(format!(

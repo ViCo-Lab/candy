@@ -360,10 +360,7 @@ pub(crate) fn spawn_ffmpeg(
         .take()
         .ok_or_else(|| CandyError::Encode("ffmpeg stdin not captured".into()))?;
 
-    crate::core::diag::cargo_status(
-        "Running",
-        &format!("`ffmpeg -c:v {encoder} -f {format} (streaming)`"),
-    );
+    crate::core::diag::cargo_status!("Running", "`ffmpeg -c:v {encoder} -f {format} (streaming)`");
     Ok((child, stdin, mux, err_log))
 }
 
@@ -569,9 +566,9 @@ pub(crate) fn spawn_ffmpeg_streaming(
     // the caller drops the write end, ffmpeg sees the real EOF and finalises.
     drop(read_file);
 
-    crate::core::diag::cargo_status(
+    crate::core::diag::cargo_status!(
         "Running",
-        &format!("`ffmpeg -c:v {encoder} -f {format}` (pipe input, vmsplice)"),
+        "`ffmpeg -c:v {encoder} -f {format}` (pipe input, vmsplice)"
     );
     Ok((child, write_file, mux, err_log))
 }

@@ -476,6 +476,15 @@ pub struct Slide {
     pub duration_ms: u32,
     /// Actions applied across this slide's duration.
     pub actions: Vec<Action>,
+    /// Source location of the directive that produced this slide (best-effort,
+    /// set by the parser's `emit_slide` from `ParseCtx::current_directive_loc`).
+    /// Lets structural `E002`/`Parse` errors (e.g. `duration_ms < 1`) point at
+    /// the offending directive rather than only at the slide index. `None` for
+    /// synthetic slides (the injected empty slide, hand-built test scenes).
+    /// Skipped on (de)serialization: a `SourceLoc` is only meaningful within a
+    /// single parse / error-reporting run, and `SourceLoc` is not `Serialize`.
+    #[serde(skip)]
+    pub loc: Option<SourceLoc>,
 }
 
 /// An audio track attached to the timeline (from `candy.audio`).
@@ -647,6 +656,12 @@ pub struct ParseArtifacts {
     /// LabelNotFound). Not serialized (it is a re-derivable cache of the
     /// source), default-empty so synthetic `Scene`s (tests) stay trivial.
     pub label_locs: HashMap<Label, SourceLoc>,
+    /// Source location of every *name reference* (a target label or
+    /// easing-counter name written inside a directive), keyed by the resolved
+    /// name string. Lets name-anomaly errors (`E004` LabelNotFound / `E006`
+    /// UnknownKey) point at the *usage* site when the name is never declared.
+    /// Default-empty so synthetic `Scene`s (tests) stay trivial.
+    pub name_ref_locs: HashMap<String, SourceLoc>,
 }
 
 impl Scene {
@@ -800,7 +815,7 @@ impl Scene {
             if s.duration_ms < 1 {
                 return Err(CandyError::Parse(
                     format!("slide {i}: duration_ms must be >= 1"),
-                    None,
+                    self.slides[i].loc.clone(),
                 ));
             }
         }
@@ -812,7 +827,7 @@ impl Scene {
                 return Err(CandyError::UnknownKey(
                     "ecnew".to_string(),
                     ev.name.clone(),
-                    None,
+                    self.artifacts.name_ref_locs.get(&ev.name).cloned(),
                 ));
             }
         }
@@ -827,7 +842,7 @@ impl Scene {
                         return Err(CandyError::UnknownKey(
                             "mobject".to_string(),
                             target.0.clone(),
-                            None,
+                            self.artifacts.name_ref_locs.get(target.0.as_str()).cloned(),
                         ));
                     }
                 }
@@ -1316,6 +1331,7 @@ mod tests {
                         to: (3.0, 0.0),
                         easing: Easing::Linear,
                     }],
+                    loc: None,
                 },
                 Slide {
                     start_ms: 10000,
@@ -1325,6 +1341,7 @@ mod tests {
                         to: 2.0,
                         easing: Easing::Smooth,
                     }],
+                    loc: None,
                 },
             ],
             items: {
