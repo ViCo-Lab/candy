@@ -343,6 +343,41 @@ impl CandyError {
         }
     }
 
+    /// An optional one-line `hint:` for this error, surfaced after the source
+    /// snippet (rustc / `hint:` style). Only the **source-localizable,
+    /// non-Typst** errors carry a hint here — Typst errors (E005) already embed
+    /// their own `hint:` lines inside [`CandyError::message`] (see
+    /// [`crate::core::diag::format_typst_errors`]), so they return `None` to
+    /// avoid a duplicate. A hint points the user at the *most likely fix* for an
+    /// error that already carries a source location, turning "something is
+    /// wrong here" into "here is what to check".
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            CandyError::Parse(_, _) => Some(
+                "check the .tyx syntax near the marked location; the caret points at the \
+                 offending token",
+            ),
+            CandyError::LabelNotFound(_, _) => Some(
+                "the label may be declared in a different scene, already removed, or never \
+                 created with #mobject",
+            ),
+            CandyError::UnknownKey(_, _, _) => {
+                Some("declare the key with #mobject / #ecnew, or check the name for a typo")
+            }
+            CandyError::InvalidKey(_, _) => Some(
+                "keys must resolve to strings; wrap the value in quotes or use a string literal",
+            ),
+            CandyError::CandyDumpedYou(_, _) => Some(concat!(
+                "add `#import \"@preview/candy:",
+                env!("CARGO_PKG_VERSION"),
+                "\": *` at the top (matching the installed candy CLI v",
+                env!("CARGO_PKG_VERSION"),
+                "), or pass --ignore-version",
+            )),
+            _ => None,
+        }
+    }
+
     /// The source location tied to this error, if any. Rendered by the `error!`
     /// reporter after the message so the user is pointed at the offending code.
     pub fn loc(&self) -> Option<&SourceLoc> {
@@ -767,6 +802,10 @@ pub fn report_error(e: &CandyError) {
         line.push('\n');
         line.push_str(&render_error_loc(loc));
     }
+    if let Some(h) = e.hint() {
+        line.push('\n');
+        line.push_str(&format!("  hint: {}", h));
+    }
     eprint_styled(&line);
 }
 
@@ -785,6 +824,10 @@ macro_rules! error {
         if let Some(__loc) = __e.loc() {
             __line.push('\n');
             __line.push_str(&$crate::core::diag::render_error_loc(__loc));
+        }
+        if let Some(__h) = __e.hint() {
+            __line.push('\n');
+            __line.push_str(&::std::format!("  hint: {}", __h));
         }
         $crate::core::diag::eprint_styled(&__line);
         ::std::process::exit($crate::core::diag::CandyError::exit_code(__e));

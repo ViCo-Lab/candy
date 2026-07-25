@@ -75,9 +75,7 @@ pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
 /// Centimeters per Typst point (1pt = 1/72in, 1in = 2.54cm).
 use crate::core::ast::PT_PER_CM;
-#[cfg(test)]
-use crate::core::ast::ParseArtifacts;
-use crate::core::ast::{FrameData, Label, Scene, Subtitle};
+use crate::core::ast::{FrameData, Label, ParseArtifacts, Scene, Subtitle};
 use crate::core::diag::{CandyError, CandyWarn, SourceLoc};
 use crate::core::easing::Easing;
 use crate::core::morph::{MorphPlan, extract_shapes_from_svg, polygon_area};
@@ -332,9 +330,9 @@ impl Renderer {
         match warned.output {
             Ok(doc) => Ok(doc),
             Err(errs) => {
-                let loc = errs
-                    .first()
-                    .and_then(|d| typst_diag_loc(&world, d, &self.source_path));
+                let loc = errs.first().and_then(|d| {
+                    typst_diag_loc(&world, d, &self.source_path, &self.scene.artifacts)
+                });
                 Err(CandyError::Typst(
                     crate::core::diag::format_typst_errors(&errs),
                     loc,
@@ -588,6 +586,7 @@ pub(crate) fn typst_diag_loc(
     world: &CandyWorld,
     diag: &typst::diag::SourceDiagnostic,
     source_path: &Path,
+    artifacts: &ParseArtifacts,
 ) -> Option<SourceLoc> {
     let range = world.range(diag.span)?;
     let id = diag.span.id()?;
@@ -603,6 +602,18 @@ pub(crate) fn typst_diag_loc(
     // source diagnostic pointing at a synthetic path and made it effectively
     // invisible in release. `id == world.main()` is the reliable discriminator.
     let is_main = id == world.main() || vpath == "main.typ" || vpath.is_empty();
+    // A span that resolves to the main (compiled) document points at candy's
+    // *instrumented* source — each mobject body is wrapped in machinery like
+    // `#mobject("label", { let __b = (<body>); if sys.inputs.at(…) … })`, so a
+    // caret there shows the wrapper, not the user's code. Map it back to the
+    // original `.tyx` so the diagnostic shows the real line + a correctly
+    // aligned caret (this is the wavy-line fix: the marker now lands on the
+    // user's actual source, not the "added-stuff" compiled code).
+    if is_main && !source_path.as_os_str().is_empty() {
+        if let Some(loc) = map_diag_to_original(artifacts, src.text(), &range, source_path) {
+            return Some(loc);
+        }
+    }
     let path = if is_main && !source_path.as_os_str().is_empty() {
         source_path
     } else {
@@ -611,8 +622,69 @@ pub(crate) fn typst_diag_loc(
     Some(SourceLoc::at(path, src.text(), range))
 }
 
+/// Map a Typst error span (in the compiled "main" document) back to the user's
+/// original `.tyx` source so the caret points at their real code, not the
+/// wrapper candy injects around each mobject body.
+///
+/// `artifacts.source` is the user's original `.tyx`; `artifacts.mobject_body`
+/// records each mobject body's byte range within it. The body is embedded
+/// verbatim (modulo `ecval` rewrites, which we skip) inside the compiled
+/// document, so we locate the compiled occurrence of the body that actually
+/// contains the error span, compute the offset *within* the body, and translate
+/// it to the original source. Returns `None` when no mobject body contains the
+/// span (e.g. an error in the candy-generated preamble / context), in which case
+/// the caller falls back to showing the compiled line.
+fn map_diag_to_original(
+    artifacts: &ParseArtifacts,
+    compiled: &str,
+    range: &std::ops::Range<usize>,
+    source_path: &Path,
+) -> Option<SourceLoc> {
+    let orig = &artifacts.source;
+    if orig.is_empty() || source_path.as_os_str().is_empty() {
+        return None;
+    }
+    // `(orig_bs, orig_be, local_off)` for the mobject body that contains the
+    // error span. `local_off` is the byte offset of the span within that body
+    // (identical in the compiled and original text because the body is emitted
+    // verbatim).
+    let mut chosen: Option<(usize, usize, usize)> = None;
+    for &(bs, be) in artifacts.mobject_body.values() {
+        let body = &orig[bs..be];
+        if body.is_empty() {
+            continue;
+        }
+        // Bodies containing `ecval` are rewritten in the compiled document, so
+        // the original substring no longer matches verbatim — skip them (we
+        // cannot safely map byte offsets without re-parsing the rewrite).
+        if body.contains("ecval") {
+            continue;
+        }
+        // Find the occurrence of this body in the compiled document whose span
+        // actually contains the error (a body may appear in several mobjects).
+        for (pos, _) in compiled.match_indices(body) {
+            if range.start >= pos && range.start < pos + body.len() {
+                chosen = Some((bs, be, range.start - pos));
+                break;
+            }
+        }
+        if chosen.is_some() {
+            break;
+        }
+    }
+    let (bs, be, local) = chosen?;
+    let ostart = bs + local;
+    let avail = (be - bs).saturating_sub(local);
+    let span = (range.end - range.start).clamp(1, avail.max(1));
+    let oend = (ostart + span).min(be);
+    Some(SourceLoc::at(source_path, orig, ostart..oend))
+}
+
 #[cfg(test)]
-pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
+pub(crate) fn compile_file_for_test(
+    path: &Path,
+    artifacts: &ParseArtifacts,
+) -> Result<String, CandyError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
     let vpath =
         VirtualPath::virtualize(&dir, path).expect("test file must sit under the project root");
@@ -631,7 +703,9 @@ pub(crate) fn compile_file_for_test(path: &Path) -> Result<String, CandyError> {
             Ok(typst_svg::svg(page, &SvgOptions::default()))
         }
         Err(errs) => {
-            let loc = errs.first().and_then(|d| typst_diag_loc(&world, d, path));
+            let loc = errs
+                .first()
+                .and_then(|d| typst_diag_loc(&world, d, path, artifacts));
             Err(CandyError::Typst(
                 crate::core::diag::format_typst_errors(&errs),
                 loc,
@@ -1903,8 +1977,17 @@ fn e005_typst_error_carries_source_location() {
         "location must point at the real .tyx file"
     );
     assert!(
-        loc.line_text.contains("1cm + \"x\"") || !loc.line_text.trim().is_empty(),
+        loc.line_text.contains("1cm + \"x\""),
         "location must include the offending source line, got: {:?}",
+        loc.line_text
+    );
+    // Regression guard: the diagnostic must point at the user's ORIGINAL `.tyx`
+    // line, NOT candy's instrumented compiled source (the `sys.inputs` wrapper
+    // / `let __b` machinery). Previously the caret landed on the candy-wrapped
+    // code ("added-stuff weird code"), which made the error unhelpful.
+    assert!(
+        !loc.line_text.contains("sys.inputs") && !loc.line_text.contains("let __b"),
+        "E005 must show the original .tyx line, not candy's wrapper: {:?}",
         loc.line_text
     );
     std::fs::remove_file(&tmp).ok();

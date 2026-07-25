@@ -109,7 +109,20 @@ impl Renderer {
                     inner = recolored;
                 }
             }
-            let cs = src[..bs].chars().count();
+            // The body range `[bs..be]` is the code expression *after* a markup
+            // `#` escape (e.g. for `#mobject("x", #(1cm + "x"))` it covers
+            // `(1cm + "x")`, not `#(1cm + "x")`). When we splice the candy
+            // wrapper (which starts with `{`) into the source, a bare `#` left
+            // before it would form a malformed `#{ … }` that fails to compile and
+            // points the error at the dangling `#` (outside the body, so the
+            // original-source mapping can't reach it). Extend the splice range
+            // to swallow that leading `#` so the wrapper is clean. Non-markup
+            // bodies (no preceding `#`) are unaffected.
+            let mut bs_b = bs;
+            if bs_b > 0 && src.as_bytes().get(bs_b - 1) == Some(&b'#') {
+                bs_b -= 1;
+            }
+            let cs = src[..bs_b].chars().count();
             let ce = src[..be].chars().count();
             let wrapped = Self::wrap_mobject_inputs(&label.0, &inner);
             wrapped_bodies.insert(label.clone(), wrapped.clone());

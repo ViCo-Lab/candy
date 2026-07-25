@@ -549,10 +549,58 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
         // meaningful (a zero-frame pass would never touch Typst).
         times.push(0);
     }
-    for &t in &times {
+    // Scene + frame progress, cargo build style — mirrors `consume_frames` /
+    // `stream_encode_gpu`: a discrete `Scene k/N (name)` line on each scene
+    // change, and an in-place `Frame scene k/N frame a/b (g/G)` line refreshed
+    // per composed frame. Off a TTY or under `NO_COLOR`, `cargo_progress` is a
+    // no-op so piped / captured output stays clean (the discrete `Scene` lines
+    // still print, plain).
+    let use_progress = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let progress = build_encode_progress(&scene, &times);
+    let total_frames = times.len();
+    let mut cur_scene: Option<usize> = None;
+    let mut scene_frame_idx: usize = 0;
+    let mut progress_open = false;
+    for (idx, &t) in times.iter().enumerate() {
+        // Scene boundary: emit a discrete `Scene k/N (name)` line when the
+        // active scene changes, then reset the per-scene frame counter.
+        let sid = progress.frame_scene[idx];
+        if cur_scene != Some(sid) {
+            if progress_open {
+                println!();
+                progress_open = false;
+            }
+            let name = progress.scene_names.get(sid).cloned().unwrap_or_default();
+            crate::core::diag::cargo_status(
+                "Scene",
+                &format!("{}/{}  {}", sid + 1, progress.n_scenes, name),
+            );
+            cur_scene = Some(sid);
+            scene_frame_idx = 0;
+        }
+        scene_frame_idx += 1;
         renderer.render_frame_at(t, &frames)?;
+        if use_progress {
+            let total = progress.scene_frame_total.get(sid).copied().unwrap_or(0);
+            crate::core::diag::cargo_progress(
+                "Frame",
+                &format!(
+                    "scene {}/{}  frame {}/{}  ({}/{})",
+                    sid + 1,
+                    progress.n_scenes,
+                    scene_frame_idx,
+                    total,
+                    idx + 1,
+                    total_frames
+                ),
+            );
+            progress_open = true;
+        }
     }
-    crate::core::diag::cargo_status("Verified", &format!("{} frame(s) composed", times.len()));
+    if progress_open {
+        println!();
+    }
+    crate::core::diag::cargo_status("Verified", &format!("{} frame(s)", total_frames));
     Ok(())
 }
 

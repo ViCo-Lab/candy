@@ -252,9 +252,9 @@ pub(crate) fn subtitle_doc(
     match warned.output {
         Ok(doc) => Ok(doc),
         Err(errs) => {
-            let loc = errs
-                .first()
-                .and_then(|d| super::typst_diag_loc(&world, d, std::path::Path::new("")));
+            let loc = errs.first().and_then(|d| {
+                super::typst_diag_loc(&world, d, std::path::Path::new(""), &scene.artifacts)
+            });
             Err(CandyError::Typst(
                 crate::core::diag::format_typst_errors(&errs),
                 loc,

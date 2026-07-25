@@ -1077,7 +1077,7 @@ mod tests {
 #play(circle(radius: 1cm), duration: 10)
 "#;
         std::fs::write(&tmp, calls).unwrap();
-        let out = crate::renderer::compile_file_for_test(&tmp);
+        let out = crate::renderer::compile_file_for_test(&tmp, &Default::default());
         let _ = std::fs::remove_file(&tmp);
         assert!(out.is_ok(), "std Typst failed to compile: {out:?}");
     }
@@ -1368,7 +1368,7 @@ mod tests {
 #set-color("dot", color: red, duration: 1)
 "#;
         std::fs::write(&tmp, calls).unwrap();
-        let out = crate::renderer::compile_file_for_test(&tmp);
+        let out = crate::renderer::compile_file_for_test(&tmp, &Default::default());
         let _ = std::fs::remove_file(&tmp);
         assert!(
             out.is_ok(),
