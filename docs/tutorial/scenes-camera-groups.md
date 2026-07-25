@@ -62,15 +62,15 @@ around a center spins in place.
 
 ## `#camera` — a global move
 
-`#camera(x: 0, y: 0, zoom: 1.0, rotate: 0deg, duration: 1000, easing: "linear")` applies a
+`#camera(x: 0, y: 0, zoom: 100%, rotate: 0deg, duration: 1000, easing: "linear")` applies a
 global camera move to the whole scene (pan + zoom + rotate), mirroring Manim's camera
-frame transforms. `x` / `y` are a pan offset in cm from the page center; `zoom > 1`
+frame transforms. `x` / `y` are a pan offset in cm from the page center; `zoom > 100%`
 magnifies; `rotate` tilts clockwise in degrees. The camera is scene-scoped: it only
 transforms the scene active when the `#camera` directive runs.
 
 ```typst
-#camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-#camera(zoom: 1.0, rotate: 12deg, duration: 1500, easing: "smooth")
+#camera(zoom: 200%, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+#camera(zoom: 100%, rotate: 12deg, duration: 1500, easing: "smooth")
 ```
 
 ## `#track` — a keyframe timeline

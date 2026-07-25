@@ -20,7 +20,7 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 | E005 | `Typst` | Typst render failure — the full `typst::diag::SourceDiagnostic` (message + any `hint:` lines) is captured and surfaced. |
 | E006 | `UnknownKey` | A key reference (`@label`, `target:`, `animate(target:)`, etc.) points to a mobject that was never registered via `#mobject`. Also used when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`, …) reference an unknown counter name. |
 | E007 | `InvalidKey` | A key parameter evaluated to a non-string type (e.g., number, boolean, array). Keys must always resolve to strings. |
-| E008 | `CandyDumpedYou` | The `.tyx` does not `#import` the candy package (or imports it with a version that does not match the installed candy CLI version). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
+| E008 | `CandyDumpedYou` | The `.tyx` does not `#import` the candy package (or imports it with a version incompatible with the installed candy CLI — the imported version must satisfy at least one semver requirement in the CLI's `compatible_versions` list, e.g. `0.1.*`). Candy can only render documents that import the candy package, whose root scene then owns all static content; a bare Typst document would otherwise produce empty / garbage output. |
 | E009 | `Encode` | Rav1e/openh264 encoding failure. |
 
 ## Process exit codes

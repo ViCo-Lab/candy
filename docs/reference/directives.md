@@ -42,15 +42,15 @@ Typst.
 Mark a slide transition. `kind`: `"cut"` (instant, default), `"fade"` (crossfade),
 `"slide"` (push). Only `"cut"` is fully implemented. Inert under standard Typst.
 
-### `#camera(x: 0, y: 0, zoom: 1.0, rotate: 0deg, duration: 1000, easing: "smooth")`
+### `#camera(x: 0, y: 0, zoom: 100%, rotate: 0deg, duration: 1000, easing: "smooth")`
 
 A global camera move (pan + zoom + rotate) applied to the whole scene. `x` / `y` are a
-pan offset in cm from the page center; `zoom > 1` magnifies; `rotate` tilts clockwise in
+pan offset in cm from the page center; `zoom > 100%` magnifies; `rotate` tilts clockwise in
 degrees. Scene-scoped. Inert under standard Typst.
 
 ```typst
-#camera(zoom: 2.0, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
-#camera(zoom: 1.0, rotate: 12deg, duration: 1500, easing: "smooth")
+#camera(zoom: 200%, x: -3cm, y: 1.5cm, duration: 1500, easing: "smooth")
+#camera(zoom: 100%, rotate: 12deg, duration: 1500, easing: "smooth")
 ```
 
 ### `#zoom-to(rect, duration: 500, easing: "smooth")`
@@ -97,7 +97,7 @@ frame, extract it with ffmpeg and use `#mobject("vid", image(...))` instead.
 
 ```typst
 #mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
-#animate("clip", scale: 1.2, duration: 500, easing: "smooth")
+#animate("clip", scale: 120%, duration: 500, easing: "smooth")
 ```
 
 ## Object animations
@@ -115,8 +115,8 @@ transforms in any combination; each produces a parallel action.
 |---|---|
 | `to: (x, y)` | absolute target point in lengths, e.g. `(4cm, 0pt)` |
 | `dx:` / `dy:` | relative offset in cm (Manim-style `shift`), e.g. `dx: 2cm` |
-| `scale:` | absolute scale factor (e.g. `1.5`) |
-| `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
+| `scale:` | absolute scale factor (e.g. `150%`) |
+| `scale-by:` | relative scale multiplier (e.g. `150%` grows 30%) |
 | `rotate:` | absolute clockwise rotation in degrees (e.g. `45deg`) |
 | `rotate-by:` | relative rotation in degrees (e.g. `15deg` adds 15°) |
 | `opacity:` | target opacity as a ratio in `[0%, 100%]` (e.g. `50%`) |
@@ -127,7 +127,7 @@ transforms in any combination; each produces a parallel action.
 
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
-#animate("box", scale: 1.5, duration: 800, easing: "smooth")
+#animate("box", scale: 150%, duration: 800, easing: "smooth")
 #animate("sq", dx: 2cm, rotate-by: 90deg, opacity: 50%, duration: 600, timing: "with")
 ```
 
@@ -152,15 +152,15 @@ Interpolate back to a previously saved state. Mirrors `Restore(mobject)`.
 #restore("dot", slot: "home", duration: 200, easing: "cubic-in-out")
 ```
 
-### `#indicate(target, factor: 1.1, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0)`
+### `#indicate(target, factor: 110%, dx: 0.0, dy: 0.0, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
-Briefly scale + shift a mobject, then return — a transient "look here" effect. Mirrors
-`Indicate`.
+Briefly scale + shift a mobject, then return — a transient "look here" effect. `factor` is a
+ratio (e.g. `110%`, default enlarges by 10%). Mirrors `Indicate`.
 
-### `#flash(target, factor: 2.0, duration: 200, easing: "smooth", timing: "after", delay: 0)`
+### `#flash(target, factor: 200%, duration: 200, easing: "smooth", timing: "after", delay: 0)`
 
 Briefly scale up and fade toward transparent, then restore — a "flash" attention effect.
-Mirrors `Flash`.
+`factor` is a ratio (e.g. `200%`, default enlarges by 100%). Mirrors `Flash`.
 
 ### `#wiggle(target, degrees: 15deg, duration: 500, easing: "wiggle", timing: "after", delay: 0)`
 
@@ -168,9 +168,9 @@ Oscillate rotation by ±`degrees` a few times, then return. Mirrors `Wiggle`.
 
 ### `#set-color(target, color: black, duration: 1, easing: "linear", timing: "after", delay: 0)`
 
-Record a color change for a mobject. The color is tracked in the timeline, but the current
-renderer treats it as a no-op (Typst bodies are opaque strings). Future versions with
-structured mobjects will apply it. Mirrors `set-color`.
+Record a color change for a mobject. The renderer lerps the mobject's `fill:`/`stroke:` from
+its current paint to `color` over `duration` milliseconds along `easing`, so the color animates
+smoothly. Inert under standard Typst (the directive just records the change). Mirrors `set-color`.
 
 ```typst
 #set-color("dot", color: red, duration: 300, easing: "smooth")
@@ -180,14 +180,14 @@ structured mobjects will apply it. Mirrors `set-color`.
 
 Alternate opacity 1↔0 `blinks` times. Mirrors `Blink`.
 
-### `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0)`
+### `#spiral-in(target, scale: 300%, rotate: 360deg, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
 Fly in from a scaled-up, rotated, invisible state to the flow position. Mirrors
 `SpiralIn`.
 
-### `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth", timing: "after", delay: 0)`
+### `#focus-on(target, factor: 125%, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 
-Shrink a "spotlight" onto the target (scale down + dim). Mirrors `FocusOn`.
+Zoom in (enlarge) onto the target to emphasize it (default `factor: 125%` — enlarges by 25%; `factor` is a ratio, e.g. `125%`, not a bare number). Mirrors `FocusOn`.
 
 ### `#fade-transform(from, to, duration: 300, easing: "smooth", timing: "after", delay: 0)`
 

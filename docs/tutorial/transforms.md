@@ -67,14 +67,14 @@ These mirror Manim Community Edition primitives. Each is inert under standard Ty
 |---|---|
 | `#save-state(target, slot: "default")` | snapshot a mobject's transform into a named slot (mirrors `save-state()`). |
 | `#restore(target, slot: "default", duration: 500, easing: "smooth")` | interpolate back to a saved state. |
-| `#indicate(target, factor: 1.1, dx: 0, dy: 0, duration: 300, easing: "smooth")` | brief scale + shift "look here". |
-| `#flash(target, factor: 2.0, duration: 200, easing: "smooth")` | scale up + fade toward transparent, then restore. |
+| `#indicate(target, factor: 110%, dx: 0, dy: 0, duration: 300, easing: "smooth")` | brief scale + shift "look here" (ratio `factor`). |
+| `#flash(target, factor: 200%, duration: 200, easing: "smooth")` | scale up + fade toward transparent, then restore (ratio `factor`). |
 | `#wiggle(target, degrees: 15deg, duration: 500, easing: "wiggle")` | oscillate rotation by ±`degrees`, then return. |
 | `#appear(target)` / `#disappear(target)` | instant `opacity: 100%` / `opacity: 0%`, no interpolation. |
-| `#set-color(target, color: black, duration: 1, easing: "linear")` | record a color change (no-op in the current renderer; tracked for future structured mobjects). |
+| `#set-color(target, color: black, duration: 1, easing: "linear")` | lerp the mobject's `fill:`/`stroke:` from its current paint to `color` over `duration` (smooth by default). |
 | `#blink(target, blinks: 3, duration: 500, easing: "smooth")` | alternate opacity 1↔0 `blinks` times. |
-| `#spiral-in(target, scale: 3.0, rotate: 360deg, duration: 300, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
-| `#focus-on(target, factor: 0.5, duration: 300, easing: "smooth")` | shrink a "spotlight" onto the target. |
+| `#spiral-in(target, scale: 300%, rotate: 360deg, duration: 300, easing: "smooth")` | fly in from a scaled-up, rotated, invisible state. |
+| `#focus-on(target, factor: 125%, duration: 300, easing: "smooth")` | zoom in (enlarge) onto the target to emphasize it (ratio, e.g. `125%`). |
 | `#move-along-path(target, path, duration: 500, easing: "smooth")` | move along a polyline of `(x, y)` points (cm, **relative to the object's flow layout position**). |
 
 ```typst

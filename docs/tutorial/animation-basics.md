@@ -24,8 +24,8 @@ action.
 |---|---|
 | `to: (x, y)` | absolute target point in lengths, e.g. `(4cm, 0pt)` |
 | `dx:` / `dy:` | relative offset in cm (Manim-style `shift`), e.g. `dx: 2cm` |
-| `scale:` | absolute scale factor (e.g. `1.5`) |
-| `scale-by:` | relative scale multiplier (e.g. `1.5` grows 50%) |
+| `scale:` | absolute scale factor (e.g. `150%`) |
+| `scale-by:` | relative scale multiplier (e.g. `150%` grows 30%) |
 | `rotate:` | absolute clockwise rotation in degrees (e.g. `45deg`) |
 | `rotate-by:` | relative rotation in degrees (e.g. `15deg` adds 15°) |
 | `opacity:` | target opacity as a ratio in `[0%, 100%]` (e.g. `50%`) |
@@ -34,7 +34,7 @@ action.
 
 ```typst
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
-#animate("box", scale: 1.5, duration: 800, easing: "smooth")
+#animate("box", scale: 150%, duration: 800, easing: "smooth")
 #animate("sq", dx: 2cm, rotate-by: 90deg, opacity: 50%, duration: 600)
 ```
 
@@ -81,7 +81,7 @@ animated). To show the real first frame, extract it with ffmpeg and use
 
 ```typst
 #mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
-#animate("clip", scale: 1.2, duration: 500, easing: "smooth")
+#animate("clip", scale: 120%, duration: 500, easing: "smooth")
 ```
 
 ## Easing at a glance
