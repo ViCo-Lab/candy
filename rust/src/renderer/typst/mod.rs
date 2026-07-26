@@ -752,7 +752,7 @@ fn content_timeline_swaps_rendered_body() {
 }
 
 /// An error inside a file pulled in by `#include` must trace back to the
-/// *referencing* position — i.e. the `#include("…")` call-site in the
+/// *referencing* position — i.e. the `#include "…"` call-site in the
 /// includer file — not to a meaningless offset inside the concatenated
 /// (expanded) document. This exercises the `SourceMap` → `region_for`
 /// remap in `map_diag_to_original`.
@@ -761,18 +761,18 @@ fn include_error_traces_to_include_call_site() {
     let dir = std::env::temp_dir();
     let main = dir.join("candy_test_include_trace_main.tyx");
     let child = dir.join("candy_test_include_trace_child.tyx");
-    // Child declares an mobject whose body is a broken Typst expression
-    // (`none.foo()` → "cannot access field foo on none"). The body is what
-    // the per-frame compiler actually typesets, so the error span lands
-    // inside the inlined child content.
-    std::fs::write(
-        &child,
-        "#import \"candy\": *\n#mobject(\"b\", #{none.foo()})\n",
-    )
-    .unwrap();
-    let src = "#import \"candy\": *\n#include(\"candy_test_include_trace_child.tyx\")\n\
+    // Child declares an mobject whose body calls `panic("boom")` so Typst
+    // reports a span that lands *inside* the inlined body. `map_diag_to_original`
+    // then maps it through `source_map.region_for` back to `main`'s
+    // `#include` line (the "referenced position"), not at a meaningless
+    // offset inside the concatenated document.
+    // NOTE: the child does NOT re-import candy — it is inlined into `main`,
+    // which already imports it. This mirrors how the `include_common.tyx`
+    // example partial is written without its own import.
+    std::fs::write(&child, "#mobject(\"b\", panic(\"boom\"))\n").unwrap();
+    let src = "#import \"candy\": *\n#include \"candy_test_include_trace_child.tyx\"\n\
          #mobject(\"a\", circle(radius: 1cm))\n"
-    .to_string();
+        .to_string();
     std::fs::write(&main, &src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&main, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();

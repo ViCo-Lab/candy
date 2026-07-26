@@ -1,0 +1,15 @@
+#import "@preview/candy:0.1.0": *
+
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // Split a large animation into reusable partials. `#include` inlines the
+  // referenced file *before* candy parses, so its directives are parsed just
+  // like the ones written here — they share this single timeline.
+  #include "include_common.tyx"
+
+  // A directive from the includer; it animates alongside the included one
+  // (timing linked with `with:`).
+  #mobject("local-dot", circle(radius: 1cm, fill: orange))
+  #animate("local-dot", to: (0cm, 4cm), duration: 1500, with: "shared-box")
+
+  #pause(duration: 500)
+]

@@ -1,0 +1,18 @@
+// Shared partial pulled in by `include.tyx` through `#include "…"`.
+//
+// Candy expands every `#include "…"` statement *before* it parses the document,
+// so the directives declared here are parsed exactly as if they had been
+// written inline inside the includer's `#scene[ … ]`. That means mobjects,
+// animations, subtitles, counters, scenes, etc. declared in a partial all
+// take part in the animation.
+//
+// Diagnostic bonus: if a directive here is malformed, the error is reported
+// at this file's `#include "…"` line in the includer (the *referenced*
+// position) — not at a meaningless offset inside the concatenated document.
+//
+// Cycle guard: a file may appear at most once along a single include path.
+// Including the same file twice on one chain (a → b → a) is rejected as a
+// circular include; the same file on two different branches is allowed.
+
+#mobject("shared-box", square(size: 3cm, fill: green, stroke: black))
+#animate("shared-box", to: (6cm, 0cm), duration: 1500)

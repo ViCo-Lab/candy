@@ -17,7 +17,7 @@
 //! and the directive handlers in [`crate::parser::directives`].
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse};
@@ -39,7 +39,7 @@ use crate::core::ast::PT_PER_CM;
 /// (prevents an `a → b → a` loop from expanding forever).
 const MAX_INCLUDE_DEPTH: usize = 64;
 
-/// Recursively expand every `#include("path")` call in the file at `file_path`,
+/// Recursively expand every `#include "path"` statement in the file at `file_path`,
 /// inlining the referenced file's content at the call site, so candy's AST
 /// parser sees *all* directives — including those declared inside included
 /// `.tyx` / `.typ` files (and the files *they* include) — as one flat
@@ -52,7 +52,7 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 /// `ParseArtifacts::source` (the string the renderer text-splices against)
 /// consistent with what candy actually parsed.
 ///
-/// Expansion is AST-driven (not regex): only real `#include("literal")` calls
+/// Expansion is AST-driven (not regex): only real `#include "literal"` calls
 /// are touched, so an `include` inside a string or comment is left alone.
 /// Each included file is expanded in the context of *its own* directory
 /// (matching Typst's path resolution) and expanded fully *before* being
@@ -68,6 +68,7 @@ fn expand_includes(
     source: &str,
     file_path: &Path,
     depth: usize,
+    chain: &mut Vec<PathBuf>,
 ) -> Result<(String, Vec<IncludeRegion>), CandyError> {
     if depth > MAX_INCLUDE_DEPTH {
         return Err(CandyError::Parse(
@@ -78,11 +79,11 @@ fn expand_includes(
     let root = parse(source);
     let node = LinkedNode::new(&root);
     // `(call_start, call_end, expanded_content, nested_regions)`: the whole
-    // `#include("…")` call span and the (already-recursively-expanded) content
+    // `#include "…"` call span and the (already-recursively-expanded) content
     // that replaces it, plus the regions of *its* included children (in the
     // child's own coordinate space, shifted into place when spliced).
     let mut edits: Vec<(usize, usize, String, Vec<IncludeRegion>)> = Vec::new();
-    collect_include_edits(&node, file_path, depth, &mut edits)?;
+    collect_include_edits(&node, file_path, depth, source, &mut edits, chain)?;
     if edits.is_empty() {
         return Ok((source.to_string(), Vec::new()));
     }
@@ -119,43 +120,72 @@ fn expand_includes(
 }
 
 /// Walk `node` (parsed from `source`, the text of the file at `file_path`)
-/// for `#include("path")` calls. For each, read the file relative to
+/// for `#include "path"` statements. For each, read the file relative to
 /// `file_path`'s directory, recursively expand it, and record an edit that
 /// replaces the whole call span with the expanded content (and hands back the
 /// nested regions returned by the recursive expansion). We do not descend into
-/// a call's children (the entire `include(…)` text is replaced anyway), which
+/// a call's children (the entire `include "…"` text is replaced anyway), which
 /// also stops the recursive expansion from re-scanning the same call.
 ///
-/// `source` is the text of `file_path` (retained by the caller to build
-/// the reported `line:col`); it is not needed here, so it is intentionally
-/// not threaded into the recursion.
+/// `source` is the text of `file_path`; it is used here to attach a precise
+/// [`SourceLoc`] to a circular-include error at the offending `#include` call.
+///
+/// `chain` is the stack of canonical file paths from the root down to (but not
+/// including) `file_path`. *Single-chain* cycle guard: a file may appear at
+/// most once along the path from the root to this include. If the target is
+/// already on `chain` (i.e. it is an ancestor of itself), the include would
+/// recurse forever, so we reject it as a circular include. A duplicate on a
+/// *different* branch (a diamond, e.g. `root → a → x` and `root → b → x`)
+/// is **not** flagged, matching the rule that only the same include *path*
+/// may not repeat a file.
 fn collect_include_edits(
     node: &LinkedNode,
     file_path: &Path,
     depth: usize,
+    source: &str,
     edits: &mut Vec<(usize, usize, String, Vec<IncludeRegion>)>,
+    chain: &mut Vec<PathBuf>,
 ) -> Result<(), CandyError> {
+    // `#include "path"` (and the code-mode form `include "path"`) is parsed
+    // by Typst as a `ModuleInclude` AST node (NOT a `FuncCall`), so this is
+    // the primary detection path.
+    if let Some(mi) = node.get().cast::<ast::ModuleInclude>() {
+        if let Some(rel) = module_include_path(mi) {
+            // In markup, `#include "x"` — the leading `#` is a *separate*
+            // token that sits OUTSIDE the `ModuleInclude` node's range, so
+            // `node.range()` is just `include "x"` (no `#`). Extend the
+            // replaced span to swallow that `#`: otherwise the replacement
+            // (which itself begins with `#`, e.g. an inlined `#mobject`)
+            // would leave the original `#` behind and produce `##mobject`
+            // (or `##import`) — invalid Typst that fails to parse.
+            let mut call_range = node.range();
+            let s = call_range.start.saturating_sub(1);
+            if source.as_bytes().get(s) == Some(&b'#') {
+                call_range.start = s;
+            }
+            include_file(&rel, call_range, file_path, depth, source, edits, chain)?;
+        }
+    }
+    // Legacy: a literal `FuncCall` named `include` (e.g. an aliased import
+    // like `candy.include(…)`), kept for robustness.
     if let Some(call) = node.get().cast::<ast::FuncCall>() {
         if let Expr::Ident(id) = call.callee() {
             if id.as_str() == "include" {
-                // The first positional argument must be a string-literal path.
                 'args: for args_node in node.children() {
                     if args_node.get().cast::<ast::Args>().is_none() {
                         continue;
                     }
                     for arg in args_node.children() {
                         if let Some(ast::Arg::Pos(Expr::Str(s))) = arg.get().cast::<ast::Arg>() {
-                            let rel = s.get();
-                            let target = file_path.join(rel.as_str());
-                            let content = std::fs::read_to_string(&target).map_err(|e| {
-                                CandyError::Parse(format!("cannot include {rel:?}: {e}"), None)
-                            })?;
-                            // Expand the included file in the context of *its*
-                            // own directory so its nested includes resolve
-                            // correctly (matching Typst's resolution).
-                            let (expanded, nested) = expand_includes(&content, &target, depth + 1)?;
-                            let r = node.range();
-                            edits.push((r.start, r.end, expanded, nested));
+                            include_file(
+                                s.get().as_str(),
+                                node.range(),
+                                file_path,
+                                depth,
+                                source,
+                                edits,
+                                chain,
+                            )?;
                             break 'args;
                         }
                     }
@@ -164,8 +194,78 @@ fn collect_include_edits(
         }
     }
     for child in node.children() {
-        collect_include_edits(&child, file_path, depth, edits)?;
+        collect_include_edits(&child, file_path, depth, source, edits, chain)?;
     }
+    Ok(())
+}
+
+/// Extract the included path string from a `ModuleInclude` node.
+/// Both `#include "file.tyx"` (markup mode, with the `#`) and the bare
+/// `include "file.typ"` form (code mode, `#` omitted) yield the string
+/// literal; any other form yields `None`.
+fn module_include_path(mi: ast::ModuleInclude) -> Option<String> {
+    match mi.source() {
+        Expr::Str(s) => Some(s.get().to_string()),
+        Expr::Parenthesized(p) => match p.expr() {
+            Expr::Str(s) => Some(s.get().to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Read `rel` (resolved against `file_path`'s directory), apply the
+/// single-chain circular-include guard, recursively expand it, and record an
+/// edit that replaces `call_range` (the whole `#include "…"` span) with
+/// the expanded content.
+fn include_file(
+    rel: &str,
+    call_range: std::ops::Range<usize>,
+    file_path: &Path,
+    depth: usize,
+    source: &str,
+    edits: &mut Vec<(usize, usize, String, Vec<IncludeRegion>)>,
+    chain: &mut Vec<PathBuf>,
+) -> Result<(), CandyError> {
+    // `file_path` is the *includer file*, so resolve `rel` against its
+    // parent directory (matching Typst's include path resolution). Using
+    // `file_path.join(rel)` would treat the file itself as a directory.
+    let base = file_path.parent().unwrap_or_else(|| Path::new(""));
+    let target = base.join(rel);
+    let content = std::fs::read_to_string(&target)
+        .map_err(|e| CandyError::Parse(format!("cannot include {rel:?}: {e}"), None))?;
+    // Resolve to a canonical form so equivalent paths (`./x.tyx` vs `x.tyx`,
+    // symlinks, `..`) compare equal in the cycle guard.
+    let canon = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
+    // Single-chain circular-include guard (see `collect_include_edits` docs):
+    // a file may appear at most once along the path from the root to this
+    // include. If the target is already on the chain it is an ancestor of
+    // itself → reject as a circular include. Duplicates on *different*
+    // branches (a diamond) are allowed.
+    if chain.iter().any(|p| p == &canon) {
+        let chain_str = chain
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        return Err(CandyError::Parse(
+            format!(
+                "circular include detected: {} is already included on this include path ({} -> {}). \
+                 A file may only be included once along a single include chain; \
+                 duplicates on different branches are allowed.",
+                canon.display(),
+                chain_str,
+                canon.display()
+            ),
+            Some(SourceLoc::at(file_path, source, call_range.clone())),
+        ));
+    }
+    // Expand the included file in the context of *its* own directory so its
+    // nested includes resolve correctly (matching Typst's resolution).
+    chain.push(canon);
+    let (expanded, nested) = expand_includes(&content, &target, depth + 1, chain)?;
+    chain.pop();
+    edits.push((call_range.start, call_range.end, expanded, nested));
     Ok(())
 }
 
@@ -176,13 +276,18 @@ fn collect_include_edits(
 /// `private_metadata` is set to the fixed defaults.
 pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError> {
     let source_file = std::fs::read_to_string(path)?; // E001 on missing file
-    // Recursively inline every `#include("…")` call *before* the AST walk, so
+    // Recursively inline every `#include "…"` statement *before* the AST walk, so
     // candy's parser sees directives declared inside included files as part of
     // one flat document (otherwise Typst would only resolve them at compile
     // time, long after the parse has run, and their directives would be lost).
     // The `SourceMap` records, for each inlined region, the `#include`
     // call-site that pulled it in — used to trace diagnostics back to that line.
-    let (raw, include_regions) = expand_includes(&source_file, path, 0)?;
+    // `chain` tracks the include path from the root down to `path` so that
+    // `expand_includes` can reject a file that is included twice on the *same*
+    // include chain (a cyclic include) while still allowing the same file to
+    // appear on different branches.
+    let mut chain = vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())];
+    let (raw, include_regions) = expand_includes(&source_file, path, 0, &mut chain)?;
     let source_map = SourceMap {
         regions: include_regions,
     };
@@ -523,7 +628,7 @@ impl ParseCtx {
     ///
     /// If the range falls inside a region that was inlined by `#include(…)`,
     /// this returns a [`SourceLoc`] pointing at the *referencing position* —
-    /// the `#include("…")` call-site in the includer file (its original
+    /// the `#include "…"` call-site in the includer file (its original
     /// source text and the call's byte range), exactly as the user requested
     /// ("被include引入的外部文件源码追踪时要跟踪到被引用的位置"). Otherwise the
     /// range is mapped to the original `.tyx` file directly.
@@ -2008,5 +2113,88 @@ This is plain Typst content with an equation $E = mc^2$.
         // The child scene should own label "a".
         let child = scene.scenes.iter().find(|s| s.id == 1).unwrap();
         assert!(!child.owns_labels.is_empty());
+    }
+
+    /// A file included twice on the *same* include path (a → b → a) is a
+    /// cycle and must be rejected with a `circular include` error that carries
+    /// a `SourceLoc` at the offending `#include` call-site.
+    #[test]
+    fn circular_include_on_same_chain_is_rejected() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("candy_test_cycle_a.tyx");
+        let b = dir.join("candy_test_cycle_b.tyx");
+        std::fs::write(
+            &a,
+            with_auto_version(
+                "#include \"candy_test_cycle_b.tyx\"\n#mobject(\"a\", circle(radius: 1cm))\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            "#include \"candy_test_cycle_a.tyx\"\n#mobject(\"b\", circle(radius: 1cm))\n",
+        )
+        .unwrap();
+        let err = parse_tyx(&a, true).unwrap_err();
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+        match err {
+            CandyError::Parse(msg, Some(loc)) => {
+                assert!(
+                    msg.contains("circular include"),
+                    "expected circular-include error, got: {msg}"
+                );
+                assert_eq!(
+                    loc.path, b,
+                    "error should point at the file whose `#include` closes the cycle (b → a)"
+                );
+                assert!(
+                    loc.line_text.contains("include"),
+                    "error should point at the `#include` line, got: {:?}",
+                    loc.line_text
+                );
+            }
+            other => panic!("expected CandyError::Parse with a location, got {other:?}"),
+        }
+    }
+
+    /// The same file included on *different* branches (a diamond:
+    /// root → a → x and root → b → x) is allowed — only a single include
+    /// *path* may not repeat a file.
+    #[test]
+    fn diamond_include_on_different_branches_is_allowed() {
+        let dir = std::env::temp_dir();
+        let root = dir.join("candy_test_diamond_root.tyx");
+        let a = dir.join("candy_test_diamond_a.tyx");
+        let b = dir.join("candy_test_diamond_b.tyx");
+        let x = dir.join("candy_test_diamond_x.tyx");
+        std::fs::write(
+            &root,
+            with_auto_version(
+                "#import \"candy\": *\n#include \"candy_test_diamond_a.tyx\"\n#include \"candy_test_diamond_b.tyx\"\n#mobject(\"r\", circle(radius: 1cm))\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &a,
+            "#include \"candy_test_diamond_x.tyx\"\n#mobject(\"a\", circle(radius: 1cm))\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            "#include \"candy_test_diamond_x.tyx\"\n#mobject(\"b\", circle(radius: 1cm))\n",
+        )
+        .unwrap();
+        std::fs::write(&x, "#mobject(\"x\", circle(radius: 1cm))\n").unwrap();
+        let scene = parse_tyx(&root, true).expect("diamond includes must be allowed");
+        std::fs::remove_file(&root).ok();
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+        std::fs::remove_file(&x).ok();
+        // All four mobjects (root, a, b, and the shared x) must be present.
+        assert!(scene.items.contains_key(&Label("r".into())));
+        assert!(scene.items.contains_key(&Label("a".into())));
+        assert!(scene.items.contains_key(&Label("b".into())));
+        assert!(scene.items.contains_key(&Label("x".into())));
     }
 }

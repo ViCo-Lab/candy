@@ -180,8 +180,11 @@ pub fn build_input(
     jobs: usize,
     keep_intermediates: bool,
 ) -> Result<(), CandyError> {
-    build_input_with_gpu(
-        input,
+    let scene = input.parse_with_ignore_version(false)?;
+    let project_root = input.project_root();
+    build_scene_with_gpu(
+        scene,
+        project_root,
         intermediate_dir,
         output,
         format,
@@ -191,17 +194,12 @@ pub fn build_input(
         false,
         jobs,
         keep_intermediates,
-        false,
     )
 }
 
-/// Like [`build_input`], but with an explicit `use_gpu` flag.
-///
-/// When `use_gpu` is true and the `gpu` cargo feature is enabled, candy
-/// rasterizes each frame on the GPU via vello + wgpu. If the `gpu` feature is
-/// not compiled in, `use_gpu` is silently ignored (CPU path is used). If the
-/// feature is enabled but no GPU adapter is available, candy falls back to
-/// the CPU path automatically and emits a warning.
+/// Thin convenience wrapper around [`build_scene_with_gpu`] for callers that
+/// hand over an [`Input`] and let candy parse it (version check enabled unless
+/// `ignore_version` is set). Parses once, then delegates.
 #[allow(clippy::too_many_arguments)]
 pub fn build_input_with_gpu(
     input: Input,
@@ -216,8 +214,49 @@ pub fn build_input_with_gpu(
     keep_intermediates: bool,
     ignore_version: bool,
 ) -> Result<(), CandyError> {
-    let scene: Scene = input.parse_with_ignore_version(ignore_version)?; // Steps 1–2
+    let scene = input.parse_with_ignore_version(ignore_version)?;
     let project_root = input.project_root();
+    build_scene_with_gpu(
+        scene,
+        project_root,
+        intermediate_dir,
+        output,
+        format,
+        codec,
+        fps,
+        pixel_per_pt,
+        use_gpu,
+        jobs,
+        keep_intermediates,
+    )
+}
+
+/// Like [`build_input`], but with an explicit `use_gpu` flag.
+///
+/// When `use_gpu` is true and the `gpu` cargo feature is enabled, candy
+/// rasterizes each frame on the GPU via vello + wgpu. If the `gpu` feature is
+/// not compiled in, `use_gpu` is silently ignored (CPU path is used). If the
+/// feature is enabled but no GPU adapter is available, candy falls back to
+/// the CPU path automatically and emits a warning.
+/// Like [`build_input_with_gpu`], but takes a **pre-parsed** [`Scene`] plus its
+/// `project_root` so callers that have already parsed the input (e.g. to read
+/// the page size for `--width`/`--height` resolution) do not pay for a second
+/// full parse — which would otherwise re-run the AST walk and emit every parse
+/// warning (e.g. `W009`) twice.
+#[allow(clippy::too_many_arguments)]
+pub fn build_scene_with_gpu(
+    scene: Scene,
+    project_root: std::path::PathBuf,
+    intermediate_dir: &Path,
+    output: &Path,
+    format: OutputFormat,
+    codec: Codec,
+    fps: u32,
+    pixel_per_pt: f32,
+    use_gpu: bool,
+    jobs: usize,
+    keep_intermediates: bool,
+) -> Result<(), CandyError> {
     let mut keyframes = scheduler::schedule(&scene)?; // Step 3
 
     // Extend the timeline so persistent subtitles / long-lived counters that

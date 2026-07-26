@@ -23,7 +23,7 @@ use std::time::Instant;
 use candy::core::ast::{DEFAULT_PAGE_PT, Scene};
 use candy::core::diag::{CandyWarn, bold, cargo_finished, cargo_status, report_error};
 use candy::{
-    CandyError, Codec, Input, OutputFormat, build_input_with_gpu, check_input, migrate_file,
+    CandyError, Codec, Input, OutputFormat, build_scene_with_gpu, check_input, migrate_file,
 };
 use candy::{eprint_styled, error, warn};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -377,15 +377,13 @@ fn run() -> Result<(), CandyError> {
                         Input::from(input.as_path())
                     };
 
-                    // Derive the effective pixels-per-point. `--width` / `--height`
-                    // pin one output edge in pixels (the other edge follows the
-                    // scene's page aspect ratio); otherwise `--pixel-per-pt` is
-                    // used as-is. The page size is read from the parsed scene.
-                    let page_pt = input_kind
-                        .parse()
-                        .ok()
-                        .map(|s| root_page_pt(&s))
-                        .unwrap_or(DEFAULT_PAGE_PT);
+                    // Parse ONCE up front. The page size (for `--width`/`--height`
+                    // resolution) and the actual build both need the parsed
+                    // `Scene`, so we reuse this single parse — a second full parse
+                    // would re-run the AST walk and emit every parse warning twice.
+                    let project_root = input_kind.project_root();
+                    let scene = input_kind.parse_with_ignore_version(ignore_version)?;
+                    let page_pt = root_page_pt(&scene);
                     let ppt = resolve_pixel_per_pt(pixel_per_pt, width, height, page_pt);
 
                     if out_fmt == OutputFormat::Svg {
@@ -393,8 +391,9 @@ fn run() -> Result<(), CandyError> {
                         // redirected `--output-dir/<stem>`), never `dist/`. GPU flag
                         // is irrelevant for SVG drafts (no rasterization). The draft
                         // IS the deliverable here, so we never auto-clean it.
-                        build_input_with_gpu(
-                            input_kind,
+                        build_scene_with_gpu(
+                            scene,
+                            project_root,
                             &intermediate_dir,
                             &intermediate_dir.join("svg_draft"),
                             out_fmt,
@@ -404,7 +403,6 @@ fn run() -> Result<(), CandyError> {
                             false,
                             jobs,
                             keep_intermediates,
-                            ignore_version,
                         )?;
                         cargo_status!(
                             "Finished",
@@ -423,8 +421,9 @@ fn run() -> Result<(), CandyError> {
                     };
                     let out_path =
                         resolve_output(custom, &stem, container_ext, output_dir.as_deref());
-                    build_input_with_gpu(
-                        input_kind,
+                    build_scene_with_gpu(
+                        scene,
+                        project_root,
                         &intermediate_dir,
                         &out_path,
                         out_fmt,
@@ -434,7 +433,6 @@ fn run() -> Result<(), CandyError> {
                         gpu,
                         jobs,
                         keep_intermediates,
-                        ignore_version,
                     )?;
                     // Successful build: drop the per-build intermediate dir unless
                     // the user asked to keep it (the SVG draft `return`s above, so

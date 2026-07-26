@@ -623,12 +623,12 @@ pub struct Scene {
 /// without parsing (e.g. unit tests) carries no artifacts and the renderer
 /// transparently falls back to its legacy per-object compositing path.
 /// A region of the **expanded** source (the single flat document produced by
-/// recursively inlining `#include(...)` calls) that came from an *included*
+/// recursively inlining `#include "rel"` statements) that came from an *included*
 /// file. When a diagnostic byte offset lands inside `[start, end)`, the error
-/// is reported at the `#include(...)` call-site that pulled the file in — the
+/// is reported at the `#include "rel"` call-site that pulled the file in — the
 /// "referenced position" — rather than at a meaningless offset inside the
 /// concatenated document. This is what makes candy's source tracking honest for
-/// included files: an error inside `b.tyx` (pulled in by `#include("b.tyx")`)
+/// included files: an error inside `b.tyx` (pulled in by `#include "b.tyx"`)
 /// points at *that* include line in the parent file.
 #[derive(Debug, Clone)]
 pub struct IncludeRegion {
@@ -636,13 +636,13 @@ pub struct IncludeRegion {
     /// inlined content of the referenced file.
     pub start: usize,
     pub end: usize,
-    /// Absolute path of the file that *contains the `#include(...)` call* (the
+    /// Absolute path of the file that *contains the `#include "..."` call* (the
     /// includer), not the included file itself.
     pub ref_path: std::path::PathBuf,
     /// The includer file's *original* (un-expanded) source text, retained so the
     /// reported `line:col` is computed against the real file the user wrote.
     pub ref_raw: String,
-    /// Byte range of the whole `#include(...)` call within `ref_raw`.
+    /// Byte range of the whole `#include "..."` call within `ref_raw`.
     pub ref_range: std::ops::Range<usize>,
 }
 
@@ -674,7 +674,7 @@ pub struct ParseArtifacts {
     /// `E005` Typst failure can point at the real file rather than the synthetic
     /// `main.typ` detached source.
     pub file_path: PathBuf,
-    /// Source map for the (expanded) `source`: every inlined `#include(...)`
+    /// Source map for the (expanded) `source`: every inlined `#include "rel"`
     /// region is recorded together with the `#include` call-site that pulled it
     /// in (the "referenced position"). Lets a diagnostic pointing at content
     /// inside an included file trace back to the `#include` line in the includer,
