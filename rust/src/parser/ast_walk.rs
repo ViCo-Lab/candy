@@ -23,8 +23,8 @@ use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
-    Action, AudioTrack, CounterDef, CounterEvent, FrameData, Label, ParseArtifacts, Scene,
-    SceneInfo, Slide, Subtitle, Timing,
+    Action, AudioTrack, CounterDef, CounterEvent, FrameData, IncludeRegion, Label, ParseArtifacts,
+    Scene, SceneInfo, Slide, SourceMap, Subtitle, Timing,
 };
 use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::meta::PrivateMeta;
@@ -35,13 +35,157 @@ use crate::parser::expr::{CANDY, call_symbol};
 /// Typst points per centimeter — re-exported from core::ast for convenience.
 use crate::core::ast::PT_PER_CM;
 
-/// Parse `.tyx` file into a `Scene` AST.
+/// Maximum recursive `include` depth before we treat it as a cycle and error
+/// (prevents an `a → b → a` loop from expanding forever).
+const MAX_INCLUDE_DEPTH: usize = 64;
+
+/// Recursively expand every `#include("path")` call in the file at `file_path`,
+/// inlining the referenced file's content at the call site, so candy's AST
+/// parser sees *all* directives — including those declared inside included
+/// `.tyx` / `.typ` files (and the files *they* include) — as one flat
+/// document.
+///
+/// Without this, included files would be resolved by Typst's built-in `include`
+/// only at *compile* time (inside the World), long after candy's parse has
+/// run: directives inside an included file would never be parsed (no animation,
+/// no `#mobject` capture, no scene gating). Expanding up front keeps
+/// `ParseArtifacts::source` (the string the renderer text-splices against)
+/// consistent with what candy actually parsed.
+///
+/// Expansion is AST-driven (not regex): only real `#include("literal")` calls
+/// are touched, so an `include` inside a string or comment is left alone.
+/// Each included file is expanded in the context of *its own* directory
+/// (matching Typst's path resolution) and expanded fully *before* being
+/// spliced, so a chain `a → b → c` collapses in one pass. A depth cap
+/// guards against a cyclic include expanding forever.
+///
+/// Returns the expanded source **and** a [`SourceMap`]: every byte range that
+/// came from an inlined include is recorded together with the `#include(…)`
+/// call-site that pulled it in (the "referenced position"), so later diagnostics
+/// can trace an error inside an included file back to that include line instead
+/// of pointing at a meaningless offset in the concatenated document.
+fn expand_includes(
+    source: &str,
+    file_path: &Path,
+    depth: usize,
+) -> Result<(String, Vec<IncludeRegion>), CandyError> {
+    if depth > MAX_INCLUDE_DEPTH {
+        return Err(CandyError::Parse(
+            "include nesting too deep (check for a cyclic include)".into(),
+            None,
+        ));
+    }
+    let root = parse(source);
+    let node = LinkedNode::new(&root);
+    // `(call_start, call_end, expanded_content, nested_regions)`: the whole
+    // `#include("…")` call span and the (already-recursively-expanded) content
+    // that replaces it, plus the regions of *its* included children (in the
+    // child's own coordinate space, shifted into place when spliced).
+    let mut edits: Vec<(usize, usize, String, Vec<IncludeRegion>)> = Vec::new();
+    collect_include_edits(&node, file_path, depth, &mut edits)?;
+    if edits.is_empty() {
+        return Ok((source.to_string(), Vec::new()));
+    }
+    // Apply right-to-left (descending start) so earlier offsets stay valid.
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = source.to_string();
+    let mut regions: Vec<IncludeRegion> = Vec::new();
+    for (start, end, rep, nested) in edits {
+        out.replace_range(start..end, &rep);
+        // The inlined content of *this* include call occupies
+        // `[start, start + rep.len())` in the output; report it at the
+        // call-site in the file that contains this `#include` (i.e. `file_path`,
+        // whose original text is `source`).
+        regions.push(IncludeRegion {
+            start,
+            end: start + rep.len(),
+            ref_path: file_path.to_path_buf(),
+            ref_raw: source.to_string(),
+            ref_range: start..end,
+        });
+        // Nested regions live *inside* this inlined content, so shift them by
+        // `start` to land in the output coordinate space.
+        for n in nested {
+            regions.push(IncludeRegion {
+                start: n.start + start,
+                end: n.end + start,
+                ref_path: n.ref_path,
+                ref_raw: n.ref_raw,
+                ref_range: n.ref_range,
+            });
+        }
+    }
+    Ok((out, regions))
+}
+
+/// Walk `node` (parsed from `source`, the text of the file at `file_path`)
+/// for `#include("path")` calls. For each, read the file relative to
+/// `file_path`'s directory, recursively expand it, and record an edit that
+/// replaces the whole call span with the expanded content (and hands back the
+/// nested regions returned by the recursive expansion). We do not descend into
+/// a call's children (the entire `include(…)` text is replaced anyway), which
+/// also stops the recursive expansion from re-scanning the same call.
+///
+/// `source` is the text of `file_path` (retained by the caller to build
+/// the reported `line:col`); it is not needed here, so it is intentionally
+/// not threaded into the recursion.
+fn collect_include_edits(
+    node: &LinkedNode,
+    file_path: &Path,
+    depth: usize,
+    edits: &mut Vec<(usize, usize, String, Vec<IncludeRegion>)>,
+) -> Result<(), CandyError> {
+    if let Some(call) = node.get().cast::<ast::FuncCall>() {
+        if let Expr::Ident(id) = call.callee() {
+            if id.as_str() == "include" {
+                // The first positional argument must be a string-literal path.
+                'args: for args_node in node.children() {
+                    if args_node.get().cast::<ast::Args>().is_none() {
+                        continue;
+                    }
+                    for arg in args_node.children() {
+                        if let Some(ast::Arg::Pos(Expr::Str(s))) = arg.get().cast::<ast::Arg>() {
+                            let rel = s.get();
+                            let target = file_path.join(rel.as_str());
+                            let content = std::fs::read_to_string(&target).map_err(|e| {
+                                CandyError::Parse(format!("cannot include {rel:?}: {e}"), None)
+                            })?;
+                            // Expand the included file in the context of *its*
+                            // own directory so its nested includes resolve
+                            // correctly (matching Typst's resolution).
+                            let (expanded, nested) = expand_includes(&content, &target, depth + 1)?;
+                            let r = node.range();
+                            edits.push((r.start, r.end, expanded, nested));
+                            break 'args;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for child in node.children() {
+        collect_include_edits(&child, file_path, depth, edits)?;
+    }
+    Ok(())
+}
+
+// Parse `.tyx` file into a `Scene` AST.
 ///
 /// Precondition: `path` exists and is valid UTF-8 (else E001).
 /// Postcondition: returns `Ok(Scene)` with validated slides (else E002).
 /// `private_metadata` is set to the fixed defaults.
 pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError> {
-    let raw = std::fs::read_to_string(path)?; // E001 on missing file
+    let source_file = std::fs::read_to_string(path)?; // E001 on missing file
+    // Recursively inline every `#include("…")` call *before* the AST walk, so
+    // candy's parser sees directives declared inside included files as part of
+    // one flat document (otherwise Typst would only resolve them at compile
+    // time, long after the parse has run, and their directives would be lost).
+    // The `SourceMap` records, for each inlined region, the `#include`
+    // call-site that pulled it in — used to trace diagnostics back to that line.
+    let (raw, include_regions) = expand_includes(&source_file, path, 0)?;
+    let source_map = SourceMap {
+        regions: include_regions,
+    };
     // Parse as standard Typst **markup** — exactly like `typst compile`. A
     // `.tyx` is a valid standard Typst document: it imports the Candy package
     // and calls plain Candy functions; prose, equations, `//` line comments and
@@ -58,6 +202,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     let mut ctx = ParseCtx {
         file_path: path.to_path_buf(),
         source: raw.clone(),
+        source_map: source_map.clone(),
         ..Default::default()
     };
     // The whole document is the implicit root scope (id 0).
@@ -204,6 +349,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         artifacts: ParseArtifacts {
             source: raw,
             file_path: path.to_path_buf(),
+            source_map,
             mobject_body: ctx.mobject_body_ranges.clone(),
             scene_call: ctx.scene_call_ranges.clone(),
             subtitle_call: ctx.subtitle_call_ranges.clone(),
@@ -243,6 +389,11 @@ pub(crate) struct ParseCtx {
     /// version errors) can build a [`SourceLoc`] pointing at the offending
     /// `#import` line instead of just emitting a message.
     pub(crate) source: String,
+    /// Source map for the expanded `source`: for each inlined `#include(…)`
+    /// region, the `#include` call-site that pulled it in. Used by
+    /// [`ParseCtx::loc`] to trace an error inside an included file back to the
+    /// `#include` line in the includer (the "referenced position").
+    pub(crate) source_map: SourceMap,
     /// Source location of the detected `@<ns>/candy:<version>` package import,
     /// used to point E008 (version mismatch) at the real import line.
     pub(crate) candy_import_loc: Option<SourceLoc>,
@@ -367,6 +518,22 @@ pub(crate) struct ParseCtx {
 }
 
 impl ParseCtx {
+    /// Resolve a byte-range `range` (in the *expanded* source) to a
+    /// [`SourceLoc`] for diagnostics.
+    ///
+    /// If the range falls inside a region that was inlined by `#include(…)`,
+    /// this returns a [`SourceLoc`] pointing at the *referencing position* —
+    /// the `#include("…")` call-site in the includer file (its original
+    /// source text and the call's byte range), exactly as the user requested
+    /// ("被include引入的外部文件源码追踪时要跟踪到被引用的位置"). Otherwise the
+    /// range is mapped to the original `.tyx` file directly.
+    pub(crate) fn loc(&self, range: std::ops::Range<usize>) -> SourceLoc {
+        if let Some(inc) = self.source_map.region_for(range.start) {
+            return SourceLoc::at(&inc.ref_path, &inc.ref_raw, inc.ref_range.clone());
+        }
+        SourceLoc::at(&self.file_path, &self.source, range)
+    }
+
     /// Begin a new directive entry and return its absolute start time on the
     /// timeline, resolving `timing` + `delay`:
     ///

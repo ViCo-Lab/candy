@@ -677,6 +677,17 @@ fn map_diag_to_original(
     let avail = (be - bs).saturating_sub(local);
     let span = (range.end - range.start).clamp(1, avail.max(1));
     let oend = (ostart + span).min(be);
+    // If the error landed inside inlined `#include(…)` content, trace it back
+    // to the `#include` call-site (the "referenced position") so an error in an
+    // included file points at the includer's `#include` line, not at a
+    // meaningless offset in the concatenated `artifacts.source`.
+    if let Some(inc) = artifacts.source_map.region_for(ostart) {
+        return Some(SourceLoc::at(
+            &inc.ref_path,
+            &inc.ref_raw,
+            inc.ref_range.clone(),
+        ));
+    }
     Some(SourceLoc::at(source_path, orig, ostart..oend))
 }
 
@@ -738,6 +749,51 @@ fn content_timeline_swaps_rendered_body() {
         "content timeline did not change rendered body"
     );
     std::fs::remove_file(&tmp).ok();
+}
+
+/// An error inside a file pulled in by `#include` must trace back to the
+/// *referencing* position — i.e. the `#include("…")` call-site in the
+/// includer file — not to a meaningless offset inside the concatenated
+/// (expanded) document. This exercises the `SourceMap` → `region_for`
+/// remap in `map_diag_to_original`.
+#[test]
+fn include_error_traces_to_include_call_site() {
+    let dir = std::env::temp_dir();
+    let main = dir.join("candy_test_include_trace_main.tyx");
+    let child = dir.join("candy_test_include_trace_child.tyx");
+    // Child declares an mobject whose body is a broken Typst expression
+    // (`none.foo()` → "cannot access field foo on none"). The body is what
+    // the per-frame compiler actually typesets, so the error span lands
+    // inside the inlined child content.
+    std::fs::write(
+        &child,
+        "#import \"candy\": *\n#mobject(\"b\", #{none.foo()})\n",
+    )
+    .unwrap();
+    let src = "#import \"candy\": *\n#include(\"candy_test_include_trace_child.tyx\")\n\
+         #mobject(\"a\", circle(radius: 1cm))\n"
+    .to_string();
+    std::fs::write(&main, &src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&main, true).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    let err = r.render_frame_at(0, &[]).unwrap_err();
+    std::fs::remove_file(&main).ok();
+    std::fs::remove_file(&child).ok();
+    match &err {
+        CandyError::Typst(_, Some(loc)) => {
+            // Must point at the *includer* (main), not the included child.
+            assert_eq!(
+                loc.path, main,
+                "include error should trace to the includer file, not the included child"
+            );
+            assert!(
+                loc.line_text.contains("include"),
+                "include error should point at the `#include` line, got: {:?}",
+                loc.line_text
+            );
+        }
+        other => panic!("expected CandyError::Typst with a location, got {other:?}"),
+    }
 }
 #[test]
 fn substitute_counters_expands_ecval_as_ast_node() {

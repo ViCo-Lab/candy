@@ -622,6 +622,49 @@ pub struct Scene {
 /// See `Scene::artifacts`. All fields are default-empty so a `Scene` built
 /// without parsing (e.g. unit tests) carries no artifacts and the renderer
 /// transparently falls back to its legacy per-object compositing path.
+/// A region of the **expanded** source (the single flat document produced by
+/// recursively inlining `#include(...)` calls) that came from an *included*
+/// file. When a diagnostic byte offset lands inside `[start, end)`, the error
+/// is reported at the `#include(...)` call-site that pulled the file in — the
+/// "referenced position" — rather than at a meaningless offset inside the
+/// concatenated document. This is what makes candy's source tracking honest for
+/// included files: an error inside `b.tyx` (pulled in by `#include("b.tyx")`)
+/// points at *that* include line in the parent file.
+#[derive(Debug, Clone)]
+pub struct IncludeRegion {
+    /// Byte range `[start, end)` in the expanded source that belongs to the
+    /// inlined content of the referenced file.
+    pub start: usize,
+    pub end: usize,
+    /// Absolute path of the file that *contains the `#include(...)` call* (the
+    /// includer), not the included file itself.
+    pub ref_path: std::path::PathBuf,
+    /// The includer file's *original* (un-expanded) source text, retained so the
+    /// reported `line:col` is computed against the real file the user wrote.
+    pub ref_raw: String,
+    /// Byte range of the whole `#include(...)` call within `ref_raw`.
+    pub ref_range: std::ops::Range<usize>,
+}
+
+/// Map of every inlined-include region in the expanded source. Built bottom-up
+/// during [`crate::parser::ast_walk::expand_includes`]: each nested region's
+/// offsets are shifted into the final expanded-string coordinates as its parent
+/// is spliced in.
+#[derive(Debug, Clone, Default)]
+pub struct SourceMap {
+    pub regions: Vec<IncludeRegion>,
+}
+
+impl SourceMap {
+    /// If `offset` falls inside an inlined include region, return that region
+    /// (so the caller can report the `#include` call-site instead).
+    pub(crate) fn region_for(&self, offset: usize) -> Option<&IncludeRegion> {
+        self.regions
+            .iter()
+            .find(|r| offset >= r.start && offset < r.end)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ParseArtifacts {
     /// The original `.tyx` source text (markup, as parsed by `typst_syntax`).
@@ -631,6 +674,13 @@ pub struct ParseArtifacts {
     /// `E005` Typst failure can point at the real file rather than the synthetic
     /// `main.typ` detached source.
     pub file_path: PathBuf,
+    /// Source map for the (expanded) `source`: every inlined `#include(...)`
+    /// region is recorded together with the `#include` call-site that pulled it
+    /// in (the "referenced position"). Lets a diagnostic pointing at content
+    /// inside an included file trace back to the `#include` line in the includer,
+    /// so the user is pointed at the file they wrote rather than at a
+    /// meaningless offset inside the concatenated document.
+    pub source_map: SourceMap,
     /// Source range `(start, end)` of each `#mobject(label, body)` call's
     /// `body` argument expression, keyed by label. Used to splice the
     /// per-frame wrapped body back into `source`.

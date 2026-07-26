@@ -89,7 +89,7 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
 
     // Record this directive's source location so `emit_slide` can attach it to
     // the `Slide`(s) it produces — used by the `E002`/`Parse` `duration_ms` error.
-    ctx.current_directive_loc = Some(SourceLoc::at(&ctx.file_path, raw, node.range()));
+    ctx.current_directive_loc = Some(ctx.loc(node.range()));
 
     let args = call.args();
     let mut pos: Vec<Expr> = Vec::new();
@@ -168,7 +168,7 @@ fn record_name_refs(
     sym: &str,
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
-    raw: &str,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     // Directives whose first positional or `target:`/`name:` argument is a name
@@ -201,21 +201,21 @@ fn record_name_refs(
         Some(Expr::Str(s)) => s.get().to_string(),
         _ => return,
     };
-    if let Some(loc) = find_str_loc(node, &name, raw, ctx) {
+    if let Some(loc) = find_str_loc(node, &name, ctx) {
         ctx.name_ref_locs.insert(name, loc);
     }
 }
 
 /// Recursively search `node`'s subtree for an `ast::Str` whose value equals
 /// `name`, returning its source range as a [`SourceLoc`].
-fn find_str_loc(node: &LinkedNode, name: &str, raw: &str, ctx: &ParseCtx) -> Option<SourceLoc> {
+fn find_str_loc(node: &LinkedNode, name: &str, ctx: &ParseCtx) -> Option<SourceLoc> {
     if let Some(s) = node.get().cast::<ast::Str>() {
         if s.get() == name {
-            return Some(SourceLoc::at(&ctx.file_path, raw, node.range()));
+            return Some(ctx.loc(node.range()));
         }
     }
     for child in node.children() {
-        if let Some(loc) = find_str_loc(&child, name, raw, ctx) {
+        if let Some(loc) = find_str_loc(&child, name, ctx) {
             return Some(loc);
         }
     }
@@ -246,7 +246,7 @@ fn process_mobject(
     let label = Label(label_str);
     // Record the declaration's source location so later diagnostics (e.g.
     // `E004` LabelNotFound) can point at the exact code.
-    let loc = SourceLoc::at(&ctx.file_path, raw, node.range());
+    let loc = ctx.loc(node.range());
     ctx.label_locs.insert(label.clone(), loc.clone());
     // Duplicate-name detection (respecting scope): a label redefined in the
     // *same* lexical scope is almost certainly a typo, so warn and let the
@@ -1635,7 +1635,7 @@ fn process_ecnew(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
     node: &LinkedNode,
-    raw: &str,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     let name = pos
@@ -1658,7 +1658,7 @@ fn process_ecnew(
     let scope = current_scope(ctx);
     // Record the declaration's source location so later diagnostics can point
     // at the exact code.
-    let loc = SourceLoc::at(&ctx.file_path, raw, node.range());
+    let loc = ctx.loc(node.range());
     ctx.label_locs
         .insert(Label(format!("counter:{name}")), loc.clone());
 
