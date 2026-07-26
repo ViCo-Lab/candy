@@ -484,10 +484,16 @@ pub enum CandyWarn {
     /// W008 — MP4 only muxes AAC audio; a non-AAC track was ignored.
     AudioIgnored,
     /// W009 — An unknown easing name was given; falling back to `linear`.
-    UnknownEasing(String),
+    ///
+    /// Fields: the offending easing name, and the source location of the
+    /// directive that carried it (for the source-trace / `hint:` output).
+    UnknownEasing(String, SourceLoc),
     /// W010 — A `#reveal` body was not a string literal; falling back to
     /// `FadeIn`.
-    RevealFallback(String),
+    ///
+    /// Fields: the offending label, and the source location of the directive
+    /// that carried it (for the source-trace / `hint:` output).
+    RevealFallback(String, SourceLoc),
     /// W011 — An intermediate directory could not be removed after a build.
     CleanupFailed(String),
     /// W012 — The number of `--output` names does not match the number of
@@ -511,8 +517,9 @@ pub enum CandyWarn {
     /// W015 — The user called a Candy private function (name starts with `_`).
     /// These are internal helpers, not part of the public API.
     ///
-    /// Field: the private function name (e.g. `"_assert_str"`).
-    CallingPrivate(String),
+    /// Fields: the private function name (e.g. `"_assert_str"`), and the
+    /// source location of the call (for the source-trace / `hint:` output).
+    CallingPrivate(String, SourceLoc),
 
     /// W016 — Opacity went out of the valid `[0, 1]` interpolation range and
     /// was clamped during interpolation (`interpolator::interpolate_with`).
@@ -533,13 +540,13 @@ impl CandyWarn {
             CandyWarn::AudioDropped(_) => "W006",
             CandyWarn::EncodeRetry => "W007",
             CandyWarn::AudioIgnored => "W008",
-            CandyWarn::UnknownEasing(_) => "W009",
-            CandyWarn::RevealFallback(_) => "W010",
+            CandyWarn::UnknownEasing(_, _) => "W009",
+            CandyWarn::RevealFallback(_, _) => "W010",
             CandyWarn::CleanupFailed(_) => "W011",
             CandyWarn::OutputNameCountMismatch(_) => "W012",
             CandyWarn::OutputNameInvalid(_) => "W013",
             CandyWarn::DuplicateName(_, _, _) => "W014",
-            CandyWarn::CallingPrivate(_) => "W015",
+            CandyWarn::CallingPrivate(_, _) => "W015",
             CandyWarn::Interpolation(_) => "W016",
         }
     }
@@ -572,10 +579,10 @@ impl CandyWarn {
             CandyWarn::AudioIgnored => {
                 "audio: MP4 only muxes AAC audio; ignoring non-AAC track".into()
             }
-            CandyWarn::UnknownEasing(d) => {
+            CandyWarn::UnknownEasing(d, _) => {
                 format!("parse: unknown easing {d}; falling back to linear")
             }
-            CandyWarn::RevealFallback(d) => {
+            CandyWarn::RevealFallback(d, _) => {
                 format!("parse: #reveal body is not a string literal; falling back to FadeIn: {d}")
             }
             CandyWarn::CleanupFailed(d) => {
@@ -601,7 +608,7 @@ impl CandyWarn {
                      nested scope is legitimate Typst shadowing and is not warned)"
                 )
             }
-            CandyWarn::CallingPrivate(name) => {
+            CandyWarn::CallingPrivate(name, _) => {
                 format!("parse: `#{name}` is a private Candy helper, not part of the public API")
             }
             CandyWarn::Interpolation(e) => format!("interpolator: {e}"),
@@ -613,6 +620,34 @@ impl CandyWarn {
     pub fn loc(&self) -> Option<&SourceLoc> {
         match self {
             CandyWarn::DuplicateName(_, _, l) => Some(l),
+            CandyWarn::CallingPrivate(_, l) => Some(l),
+            CandyWarn::UnknownEasing(_, l) => Some(l),
+            CandyWarn::RevealFallback(_, l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// An optional one-line `hint:` for this warning, surfaced after the source
+    /// snippet (rustc / `hint:` style). Mirrors [`CandyError::hint`]: only the
+    /// source-localizable warnings carry one, pointing at the most likely fix.
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            CandyWarn::DuplicateName(_, _, _) => Some(
+                "rename one of the definitions, or move the later one into a nested scope if \
+                 shadowing is intended",
+            ),
+            CandyWarn::CallingPrivate(_, _) => Some(
+                "use the public API instead — drop the leading `_` and call the documented \
+                 helper, or import it from the candy package",
+            ),
+            CandyWarn::UnknownEasing(_, _) => Some(
+                "see the candy docs for the list of supported easing names (matched \
+                 case-insensitively); defaulting to linear",
+            ),
+            CandyWarn::RevealFallback(_, _) => Some(
+                "pass a string literal (\"...\") as the body so char/word reveal can measure its \
+                 length; falling back to FadeIn",
+            ),
             _ => None,
         }
     }
@@ -902,6 +937,14 @@ macro_rules! warn {
         if let Some(__loc) = __w.loc() {
             __line.push('\n');
             __line.push_str(&$crate::core::diag::render_warn_loc(__loc));
+        }
+        if let Some(__h) = __w.hint() {
+            __line.push('\n');
+            __line.push_str(&::std::format!(
+                "  {} {}",
+                $crate::bold!("{}:", "hint"),
+                __h
+            ));
         }
         $crate::core::diag::eprint_styled!("{}", __line);
     }};

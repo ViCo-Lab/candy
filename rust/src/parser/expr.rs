@@ -18,7 +18,7 @@ use typst_syntax::LinkedNode;
 use typst_syntax::SyntaxNode;
 use typst_syntax::ast::{self, AstNode, Expr};
 
-use crate::core::diag::CandyWarn;
+use crate::core::diag::{CandyWarn, SourceLoc};
 use crate::parser::ast_walk::ParseCtx;
 use crate::warn;
 
@@ -145,6 +145,7 @@ pub(crate) fn resolve_easing(
     named: &HashMap<String, Expr>,
     label: &crate::core::ast::Label,
     default: crate::core::easing::Easing,
+    ctx: &ParseCtx,
 ) -> crate::core::easing::Easing {
     match named.get("easing") {
         Some(Expr::Str(s)) => {
@@ -152,10 +153,14 @@ pub(crate) fn resolve_easing(
             match crate::core::easing::Easing::from_str(name.as_str()) {
                 Some(e) => e,
                 None => {
-                    warn!(CandyWarn::UnknownEasing(format!(
-                        "'{name}' for @{}",
-                        label.0
-                    )));
+                    let loc = ctx
+                        .current_directive_loc
+                        .clone()
+                        .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+                    warn!(CandyWarn::UnknownEasing(
+                        format!("'{name}' for @{}", label.0),
+                        loc
+                    ));
                     crate::core::easing::Easing::Linear
                 }
             }

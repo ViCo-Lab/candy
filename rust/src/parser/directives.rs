@@ -146,7 +146,11 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy),
         // Snake-case Candy private functions — warn but still parse.
         sym if sym.starts_with('_') => {
-            warn!(CandyWarn::CallingPrivate(sym.to_string()));
+            let loc = ctx
+                .current_directive_loc
+                .clone()
+                .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+            warn!(CandyWarn::CallingPrivate(sym.to_string(), loc));
         }
         _ => {}
     }
@@ -321,10 +325,14 @@ fn process_animate(
             match Easing::from_str(name.as_str()) {
                 Some(e) => e,
                 None => {
-                    warn!(CandyWarn::UnknownEasing(format!(
-                        "'{name}' for @{}",
-                        label.0
-                    )));
+                    let loc = ctx
+                        .current_directive_loc
+                        .clone()
+                        .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+                    warn!(CandyWarn::UnknownEasing(
+                        format!("'{name}' for @{}", label.0),
+                        loc
+                    ));
                     Easing::Linear
                 }
             }
@@ -556,7 +564,7 @@ fn process_restore(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -588,7 +596,7 @@ fn process_indicate(
     let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -620,7 +628,7 @@ fn process_flash(
         .unwrap_or(200.0)
         .max(1.0) as u32;
     let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(2.0);
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -650,7 +658,7 @@ fn process_wiggle(
         .unwrap_or(500.0)
         .max(1.0) as u32;
     let degrees = named.get("degrees").and_then(expr_to_angle).unwrap_or(15.0);
-    let easing = resolve_easing(named, &label, Easing::Wiggle);
+    let easing = resolve_easing(named, &label, Easing::Wiggle, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -719,7 +727,7 @@ fn process_set_color(
         .and_then(expr_to_f64)
         .unwrap_or(1.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Linear);
+    let easing = resolve_easing(named, &label, Easing::Linear, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -754,7 +762,7 @@ fn process_blink(
         .unwrap_or(500.0)
         .max(1.0) as u32;
     let per_blink = (duration / (blinks * 2)).max(1);
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     // Each blink = FadeTo(0) + FadeTo(1).
     let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     for _ in 0..blinks {
@@ -802,7 +810,7 @@ fn process_spiral_in(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     // Set initial state: scaled up, rotated, invisible.
     ctx.slides.push(Slide {
@@ -869,7 +877,7 @@ fn process_focus_on(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
         parse_timing(named),
@@ -915,7 +923,7 @@ fn process_fade_transform(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &from, Easing::Smooth);
+    let easing = resolve_easing(named, &from, Easing::Smooth, ctx);
 
     // `FadeIn` interpolates the target's *current* opacity → 1. Since a plain
     // mobject starts fully opaque, the crossfade would be a no-op on `to`
@@ -983,7 +991,7 @@ fn process_move_along_path(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
 
     // The path is the 2nd positional arg per the Typst signature
     // (`#move-along-path(target, path, ...)`), but we also accept a named
@@ -1054,7 +1062,7 @@ fn process_track(
         .and_then(expr_to_f64)
         .unwrap_or(1000.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
 
     // Keyframes come from the 2nd positional arg (an array of tuples) or
     // `keys:`. Each tuple is `(t, (x, y, scale, opacity, rotation))`.
@@ -1203,14 +1211,18 @@ fn process_reveal(
             }
         }
     };
-    let _ = resolve_easing(named, &label, Easing::Smooth);
+    let _ = resolve_easing(named, &label, Easing::Smooth, ctx);
 
     // The body must be a string literal ("...") for char/word reveal.
     let Some(body) = ctx.items.get(&label) else {
         return;
     };
     let Some(inner) = strip_string_literal(body) else {
-        warn!(CandyWarn::RevealFallback(format!("@{0}", label.0)));
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        warn!(CandyWarn::RevealFallback(format!("@{0}", label.0), loc));
         emit_slide(
             ctx,
             parse_timing(named),
@@ -1321,7 +1333,7 @@ fn process_morph(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &from, Easing::Smooth);
+    let easing = resolve_easing(named, &from, Easing::Smooth, ctx);
 
     let _start = ctx.entry_start(parse_timing(named), parse_delay(named));
     // Hide the `to` object initially (it will fade in as the shape morphs in).
@@ -1434,7 +1446,7 @@ fn process_transform(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let easing = resolve_easing(named, &label, Easing::Smooth);
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
 
     // Capture the current content of `target` before we replace it.
     // Capture the *currently displayed* content of `target` before we replace
@@ -1588,7 +1600,7 @@ fn process_subtitle(
         .and_then(expr_to_f64)
         .map(|d| d.max(1.0) as u32);
     let position = parse_sub_pos(named);
-    let easing = resolve_easing(named, &Label("subtitle".into()), Easing::Linear);
+    let easing = resolve_easing(named, &Label("subtitle".into()), Easing::Linear, ctx);
 
     let id = format!("__sub_{}", ctx.subtitle_id);
     ctx.subtitle_id += 1;
@@ -1637,7 +1649,12 @@ fn process_ecnew(
         .get("duration")
         .and_then(expr_to_f64)
         .map(|d| d.max(1.0) as u32);
-    let easing = resolve_easing(named, &Label(format!("counter:{name}")), Easing::Linear);
+    let easing = resolve_easing(
+        named,
+        &Label(format!("counter:{name}")),
+        Easing::Linear,
+        ctx,
+    );
     let scope = current_scope(ctx);
     // Record the declaration's source location so later diagnostics can point
     // at the exact code.
