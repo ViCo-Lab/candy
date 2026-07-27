@@ -1,0 +1,6 @@
+// Middle of the three-level include chain (included by
+// `include_chain_main.tyx`, includes `include_chain_child.tyx`). Has no import
+// and no version header — it is inlined into the main document.
+#include "include_chain_child.tyx"
+
+#mobject("m", circle(radius: 1cm, fill: teal))

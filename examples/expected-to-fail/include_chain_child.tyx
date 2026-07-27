@@ -1,0 +1,4 @@
+// Leaf of the three-level include chain (included by `include_chain_mid.tyx`).
+// Its mobject body calls `panic("boom")` so building the main file fails with
+// E005; the diagnostic expands through both includers.
+#mobject("c", panic("boom"))

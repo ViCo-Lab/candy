@@ -1,0 +1,6 @@
+// This partial is included by `include_partial_error_main.tyx`. It intentionally
+// contains a runtime error (`panic("boom")` inside an mobject body) so that
+// building the main file fails with E005. Note: a partial needs NO `#import`
+// of candy and NO version header — it is inlined into the includer, which
+// already imports candy and carries the version check.
+#mobject("b", panic("boom"))

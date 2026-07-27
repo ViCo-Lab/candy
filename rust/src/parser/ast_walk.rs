@@ -103,16 +103,22 @@ fn expand_includes(
             ref_path: file_path.to_path_buf(),
             ref_raw: source.to_string(),
             ref_range: start..end,
+            chain: vec![(file_path.to_path_buf(), source.to_string(), start..end)],
         });
         // Nested regions live *inside* this inlined content, so shift them by
-        // `start` to land in the output coordinate space.
+        // `start` to land in the output coordinate space. Prepend this include's
+        // call-site to each nested region's chain so a diagnostic can walk the
+        // full include path (root → … → immediate includer) layer by layer.
         for n in nested {
+            let mut chain = vec![(file_path.to_path_buf(), source.to_string(), start..end)];
+            chain.extend(n.chain);
             regions.push(IncludeRegion {
                 start: n.start + start,
                 end: n.end + start,
                 ref_path: n.ref_path,
                 ref_raw: n.ref_raw,
                 ref_range: n.ref_range,
+                chain,
             });
         }
     }
@@ -634,7 +640,15 @@ impl ParseCtx {
     /// range is mapped to the original `.tyx` file directly.
     pub(crate) fn loc(&self, range: std::ops::Range<usize>) -> SourceLoc {
         if let Some(inc) = self.source_map.region_for(range.start) {
-            return SourceLoc::at(&inc.ref_path, &inc.ref_raw, inc.ref_range.clone());
+            // Point at the immediate includer's `#include` line and attach the
+            // outer includers as an `include_trace` so a parse error inside a
+            // nested include prints the full include path layer by layer.
+            return SourceLoc::at_with_chain(
+                &inc.ref_path,
+                &inc.ref_raw,
+                inc.ref_range.clone(),
+                &inc.chain,
+            );
         }
         SourceLoc::at(&self.file_path, &self.source, range)
     }

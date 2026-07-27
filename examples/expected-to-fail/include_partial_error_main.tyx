@@ -1,0 +1,11 @@
+// Expected to fail: E005 (Typst). This file `#include`s
+// `include_partial_error_child.tyx`, whose body calls `panic("boom")`. Because
+// candy inlines the partial into this document *before* compiling, the E005
+// diagnostic is mapped back through the SourceMap to the `#include` call-site
+// below (the includer), NOT to a meaningless raw offset inside the inlined
+// content. So the caret lands on the `#include` line, even though the actual
+// error lives in the included file.
+#import "@preview/candy:0.1.0": *
+#include "include_partial_error_child.tyx"
+
+#mobject("a", circle(radius: 1cm))

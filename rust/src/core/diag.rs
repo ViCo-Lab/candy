@@ -99,6 +99,14 @@ pub struct SourceLoc {
     /// uses — not `end - start` (byte length), which would be wrong for
     /// multi-byte characters (Chinese, Emoji, …).
     pub char_span: usize,
+    /// When this location points at an `#include` call-site inside a document
+    /// that was itself included, this holds the chain of *outer* includers
+    /// (from the immediate parent up to the root document), each as a
+    /// `SourceLoc` of that includer's `#include` line. The reporter prints
+    /// these as a layer-by-layer "included from …" trace so an error that
+    /// originates deep inside an include chain is not collapsed to a single
+    /// line. Empty for errors that are not inside a nested include.
+    pub include_trace: Vec<SourceLoc>,
 }
 
 impl SourceLoc {
@@ -137,7 +145,29 @@ impl SourceLoc {
             start: range.start,
             end: range.end,
             char_span,
+            include_trace: Vec::new(),
         }
+    }
+
+    /// Build a `SourceLoc` at `range` in `raw` (path `path`) and attach the
+    /// *outer* frames of an include chain as its `include_trace`. `chain` is the
+    /// full includer stack (outermost → innermost); the last entry is the
+    /// immediate includer (this location itself), so only `chain[..len-1]`
+    /// becomes trace frames. Used when a diagnostic points at an `#include`
+    /// call-site so the reporter can expand the nested include path.
+    pub fn at_with_chain(
+        path: &std::path::Path,
+        raw: &str,
+        range: std::ops::Range<usize>,
+        chain: &[(std::path::PathBuf, String, std::ops::Range<usize>)],
+    ) -> SourceLoc {
+        let mut loc = SourceLoc::at(path, raw, range);
+        loc.include_trace = chain
+            .iter()
+            .take(chain.len().saturating_sub(1))
+            .map(|(p, r, rg)| SourceLoc::at(p, r, rg.clone()))
+            .collect();
+        loc
     }
 
     /// Render the location in the cargo/rustc snippet style:
@@ -724,7 +754,31 @@ pub fn paint_err_head(level: &str, code: &str, color: Color) -> String {
 /// The returned string always carries ANSI codes; the `anstream`-backed writers
 /// strip them when the destination isn't a terminal or `NO_COLOR` is set.
 pub fn render_error_loc(loc: &SourceLoc) -> String {
-    loc.render_colored(Color::Red)
+    let mut s = loc.render_colored(Color::Red);
+    if !loc.include_trace.is_empty() {
+        s.push_str(&render_include_trace(&loc.include_trace));
+    }
+    s
+}
+
+/// Render the outer frames of a nested-include trace as a sequence of
+/// `= included from \`path:line:col\`:` notes, each followed by a cargo-style
+/// caret block pointing at that includer's `#include` line. Used by
+/// [`render_error_loc`] so an error that originates deep inside a `a → b → c`
+/// include chain is not collapsed to a single line.
+fn render_include_trace(trace: &[SourceLoc]) -> String {
+    let mut out = String::new();
+    for frame in trace {
+        out.push_str(&format!(
+            "\n   = included from `{}:{}:{}`:",
+            frame.path.display(),
+            frame.line,
+            frame.col
+        ));
+        out.push('\n');
+        out.push_str(&frame.render_colored(Color::Red));
+    }
+    out
 }
 
 /// Print a cargo/rustc-style build-status line to **stdout**:

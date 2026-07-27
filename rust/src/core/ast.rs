@@ -644,6 +644,13 @@ pub struct IncludeRegion {
     pub ref_raw: String,
     /// Byte range of the whole `#include "..."` call within `ref_raw`.
     pub ref_range: std::ops::Range<usize>,
+    /// Full include chain from the outermost includer (the root document's
+    /// direct child) down to — and including — the immediate includer
+    /// (`ref_path`/`ref_raw`/`ref_range` == `chain.last()`). For a top-level
+    /// include this is exactly one entry; for a nested include `a → b → c`
+    /// it is `[a's #include "b", b's #include "c"]`, letting diagnostics print
+    /// a layer-by-layer "included from …" trace instead of a single line.
+    pub chain: Vec<(std::path::PathBuf, String, std::ops::Range<usize>)>,
 }
 
 /// Map of every inlined-include region in the expanded source. Built bottom-up
@@ -656,12 +663,17 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
-    /// If `offset` falls inside an inlined include region, return that region
-    /// (so the caller can report the `#include` call-site instead).
+    /// If `offset` falls inside an inlined include region, return the
+    /// *innermost* such region (so the caller reports the immediate includer's
+    /// `#include` call-site). For a nested include `a → b → c`, the erroring
+    /// content in `c` is contained by both `c`'s region and `b`'s (outer)
+    /// region; we want `c`'s (the smallest one), so the deepest trace frame
+    /// points at `b`'s `#include "c"` line and the chain then walks outward.
     pub(crate) fn region_for(&self, offset: usize) -> Option<&IncludeRegion> {
         self.regions
             .iter()
-            .find(|r| offset >= r.start && offset < r.end)
+            .filter(|r| offset >= r.start && offset < r.end)
+            .min_by_key(|r| r.end - r.start)
     }
 }
 

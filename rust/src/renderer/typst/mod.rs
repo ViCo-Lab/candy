@@ -682,10 +682,15 @@ fn map_diag_to_original(
     // included file points at the includer's `#include` line, not at a
     // meaningless offset in the concatenated `artifacts.source`.
     if let Some(inc) = artifacts.source_map.region_for(ostart) {
-        return Some(SourceLoc::at(
+        // Point at the *immediate* includer's `#include` line, and attach the
+        // outer includers as an `include_trace` so the reporter can expand the
+        // nested include path layer by layer (e.g. `a → b → c` prints `b`'s
+        // `#include "c"` line followed by "included from `a`'s `#include "b"`").
+        return Some(SourceLoc::at_with_chain(
             &inc.ref_path,
             &inc.ref_raw,
             inc.ref_range.clone(),
+            &inc.chain,
         ));
     }
     Some(SourceLoc::at(source_path, orig, ostart..oend))
@@ -790,6 +795,65 @@ fn include_error_traces_to_include_call_site() {
                 loc.line_text.contains("include"),
                 "include error should point at the `#include` line, got: {:?}",
                 loc.line_text
+            );
+        }
+        other => panic!("expected CandyError::Typst with a location, got {other:?}"),
+    }
+}
+/// A three-level include chain `main → mid → child` (child's body panics) must
+/// produce a layer-by-layer trace: the deepest frame points at `mid`'s
+/// `#include "child"` line, and `include_trace` carries the outer frame at
+/// `main`'s `#include "mid"` line. Regression for the multi-level include
+/// tracking (the old code collapsed to a single line).
+#[test]
+fn include_error_traces_through_nested_includes() {
+    let dir = std::env::temp_dir();
+    let main = dir.join("candy_test_chain_main.tyx");
+    let mid = dir.join("candy_test_chain_mid.tyx");
+    let child = dir.join("candy_test_chain_child.tyx");
+    std::fs::write(&child, "#mobject(\"c\", panic(\"boom\"))\n").unwrap();
+    std::fs::write(
+        &mid,
+        "#include \"candy_test_chain_child.tyx\"\n#mobject(\"m\", circle(radius: 1cm))\n",
+    )
+    .unwrap();
+    let src = "#import \"candy\": *\n#include \"candy_test_chain_mid.tyx\"\n\
+         #mobject(\"a\", circle(radius: 1cm))\n"
+        .to_string();
+    std::fs::write(&main, &src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&main, true).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    let err = r.render_frame_at(0, &[]).unwrap_err();
+    std::fs::remove_file(&main).ok();
+    std::fs::remove_file(&mid).ok();
+    std::fs::remove_file(&child).ok();
+    match &err {
+        CandyError::Typst(_, Some(loc)) => {
+            // Deepest frame: `mid`'s `#include "child"` line.
+            assert_eq!(
+                loc.path, mid,
+                "deepest frame must point at the immediate includer (mid)"
+            );
+            assert!(
+                loc.line_text.contains("include"),
+                "deepest frame should point at the `#include` line, got: {:?}",
+                loc.line_text
+            );
+            // Outer frame: `main`'s `#include "mid"` line.
+            assert_eq!(
+                loc.include_trace.len(),
+                1,
+                "three-level chain must yield exactly one outer trace frame"
+            );
+            let outer = &loc.include_trace[0];
+            assert_eq!(
+                outer.path, main,
+                "outer trace frame must point at the root includer (main)"
+            );
+            assert!(
+                outer.line_text.contains("include"),
+                "outer frame should point at the `#include` line, got: {:?}",
+                outer.line_text
             );
         }
         other => panic!("expected CandyError::Typst with a location, got {other:?}"),
