@@ -125,12 +125,20 @@ impl PageScheduler {
     /// windows for overflow pages that received no animation of their own —
     /// those windows extend *past* the last keyframe, so the render loop must
     /// sample up to this time or the overflow pages are timed but never drawn.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn max_end_ms(&self) -> u32 {
         self.page_schedules
             .values()
             .flat_map(|segs| segs.iter().map(|s| s.end_ms))
             .max()
             .unwrap_or(0)
+    }
+
+    /// The scene ids that currently have a page schedule. Used by the renderer
+    /// to filter which scenes contribute to the global cross-page end (e.g. to
+    /// exclude pure-container scenes with no renderable content).
+    pub(crate) fn scheduled_sids(&self) -> Vec<usize> {
+        self.page_schedules.keys().copied().collect()
     }
 
     /// Partition one scene's timeline into ordered page-segments.

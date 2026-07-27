@@ -253,28 +253,6 @@ impl Renderer {
             let doc = self.compile(&self.param_source, &inputs)?;
             let page_count = doc.pages().len().max(1);
             scene_page_counts.insert(sid, page_count);
-            // Cross-page scene detected: the content spilled past its single
-            // page. This is legal (the pages play in sequence) but usually
-            // unintentional, so surface it as W018 with the scene name and
-            // page count.
-            if page_count > 1 {
-                let name = self
-                    .scene
-                    .scenes
-                    .iter()
-                    .find(|s| s.id == sid)
-                    .and_then(|s| s.name.clone())
-                    .unwrap_or_else(|| {
-                        if sid == 0 {
-                            "root".to_string()
-                        } else {
-                            format!("#{sid}")
-                        }
-                    });
-                crate::warn!(CandyWarn::MultiPage(format!(
-                    "scene '{name}' overflows onto {page_count} pages"
-                )));
-            }
             // Page height (pt) of this scene's canvas — used to convert the
             // continuous-flow introspector position into a *per-page* (in-page)
             // flow position, since each page is laid out independently from the
@@ -301,9 +279,9 @@ impl Renderer {
             // belongs to a *different* scene (with `active_scene == 0` every
             // scene's page renders, so page 0 is ambiguous for the root).
             let mut first_label_page: Option<usize> = None;
-            for label in labels {
+            for label in &labels {
                 // Synthetic tmps inherit the target's flow position below.
-                if tmp_to_target.contains_key(&label) {
+                if tmp_to_target.contains_key(label) {
                     continue;
                 }
                 let Ok(label_val) = TypstLabel::construct(TypstStr::from(label.0.as_str())) else {
@@ -331,6 +309,118 @@ impl Renderer {
                 );
                 page_of.insert(label.clone(), page_idx);
                 first_label_page = Some(first_label_page.map_or(page_idx, |p| p.min(page_idx)));
+            }
+            // Reassign each mobject's *page* from its FINAL animated position
+            // rather than its initial flow position. Mobjects placed via
+            // `#animate(to: …)` / `#track` / `#move-along-path` (the normal case
+            // for animation scenes) end up where the author put them — almost
+            // always all on the single canvas (page 0). Tying the page to the
+            // *initial* flow position wrongly splits such a scene across pages
+            // whenever the bare mobjects happen to stack past the page height in
+            // the identity layout; the renderer then plays the pages in sequence
+            // and hides the other pages' objects during each window, producing
+            // blank / sparse frames (e.g. at a scene's tail). Rebasing the flow
+            // position to the new page keeps the `move` delta consistent.
+            let ph_cm = ph_pt / PT_PER_CM;
+            for label in &labels {
+                if tmp_to_target.contains_key(label) {
+                    continue;
+                }
+                let old_p = page_of.get(label).copied().unwrap_or(0);
+                // Only a mobject with an explicit final position (absolute
+                // `#animate(to: …)`, relative `#animate(dx/dy)`, `#track`, or
+                // `#move-along-path`) may override its flow-derived page. Such a
+                // mobject may have been pushed onto a phantom overflow page by the
+                // identity-layout flow even though it really lives on the single
+                // canvas (page 0); we re-home it to its final page. Mobjects with
+                // *no* positioning keep the page the introspector measured for
+                // them, so a genuine flow overflow (content that truly spans
+                // pages) is still honored.
+                let mut final_cm: Option<(f64, f64)> = None;
+                let init_cont_cm = (
+                    flow_pos.get(label).map_or(0.0, |(x, _)| *x) / PT_PER_CM,
+                    (flow_pos.get(label).map_or(0.0, |(_, y)| *y) + old_p as f64 * ph_pt)
+                        / PT_PER_CM,
+                );
+                for slide in &self.scene.slides {
+                    for a in &slide.actions {
+                        match a {
+                            crate::core::ast::Action::MoveTo { target, to, .. }
+                                if target == label =>
+                            {
+                                final_cm = Some(*to);
+                            }
+                            crate::core::ast::Action::MoveBy { target, delta, .. }
+                                if target == label =>
+                            {
+                                let base = final_cm.unwrap_or(init_cont_cm);
+                                final_cm = Some((base.0 + delta.0, base.1 + delta.1));
+                            }
+                            crate::core::ast::Action::Track {
+                                target, keyframes, ..
+                            } if target == label => {
+                                let mut p = final_cm.unwrap_or(init_cont_cm);
+                                for k in keyframes {
+                                    if let Some(x) = k.x {
+                                        p.0 = x;
+                                    }
+                                    if let Some(y) = k.y {
+                                        p.1 = y;
+                                    }
+                                }
+                                final_cm = Some(p);
+                            }
+                            crate::core::ast::Action::MoveAlongPath { target, points, .. }
+                                if target == label =>
+                            {
+                                if let Some(p) = points.last() {
+                                    final_cm = Some(*p);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if let Some(fc) = final_cm {
+                    let new_p = (fc.1 / ph_cm).max(0.0).floor() as usize;
+                    if new_p != old_p {
+                        if let Some(fp) = flow_pos.get_mut(label) {
+                            fp.1 += (old_p as f64 - new_p as f64) * ph_pt;
+                        }
+                        page_of.insert(label.clone(), new_p);
+                    }
+                }
+            }
+            // The scene's true page count follows the mobjects' (now corrected)
+            // page assignment. Absolutely-positioned mobjects that all land on
+            // page 0 collapse the phantom flow overflow to a single page, so the
+            // page scheduler no longer appends silent dwell windows (blank
+            // frames). Genuine multi-page scenes keep their real count.
+            let true_pages = labels
+                .iter()
+                .filter_map(|l| page_of.get(l))
+                .copied()
+                .max()
+                .map(|p| p + 1)
+                .unwrap_or(1);
+            scene_page_counts.insert(sid, true_pages.max(1));
+            if true_pages > 1 {
+                let name = self
+                    .scene
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| {
+                        if sid == 0 {
+                            "root".to_string()
+                        } else {
+                            format!("#{sid}")
+                        }
+                    });
+                crate::warn!(CandyWarn::MultiPage(format!(
+                    "scene '{name}' overflows onto {true_pages} pages"
+                )));
             }
             // Measure the scene's *actual* canvas size from the compiled
             // document. The measured page is the one the scene's own labels
@@ -465,6 +555,14 @@ impl Renderer {
         // to the empty root scene, leaving every page after the first blank.
         if !self.scene.scenes.is_empty() {
             for s in self.scene.scenes.iter_mut() {
+                // Skip pure-container scenes (e.g. a `#scene`-wrapping root that
+                // owns no mobjects): their schedule can carry a trailing pause
+                // slide with no renderable content, and stretching such a scene's
+                // `end_ms` would only widen the window in which the empty
+                // container is the sole "active" scene (blank frames).
+                if s.owns_labels.is_empty() {
+                    continue;
+                }
                 if let Some(end) = self.pages.schedule_end_ms(s.id) {
                     if end > s.end_ms {
                         s.end_ms = end;

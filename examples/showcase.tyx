@@ -206,7 +206,7 @@
 
 #scene(name: "counters", width: 16cm, height: 9cm, bg: rgb("#1a1230"))[
   #subtitle(
-    [scene · counters — ecnew · ecval · ecpause · ecresume · ecdestroy · appear · disappear · video · audio],
+    [scene · counters — ecnew · ecval · ecpause · ecresume · ecdestroy · kcnew · kcpush · kcval · kcpause · kcresume · kcdestroy · appear · disappear · video · audio],
     position: "top",
   )
 
@@ -251,6 +251,26 @@
   // Destroy the counter (stops it permanently).
   #ecdestroy("n")
   #pause(duration: 600)
+
+  // Keyframe counter: discrete keyframes pushed at runtime (no single ramp).
+  // Each #kcpush lands at the timeline cursor where it runs (+ optional offset).
+  #kcnew("k", seed: 0, easing: "linear")
+  #mobject("kbar", rect(width: 0.3cm, height: 1.4cm, fill: rgb("#ffd166")))
+  #animate("kbar", to: (4cm, 2.4cm), duration: 1)
+  #mobject("knum", text(28pt, weight: "bold", fill: rgb("#ffd166"))[#kcval("k")])
+  #animate("knum", to: (9cm, 2.0cm), duration: 1)
+  #kcpush("k", 300, easing: "linear")
+  #pause(duration: 700)
+  #kcpush("k", 60, easing: "linear")
+  #pause(duration: 700)
+  #kcpush("k", 220, offset: 120, easing: "linear")
+  #pause(duration: 900)
+  #kcpause("k")
+  #pause(duration: 400)
+  #kcresume("k")
+  #pause(duration: 400)
+  #kcdestroy("k")
+  #pause(duration: 400)
 ]
 
 #scene(name: "finale", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[

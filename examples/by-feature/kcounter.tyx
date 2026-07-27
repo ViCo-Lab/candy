@@ -1,0 +1,36 @@
+#import "@preview/candy:0.1.0": *
+
+// Feature: #kcnew / #kcpush / #kcval — docs/reference/counters.md
+// Register a discrete keyframe counter; push keyframes at runtime (the keyframe
+// time is the timeline cursor where #kcpush runs, plus an optional integer
+// `offset`); Candy interpolates the value between adjacent keyframes at render
+// time. Under standard Typst the counter shows its `seed` / `default`.
+#scene(width: 16cm, height: 9cm, bg: white)[
+  // Register with seed 0. `easing` is the per-segment default used by the
+  // first keyframe's `inherit`.
+  #let k = kcnew("k", seed: 0, easing: "linear")
+  #mobject("bar", rect(width: kcval("k") * 1pt + 1cm, height: 1cm, fill: blue))
+  #subtitle([w = #str(kcval("k"))], position: "bottom")
+
+  // First keyframe at the current cursor (t=0). `easing` here shapes the
+  // segment starting at this node (this -> next).
+  #kcpush("k", 200, easing: "linear")
+  #pause(duration: 600)
+
+  // Second keyframe 600ms later, eased back to 0.
+  #kcpush("k", 0, easing: "linear")
+  #pause(duration: 600)
+
+  // `offset` shifts the keyframe on the timeline by +/- ms. A large negative
+  // offset that would pierce through the previous keyframe is clamped and emits
+  // a non-fatal W017 KeyframeOffsetClamp warning.
+  #kcpush("k", 120, offset: -50)
+  #pause(duration: 600)
+
+  // Lifecycle: pause / resume / freeze.
+  #kcpause("k")
+  #pause(duration: 400)
+  #kcresume("k")
+  #pause(duration: 400)
+  #kcdestroy("k")
+]

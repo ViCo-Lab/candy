@@ -323,6 +323,22 @@ pub fn build_scene_with_gpu(
     renderer.ensure_flow_public()?;
     extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
 
+    // The interpolator deliberately overshoots the sampled timeline by one frame
+    // (see `interpolator::interpolate_with`: `n_frames = ceil(...) + 1`) so the
+    // final animation state is captured on a frame. That trailing sample lands
+    // *past* the content scenes' end and would resolve to the (empty) root scene
+    // via `active_scene_at`, producing a blank tail frame. Clamp every sample to
+    // the global content end so the overshoot frame instead renders at the valid
+    // boundary — i.e. the final, settled state — rather than a blank frame.
+    let global_end = renderer.page_schedule_end_ms();
+    for t in sample_times.iter_mut() {
+        if *t > global_end {
+            *t = global_end;
+        }
+    }
+    sample_times.sort();
+    sample_times.dedup();
+
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
         std::fs::create_dir_all(intermediate_dir)?;
@@ -619,6 +635,18 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
     // overflow pages are compiled/checked too (mirrors the build).
     renderer.ensure_flow_public()?;
     extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
+
+    // Clamp overshoot samples to the global content end (see the build path for
+    // the rationale) so the final check frame is the settled state, not a blank
+    // root frame.
+    let global_end = renderer.page_schedule_end_ms();
+    for t in sample_times.iter_mut() {
+        if *t > global_end {
+            *t = global_end;
+        }
+    }
+    sample_times.sort();
+    sample_times.dedup();
 
     let mut times: Vec<u32> = sample_times.clone();
     if times.is_empty() {

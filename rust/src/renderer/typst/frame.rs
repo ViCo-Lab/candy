@@ -235,7 +235,26 @@ impl Renderer {
     /// they would be timed but never displayed. `0` before `ensure_flow` /
     /// when there is no page schedule.
     pub fn page_schedule_end_ms(&self) -> u32 {
-        self.pages.max_end_ms()
+        // Ignore pure-container scenes (e.g. a `#scene`-wrapping root that owns no
+        // mobjects of its own): their page schedule can extend past the content
+        // scenes' timelines (a trailing pause slide with no renderable content),
+        // and including them would stretch the sampled timeline into a blank tail
+        // where the empty container is the only "active" scene. Only scenes that
+        // actually own mobjects contribute to the global end of the cross-page
+        // playback schedule.
+        self.pages
+            .scheduled_sids()
+            .into_iter()
+            .filter(|sid| {
+                self.scene
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == *sid)
+                    .is_some_and(|s| !s.owns_labels.is_empty())
+            })
+            .filter_map(|sid| self.pages.schedule_end_ms(sid))
+            .max()
+            .unwrap_or(0)
     }
     /// Test-only accessor for the computed flow (first-frame) top-left of a
     /// mobject, in Typst points (page origin). Used by the native-consistency /
