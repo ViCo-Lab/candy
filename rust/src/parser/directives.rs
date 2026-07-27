@@ -13,10 +13,10 @@ use typst_syntax::LinkedNode;
 use typst_syntax::ast::{self, AstNode, Expr};
 
 use crate::core::ast::{
-    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Label, PathMode,
-    Slide, Subtitle, Timing, TrackKey,
+    Action, AudioTrack, CounterDef, CounterEvent, CounterEventKind, FrameData, Keyframe,
+    KeyframeCounterDef, Label, PathMode, Slide, Subtitle, Timing, TrackKey,
 };
-use crate::core::diag::{CandyWarn, SourceLoc};
+use crate::core::diag::{CandyError, CandyWarn, SourceLoc};
 use crate::core::easing::Easing;
 use crate::warn;
 
@@ -141,9 +141,16 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         "ecnew" => process_ecnew(&pos, &named, node, raw, ctx),
         "scene-switch" => process_scene_switch(&pos, &named, ctx),
         "ecval" => { /* read; value substituted per-frame by the renderer */ }
-        "ecpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause),
-        "ecresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume),
-        "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy),
+        "ecpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause, false),
+        "ecresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume, false),
+        "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy, false),
+        // Keyframe-counter module.
+        "kcnew" => process_kcnew(&pos, &named, node, raw, ctx),
+        "kcval" => { /* read; value substituted per-frame by the renderer */ }
+        "kcpush" => process_kcpush(&pos, &named, node, raw, ctx),
+        "kcpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause, true),
+        "kcresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume, true),
+        "kcdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy, true),
         // Snake-case Candy private functions — warn but still parse.
         sym if sym.starts_with('_') => {
             let loc = ctx
@@ -1698,24 +1705,301 @@ fn process_ecnew(
     }
 }
 
-/// `ecpause(name)` / `ecresume(name)` / `ecdestroy(name)` —
-/// record a lifecycle event on a named counter at the current timeline.
+/// `ecpause(name)` / `ecresume(name)` / `ecdestroy(name)` (and their `kc*`
+/// counterparts) — record a lifecycle event on a named counter at the current
+/// timeline. `kc` selects the keyframe-counter namespace (`kc_events`) instead
+/// of the easing-counter one (`counter_events`); keyframe-counter operations are
+/// also scope-restricted — an operation on a name not visible in the current
+/// lexical scope is an invalid name and surfaces as `E006 UnknownKey`.
 fn process_counter_event(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
     ctx: &mut ParseCtx,
     kind: CounterEventKind,
+    kc: bool,
 ) {
     let name = pos
         .first()
         .or_else(|| named.get("name"))
         .and_then(|e| expr_to_key(e));
     let Some(name) = name else { return };
-    ctx.counter_events.push(CounterEvent {
-        name,
-        kind,
-        at_ms: ctx.cursor,
+    if kc {
+        if !kc_name_visible(ctx, &name) {
+            ctx.pending_error = Some(CandyError::UnknownKey(
+                "kcnew".to_string(),
+                name.clone(),
+                ctx.name_ref_locs.get(&name).cloned(),
+            ));
+            return;
+        }
+        ctx.kc_events.push(CounterEvent {
+            name,
+            kind,
+            at_ms: ctx.cursor,
+        });
+    } else {
+        ctx.counter_events.push(CounterEvent {
+            name,
+            kind,
+            at_ms: ctx.cursor,
+        });
+    }
+}
+
+/// `kcnew(name, seed: 0, easing: "linear")` — register a keyframe counter.
+/// Returns `none` under standard Typst (same as `ecnew`). Mirrors
+/// [`process_ecnew`] for scope / duplicate-name handling.
+fn process_kcnew(
+    pos: &[Expr],
+    named: &std::collections::HashMap<String, Expr>,
+    node: &LinkedNode,
+    _raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    let name = pos
+        .first()
+        .or_else(|| named.get("name"))
+        .and_then(|e| expr_to_key(e));
+    let Some(name) = name else { return };
+    let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
+    let easing = resolve_easing(named, &Label(format!("kc:{name}")), Easing::Linear, ctx);
+    let scope = current_scope(ctx);
+    let loc = ctx.loc(node.range());
+    ctx.label_locs
+        .insert(Label(format!("kc:{name}")), loc.clone());
+
+    let def = KeyframeCounterDef {
+        name: name.clone(),
+        scope: scope.clone(),
+        seed,
+        easing,
+        start_ms: ctx.cursor,
+        keyframes: Vec::new(),
+    };
+    // Duplicate-name detection (respecting scope), mirroring `process_ecnew`.
+    let exists = ctx
+        .kcnew_names
+        .get(&scope)
+        .is_some_and(|set| set.contains(&name));
+    if exists {
+        warn!(CandyWarn::DuplicateName("kcnew".into(), name.clone(), loc));
+        if let Some(slot) = ctx
+            .kcdefs
+            .iter()
+            .position(|c| c.name == name && c.scope == scope)
+        {
+            ctx.kcdefs[slot] = def;
+        } else {
+            ctx.kcdefs.push(def);
+        }
+    } else {
+        ctx.kcnew_names
+            .entry(scope.clone())
+            .or_default()
+            .insert(name);
+        ctx.kcdefs.push(def);
+    }
+}
+
+/// `kcpush(name, value, offset: 0, easing: "inherit")` — append a keyframe at
+/// the call site's natural timeline position (`ctx.cursor` + `offset`), with
+/// `value` as the integer reached there. The `easing` (default `inherit`) shapes
+/// the segment starting at this keyframe; `inherit` takes the previous node's
+/// effective easing, else the counter-level default. An `offset` that would make
+/// the keyframe pierce a neighbouring one is clamped into the valid interval
+/// (with a `W017` warning). Operations on a name not visible in the current
+/// scope are invalid (`E006 UnknownKey`).
+fn process_kcpush(
+    pos: &[Expr],
+    named: &std::collections::HashMap<String, Expr>,
+    _node: &LinkedNode,
+    _raw: &str,
+    ctx: &mut ParseCtx,
+) {
+    let name = pos
+        .first()
+        .or_else(|| named.get("name"))
+        .and_then(|e| expr_to_key(e));
+    let Some(name) = name else { return };
+    // Scope restriction: the target must be visible in the current scope.
+    if !kc_name_visible(ctx, &name) {
+        ctx.pending_error = Some(CandyError::UnknownKey(
+            "kcnew".to_string(),
+            name.clone(),
+            ctx.name_ref_locs.get(&name).cloned(),
+        ));
+        return;
+    }
+    let value = named
+        .get("value")
+        .or_else(|| pos.get(1))
+        .and_then(expr_to_i64);
+    let Some(value) = value else { return };
+    let offset = named
+        .get("offset")
+        .or_else(|| pos.get(2))
+        .and_then(expr_to_i64)
+        .unwrap_or(0);
+    let at_ms = (ctx.cursor as i64 + offset).max(0) as u32;
+
+    // Resolve the active (innermost visible) keyframe-counter definition.
+    let Some(idx) = active_kcdef_index(ctx, &name) else {
+        return;
+    };
+    // Snapshot the relevant data (immutable) for inherit + neighbour detection.
+    let (prev_easing, prev_t, next_t) = {
+        let def = &ctx.kcdefs[idx];
+        let pe = def
+            .keyframes
+            .iter()
+            .filter(|k| k.at_ms < at_ms)
+            .max_by_key(|k| k.at_ms)
+            .map(|k| k.easing.clone())
+            .unwrap_or(def.easing.clone());
+        let insert_at = def
+            .keyframes
+            .iter()
+            .position(|k| k.at_ms > at_ms)
+            .unwrap_or(def.keyframes.len());
+        let prev_t = if insert_at > 0 {
+            Some(def.keyframes[insert_at - 1].at_ms)
+        } else {
+            None
+        };
+        let next_t = if insert_at < def.keyframes.len() {
+            Some(def.keyframes[insert_at].at_ms)
+        } else {
+            None
+        };
+        (pe, prev_t, next_t)
+    };
+    // Resolve the effective easing (inherit handling).
+    let easing = resolve_kc_easing(named, ctx, prev_easing);
+
+    // Pierce-through detection: clamp into the valid interval between neighbours.
+    let mut final_at = at_ms;
+    let mut pierced = false;
+    if let Some(pt) = prev_t {
+        if final_at <= pt {
+            final_at = pt + 1;
+            pierced = true;
+        }
+    }
+    if let Some(nt) = next_t {
+        if final_at >= nt {
+            final_at = nt.saturating_sub(1);
+            pierced = true;
+        }
+    }
+    if pierced {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        warn!(CandyWarn::KeyframeOffsetClamp(
+            format!(
+                "kcpush '{name}' offset made its keyframe pierce a neighbouring keyframe; \
+                 clamped to {final_at}ms (original effective time was {at_ms}ms)"
+            ),
+            loc
+        ));
+    }
+
+    // Mutate the target definition's keyframe list (sorted, dedup on collision).
+    let kfs = &mut ctx.kcdefs[idx].keyframes;
+    if kfs.iter().any(|k| k.at_ms == final_at) {
+        // No room between neighbours after clamping: drop the push (warning fired).
+        return;
+    }
+    let insert_at = kfs
+        .iter()
+        .position(|k| k.at_ms > final_at)
+        .unwrap_or(kfs.len());
+    kfs.insert(
+        insert_at,
+        Keyframe {
+            at_ms: final_at,
+            value,
+            easing,
+        },
+    );
+}
+
+/// Resolve the effective easing for a `kcpush`, handling the `inherit` default:
+/// `inherit` (or an absent easing) takes `prev_easing` (the previous node's
+/// effective easing, or the counter-level default for the first node). An unknown
+/// easing name warns (`W009`) and falls back to `prev_easing`.
+fn resolve_kc_easing(
+    named: &std::collections::HashMap<String, Expr>,
+    ctx: &ParseCtx,
+    prev_easing: Easing,
+) -> Easing {
+    let raw = named.get("easing").and_then(|e| match e {
+        Expr::Str(s) => Some(s.get().to_string()),
+        _ => None,
     });
+    match raw {
+        None => prev_easing,
+        Some(s) if s.trim().eq_ignore_ascii_case("inherit") => prev_easing,
+        Some(s) => match Easing::from_str(&s) {
+            Some(e) => e,
+            None => {
+                let loc = ctx
+                    .current_directive_loc
+                    .clone()
+                    .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+                warn!(CandyWarn::UnknownEasing(format!("'{s}' for @kc"), loc));
+                prev_easing
+            }
+        },
+    }
+}
+
+/// Whether a keyframe-counter `name` is visible in the current lexical scope
+/// (current scope or any ancestor). Mirrors the scope-restriction rule for `kc*`:
+/// operating on a name not visible here is an invalid name.
+fn kc_name_visible(ctx: &ParseCtx, name: &str) -> bool {
+    let mut s = ctx.scope_stack.last().copied();
+    while let Some(sid) = s {
+        let key = sid.to_string();
+        if ctx
+            .kcnew_names
+            .get(&key)
+            .is_some_and(|set| set.contains(name))
+        {
+            return true;
+        }
+        s = ctx
+            .scopes
+            .iter()
+            .find(|sc| sc.id == sid)
+            .and_then(|sc| sc.parent);
+    }
+    false
+}
+
+/// Index of the active (innermost visible) keyframe-counter definition for
+/// `name`, or `None` if no visible definition exists. Walks the scope chain from
+/// the current (innermost) scope outward and returns the first match, mirroring
+/// the shadowing resolution used at render time by `Scene::kc_value_at`.
+fn active_kcdef_index(ctx: &ParseCtx, name: &str) -> Option<usize> {
+    let mut s = ctx.scope_stack.last().copied();
+    while let Some(sid) = s {
+        let key = sid.to_string();
+        if let Some(i) = ctx
+            .kcdefs
+            .iter()
+            .position(|c| c.name == name && c.scope == key)
+        {
+            return Some(i);
+        }
+        s = ctx
+            .scopes
+            .iter()
+            .find(|sc| sc.id == sid)
+            .and_then(|sc| sc.parent);
+    }
+    None
 }
 
 /// `scene-switch(target, duration: 0, easing: "smooth")` — switch to a named

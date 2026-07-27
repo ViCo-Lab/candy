@@ -515,10 +515,18 @@ impl Renderer {
     /// (and every ancestor's) context" requirement.
     pub(crate) fn scene_context_preamble(&self, sid: usize) -> String {
         let v = crate::CANDY_VERSION;
+        // Prefer the *measured* canvas size (`scene_pages`, filled during
+        // `ensure_flow`'s measurement pass) so the per-page render document
+        // uses the size the scene was actually laid out at ("以实际获取为准");
+        // fall back to the declared/inherited size when no measurement exists
+        // (e.g. a preamble built before `ensure_flow` ran).
         let (pw_pt, ph_pt) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
-            self.scene.effective_page_pt(sid)
+            self.scene_pages
+                .get(&sid)
+                .copied()
+                .unwrap_or_else(|| self.scene.effective_page_pt(sid))
         };
         let pw_cm = pw_pt / PT_PER_CM;
         let ph_cm = ph_pt / PT_PER_CM;
@@ -622,7 +630,7 @@ impl Renderer {
     /// rewritten; an undeclared `ecval` is left untouched (and resolves to `0`
     /// via the `default`, matching the legacy behaviour).
     fn ecval_to_inputs(body: &str) -> String {
-        if !body.contains("ecval") {
+        if !body.contains("ecval") && !body.contains("kcval") {
             return body.to_string();
         }
         let root = parse_code(body);
@@ -671,6 +679,12 @@ impl Renderer {
                     node.range(),
                     format!("sys.inputs.at(\"{key}\", default: 0)"),
                 ));
+            } else if let Some(name) = Self::kcval_input_name(&call) {
+                let key = format!("candy:kc:{name}");
+                edits.push((
+                    node.range(),
+                    format!("sys.inputs.at(\"{key}\", default: 0)"),
+                ));
             }
         }
         for child in node.children() {
@@ -702,7 +716,28 @@ impl Renderer {
         }
     }
 
-    /// Wrap a string-literal mobject body so its revealed prefix length is read
+    /// If `call` is a `kcval(..)` read, return the keyframe-counter name it
+    /// references (the canonical `kcval("name")` string form, or the bare-ident
+    /// `kcval(name)` form). Mirrors [`Self::ecval_input_name`] for the
+    /// keyframe-counter namespace.
+    fn kcval_input_name(call: &ast::FuncCall) -> Option<String> {
+        let is_kcval = match call.callee() {
+            Expr::Ident(id) => id.as_str() == "kcval",
+            Expr::FieldAccess(fa) => fa.field().as_str() == "kcval",
+            _ => false,
+        };
+        if !is_kcval {
+            return None;
+        }
+        match call.args().items().next() {
+            Some(ast::Arg::Pos(p)) => match p {
+                Expr::Str(s) => Some(s.get().to_string()),
+                Expr::Ident(i) => Some(i.as_str().to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     /// from `sys.inputs.at("candy:<label>:reveal:len", default: <full_len>)`.
     /// Used for `reveal`/`typewriter` targets: the typewriter effect becomes pure
     /// per-frame input variation (no source change), so the `body_cache` keeps
@@ -1075,6 +1110,13 @@ impl Renderer {
         for c in &self.scene.counters {
             let v = self.scene.counter_value_at(&c.name, time_ms);
             inputs.insert(format!("candy:counter:{}", c.name).into(), Value::Int(v));
+        }
+        // Keyframe-counter values: each declared kc's live interpolated value at
+        // this frame is supplied as `candy:kc:<name>`, matching the
+        // `kcval_to_inputs` rewrite above. Independent key space from `candy:counter:`.
+        for c in &self.scene.kcdefs {
+            let v = self.scene.kc_value_at(&c.name, time_ms);
+            inputs.insert(format!("candy:kc:{}", c.name).into(), Value::Int(v));
         }
         // `reveal`/`typewriter` revealed-prefix lengths and non-string `#transform`
         // body swaps: string targets are driven by `candy:<label>:reveal:len`,

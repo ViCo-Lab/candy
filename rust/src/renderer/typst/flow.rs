@@ -220,6 +220,20 @@ impl Renderer {
         // stay in ONE scene (data shared) but are laid out across several pages,
         // and the renderer plays the pages in sequence (see [`pages`]).
         let mut scene_page_counts: HashMap<usize, usize> = HashMap::new();
+        // The *actual* (measured) canvas size per scene, read back from the
+        // compiled measurement document — the authoritative size, since the
+        // Typst-side `scene()` default (16cm × 9cm) can differ from the
+        // Rust-side declared/inherited size, and a bare root's
+        // `#set page(...)` may use forms the parser cannot statically extract
+        // (e.g. `paper: "a4"`). Filled below; scenes whose size could not be
+        // measured fall back to `effective_page_pt`.
+        let mut measured_pages: HashMap<usize, (f64, f64)> = HashMap::new();
+        // Whether the document declares explicit `#scene(...)` calls. Parsed
+        // documents always carry the implicit root scene (id 0), so "bare
+        // root" ⇔ the root is the only scene (or `scenes` is empty for
+        // hand-built test scenes).
+        let has_explicit_scenes = self.scene.scenes.len() > 1;
+        let root_id = self.scene.root_scene.unwrap_or(0);
         // label -> the page (0-based) its flow layout landed on. Fed to the
         // page scheduler so it can partition each scene's timeline by page.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
@@ -237,7 +251,30 @@ impl Renderer {
                 inputs.insert("candy:active_scene".into(), Value::Int(sid as i64));
             }
             let doc = self.compile(&self.param_source, &inputs)?;
-            scene_page_counts.insert(sid, doc.pages().len().max(1));
+            let page_count = doc.pages().len().max(1);
+            scene_page_counts.insert(sid, page_count);
+            // Cross-page scene detected: the content spilled past its single
+            // page. This is legal (the pages play in sequence) but usually
+            // unintentional, so surface it as W018 with the scene name and
+            // page count.
+            if page_count > 1 {
+                let name = self
+                    .scene
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| {
+                        if sid == 0 {
+                            "root".to_string()
+                        } else {
+                            format!("#{sid}")
+                        }
+                    });
+                crate::warn!(CandyWarn::MultiPage(format!(
+                    "scene '{name}' overflows onto {page_count} pages"
+                )));
+            }
             // Page height (pt) of this scene's canvas — used to convert the
             // continuous-flow introspector position into a *per-page* (in-page)
             // flow position, since each page is laid out independently from the
@@ -258,6 +295,12 @@ impl Renderer {
                     .map(|s| s.owns_labels.clone())
                     .unwrap_or_default()
             };
+            // First page (0-based) this scene's own labels landed on — the page
+            // whose measured size is authoritative for this scene ("以实际获取
+            // 为准"). Tracked so the measurement never reads a page that
+            // belongs to a *different* scene (with `active_scene == 0` every
+            // scene's page renders, so page 0 is ambiguous for the root).
+            let mut first_label_page: Option<usize> = None;
             for label in labels {
                 // Synthetic tmps inherit the target's flow position below.
                 if tmp_to_target.contains_key(&label) {
@@ -287,6 +330,30 @@ impl Renderer {
                     (pos.point.x.to_pt(), pos.point.y.to_pt() - page_top),
                 );
                 page_of.insert(label.clone(), page_idx);
+                first_label_page = Some(first_label_page.map_or(page_idx, |p| p.min(page_idx)));
+            }
+            // Measure the scene's *actual* canvas size from the compiled
+            // document. The measured page is the one the scene's own labels
+            // landed on; a bare root (no explicit `#scene` calls) uses page 0
+            // even without labels so it respects the document's own
+            // `#set page(...)` settings (including forms the parser cannot
+            // extract, e.g. `paper: "a4"`). An explicit-scene document's root
+            // is only measured via its own labels — with `active_scene == 0`
+            // every scene's page renders, so page 0 could belong to a child.
+            let measure_idx = first_label_page.or(if has_explicit_scenes { None } else { Some(0) });
+            if let Some(size) = measure_idx
+                .and_then(|i| doc.pages().get(i))
+                .map(|p| p.frame.size())
+            {
+                measured_pages.insert(sid, (size.x.to_pt(), size.y.to_pt()));
+            }
+        }
+        // A bare root (no explicit `#scene(...)` calls) respects the page's own
+        // settings: adopt the measured document page size as the canvas.
+        if !has_explicit_scenes {
+            if let Some(&(mw, mh)) = measured_pages.get(&root_id) {
+                self.page_w = mw;
+                self.page_h = mh;
             }
         }
         // Synthetic `#transform` / `#morph` tmps inherit their target's
@@ -316,14 +383,55 @@ impl Renderer {
             sp.insert(0, (self.page_w, self.page_h));
         } else {
             for s in &self.scene.scenes {
-                // Each scene's canvas is exactly one page (its `width`/`height`).
-                // Overflow pages play in sequence on this single-page canvas; they
-                // do NOT stack vertically (see [`pages`]).
-                let (pw, ph) = self.scene.effective_page_pt(s.id);
+                // Each scene's canvas is exactly one page. The *measured* size
+                // (read back from the compiled measurement document) is
+                // authoritative — the Typst-side `scene()` renders at its own
+                // default when `width`/`height` are omitted, which can differ
+                // from the Rust-side declared/inherited size. Scenes whose size
+                // could not be measured (e.g. an empty root while explicit
+                // scenes exist) fall back to the declared/inherited size.
+                // Overflow pages play in sequence on this single-page canvas;
+                // they do NOT stack vertically (see [`pages`]).
+                let (pw, ph) = measured_pages
+                    .get(&s.id)
+                    .copied()
+                    .unwrap_or_else(|| self.scene.effective_page_pt(s.id));
                 sp.insert(s.id, (pw, ph));
             }
         }
         self.scene_pages = sp;
+        // W019: the scenes of one .tyx should share a single canvas size —
+        // every frame is composited onto the largest one, so smaller scenes
+        // render with blank margins. Compare the *actual* canvas sizes of the
+        // explicit scenes (plus the root only when it carries content of its
+        // own); a bare root never warns (it simply respects the page's own
+        // settings). Tolerance: half a Typst point.
+        if has_explicit_scenes {
+            let mut parts: Vec<(String, (f64, f64))> = Vec::new();
+            for s in &self.scene.scenes {
+                if s.id == root_id && s.owns_labels.is_empty() {
+                    continue;
+                }
+                let Some(&size) = self.scene_pages.get(&s.id) else {
+                    continue;
+                };
+                let name = s.name.clone().unwrap_or_else(|| format!("#{}", s.id));
+                parts.push((name, size));
+            }
+            let mismatch = parts
+                .windows(2)
+                .any(|w| (w[0].1.0 - w[1].1.0).abs() > 0.5 || (w[0].1.1 - w[1].1.1).abs() > 0.5);
+            if mismatch {
+                let list = parts
+                    .iter()
+                    .map(|(n, (w, h))| format!("'{n}' {}cm x {}cm", fmt_cm(*w), fmt_cm(*h)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::warn!(CandyWarn::SceneSizeMismatch(format!(
+                    "scenes in this .tyx use inconsistent page sizes: {list}"
+                )));
+            }
+        }
         // Build the cross-page scene playback scheduler. This partitions each
         // scene's timeline into page-segments (see [`pages`]): each page has its
         // own independent timeline, and the renderer auto-advances from one page
@@ -490,4 +598,11 @@ impl Renderer {
             None => FrameData::new(time_ms, label),
         }
     }
+}
+
+/// Format a Typst-point length as centimetres for warning messages, trimming
+/// trailing zeros (`16.00cm` → `16cm`, `9.50cm` → `9.5cm`).
+fn fmt_cm(pt: f64) -> String {
+    let s = format!("{:.2}", pt / PT_PER_CM);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }

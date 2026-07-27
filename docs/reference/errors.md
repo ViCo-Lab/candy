@@ -50,7 +50,7 @@ before exiting with `111`. A **single** failed input keeps its specific `E00x` c
 for `E009`) rather than `111` — the real-time report + `EYEE` summary only triggers for batches
 of more than one input.
 
-## Warnings (W001–W016)
+## Warnings (W001–W019)
 
 Warnings are **non-fatal**: they are printed to **stderr** as `warn[Wxxx]: …` (cargo/rustc
 style) and the render
@@ -75,3 +75,6 @@ each variant to its `W` code.
 | W014 | `DuplicateName` | A mobject label or ecnew name was redefined in the **same** lexical scope; the later definition shadows the earlier. Redefining inside a **nested** scope is legitimate Typst shadowing and is not warned. |
 | W015 | `CallingPrivate` | The user called a Candy private function (name starts with `_`). These are internal helpers, not part of the public API. |
 | W016 | `Interpolation` | Opacity went out of the valid `[0, 1]` interpolation range and was clamped during interpolation; the interpolator clamps and continues (non-fatal). |
+| W017 | `KeyframeOffsetClamp` | A `kcpush` `offset` would make a keyframe "pierce through" a neighbouring keyframe (its effective time would fall at/before the previous one or at/after the next one). The keyframe time is clamped into the valid interval so the track stays monotonic; non-fatal. |
+| W018 | `MultiPage` | A scene's flow layout overflowed its single page onto additional pages. The overflow pages play **in sequence** on the single-page canvas (the canvas does not grow). Usually unintentional — position mobjects with absolute `to:` coordinates, shrink the content, or split it into multiple `#scene` blocks. |
+| W019 | `SceneSizeMismatch` | The scenes of a single `.tyx` use inconsistent page sizes. Each scene's size is the one **actually produced** by the Typst compile (a scene that omits `width`/`height` renders at the Typst-side default, not its parent's size). Every frame is composited onto the single largest canvas, so smaller scenes render with blank margins. A bare root without `#scene(...)` calls never warns — it simply respects the document's own `#set page(...)` settings. |

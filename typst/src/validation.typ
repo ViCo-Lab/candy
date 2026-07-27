@@ -176,6 +176,18 @@
   }
 }
 
+// Like `_assert_easing`, but also accepts the keyframe-counter-only `"inherit"`
+// keyword (which takes the previous keyframe's easing, or the counter default).
+#let _assert_easing_or_inherit(v, what) = {
+  if type(v) != str {
+    panic(what + " must be a string naming an easing curve")
+  }
+  if lower(v.trim()) == "inherit" {
+    return
+  }
+  _assert_easing(v, what)
+}
+
 // Assert `v` is a native Typst color (e.g. `red`, `white`, `rgb(255,0,0)`,
 // `rgb("#ff0000")`, `luma(50)`); otherwise panic. A string such as `"red"` or
 // `"#ff0000"` is NOT a color and is rejected — callers must pass a real color

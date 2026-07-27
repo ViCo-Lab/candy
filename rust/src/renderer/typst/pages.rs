@@ -120,6 +120,19 @@ impl PageScheduler {
             .and_then(|segs| segs.iter().map(|s| s.end_ms).max())
     }
 
+    /// The latest `end_ms` across **every** scene's page schedule (`0` when
+    /// there is no schedule at all). The page scheduler appends default-dwell
+    /// windows for overflow pages that received no animation of their own —
+    /// those windows extend *past* the last keyframe, so the render loop must
+    /// sample up to this time or the overflow pages are timed but never drawn.
+    pub(crate) fn max_end_ms(&self) -> u32 {
+        self.page_schedules
+            .values()
+            .flat_map(|segs| segs.iter().map(|s| s.end_ms))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Partition one scene's timeline into ordered page-segments.
     fn scene_segments(
         scene: &Scene,

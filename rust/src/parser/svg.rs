@@ -79,6 +79,8 @@ mod tests {
             subtitles: Vec::new(),
             counters: Vec::new(),
             counter_events: Vec::new(),
+            kcdefs: Vec::new(),
+            kc_events: Vec::new(),
             scopes: Vec::new(),
             scenes: Vec::new(),
             root_scene: None,

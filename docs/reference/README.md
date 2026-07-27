@@ -7,10 +7,10 @@ Lookup-oriented documentation. For a guided introduction, see the
 
 - [Directives](directives.md) — every `#directive`, its arguments, and what it does.
 - [Easing](easing.md) — named curves and custom `expr:` / `bezier:` specs.
-- [Counters](counters.md) — `#ecnew` / `#ecval` and counter control.
+- [Counters](counters.md) — `#ecnew` / `#ecval` easing counters and `#kcnew` / `#kcpush` / `#kcval` keyframe counters.
 - [CLI](cli.md) — `candy build` flags, artifacts, and batch behavior.
 - [Codecs](codecs.md) — the codec & container matrix (self-contained + ffmpeg-backed).
-- [Errors](errors.md) — the error model (E001–E009, EYEE) and warnings (W001–W016).
+- [Errors](errors.md) — the error model (E001–E009, EYEE) and warnings (W001–W019).
 - [Rust API](rust-api.md) — the backend pipeline, modules, public API, and architecture.
 
 ## Quick index of directives
@@ -23,3 +23,4 @@ Lookup-oriented documentation. For a guided introduction, see the
 | `#play` / `#pause` | [Directives · Content blocks](directives.md#content-blocks) |
 | `#subtitle` | [Directives · Subtitles (masks)](directives.md#subtitles-masks) |
 | `#ecnew` / `#ecval` / `#ecpause` / `#ecresume` / `#ecdestroy` | [Counters](counters.md) |
+| `#kcnew` / `#kcpush` / `#kcval` / `#kcpause` / `#kcresume` / `#kcdestroy` | [Counters](counters.md) |

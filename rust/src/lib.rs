@@ -32,7 +32,7 @@ pub mod renderer;
 
 /// Unified error type (E001–E009 → exit code 64–72; `EYEE` → exit code 111, a
 /// batch partial-failure marker that deliberately bypasses the `64` rule) and
-/// non-fatal warning type (W001–W016); see `core::diag::{CandyError, CandyWarn}`
+/// non-fatal warning type (W001–W019); see `core::diag::{CandyError, CandyWarn}`
 /// and the `core::diag::{error, warn, debug, info}` reporters.
 pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;
@@ -314,6 +314,15 @@ pub fn build_scene_with_gpu(
     sample_times.sort();
     sample_times.dedup();
 
+    // Cross-page scenes: the page scheduler may append playback windows for
+    // overflow pages *after* the last keyframe (a default dwell per page that
+    // received no animation of its own). Extend the sampled timeline to cover
+    // the whole schedule — otherwise those pages are timed by the scheduler
+    // but never rendered (the output ends before their window starts, so
+    // everything past page 1 would be invisible).
+    renderer.ensure_flow_public()?;
+    extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
+
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
         std::fs::create_dir_all(intermediate_dir)?;
@@ -504,6 +513,30 @@ pub fn build_scene_with_gpu(
 /// still gets a usable artifact, then the caller emits [`CandyWarn::EncodeFallback`]
 /// (W004). Mirrors the `--format svg` draft path but is triggered by an encode
 /// error rather than an explicit format choice.
+/// Append fps-grid sample times so the rendered timeline reaches `end_ms`
+/// (exclusive) — the end of the page scheduler's cross-page playback windows.
+///
+/// The page scheduler gives overflow pages that received no animation of
+/// their own a default dwell *after* the last keyframe; without extra sample
+/// times those windows are never rendered (the pages are "timed but not
+/// displayed"). Times are appended on the `1000 / fps` grid starting after
+/// the current last sample; objects hold their final state there (the
+/// interpolator's last frame per target persists), so the extra frames show
+/// the overflow pages at rest. No-op when the timeline already covers
+/// `end_ms`.
+fn extend_sample_times_to(sample_times: &mut Vec<u32>, end_ms: u32, fps: u32) {
+    let last = sample_times.last().copied().unwrap_or(0);
+    if end_ms <= last || end_ms == 0 {
+        return;
+    }
+    let step = (1000 / fps.max(1)).max(1);
+    let mut t = last + step;
+    while t < end_ms {
+        sample_times.push(t);
+        t += step;
+    }
+}
+
 fn write_svg_draft_on_encode_fail(
     renderer: &mut Renderer,
     frames: &[FrameData],
@@ -581,6 +614,11 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
     }
     sample_times.sort();
     sample_times.dedup();
+
+    // Extend the sampled timeline over the cross-page playback schedule so
+    // overflow pages are compiled/checked too (mirrors the build).
+    renderer.ensure_flow_public()?;
+    extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
 
     let mut times: Vec<u32> = sample_times.clone();
     if times.is_empty() {
@@ -1291,6 +1329,34 @@ pub(crate) fn compatible_versions_display() -> String {
 #[cfg(test)]
 pub(crate) fn typst_package_version() -> Result<String, CandyError> {
     Ok(CANDY_VERSION.to_string())
+}
+
+#[cfg(test)]
+mod sample_time_tests {
+    use super::extend_sample_times_to;
+
+    #[test]
+    fn extends_on_fps_grid_to_schedule_end() {
+        // Timeline ends at 500ms, page schedule at 1300ms, 10 fps → 100ms
+        // grid: 600, 700, …, 1200 are appended (end exclusive).
+        let mut times = vec![0, 100, 500];
+        extend_sample_times_to(&mut times, 1300, 10);
+        assert_eq!(
+            times,
+            vec![0, 100, 500, 600, 700, 800, 900, 1000, 1100, 1200]
+        );
+    }
+
+    #[test]
+    fn noop_when_schedule_already_covered() {
+        let mut times = vec![0, 500, 1300];
+        extend_sample_times_to(&mut times, 1300, 10);
+        assert_eq!(times, vec![0, 500, 1300]);
+        // Zero end (no page schedule) is also a no-op.
+        let mut empty: Vec<u32> = Vec::new();
+        extend_sample_times_to(&mut empty, 0, 10);
+        assert!(empty.is_empty());
+    }
 }
 
 #[cfg(test)]

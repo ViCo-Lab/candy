@@ -74,6 +74,17 @@ pub(crate) const CANDY: &[&str] = &[
     "ecpause",
     "ecresume",
     "ecdestroy",
+    // Keyframe-counter module: `kcnew` defines a named integer keyframe counter,
+    // `kcpush` appends a (time → value) keyframe at the call site's natural
+    // timeline position (+ optional `offset`), `kcval` reads the live interpolated
+    // value (substituted per-frame by the renderer), and `kcpause` / `kcresume` /
+    // `kcdestroy` drive its lifecycle. `kcval` is a no-op at parse time.
+    "kcnew",
+    "kcval",
+    "kcpush",
+    "kcpause",
+    "kcresume",
+    "kcdestroy",
     // Named scene switching: `scene-switch(target: "name")` jumps to a named scene.
     "scene-switch",
 ];

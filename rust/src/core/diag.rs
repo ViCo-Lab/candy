@@ -578,10 +578,40 @@ pub enum CandyWarn {
     /// Non-fatal: the interpolator clamps and continues, but warns so the user
     /// knows their keyframes / easing produced an out-of-range opacity.
     Interpolation(String),
+
+    /// W017 — A `kcpush` offset made a keyframe "pierce through" a neighbouring
+    /// keyframe: its effective time (`push_cursor + offset`) fell at or before the
+    /// previous keyframe or at or after the next one, which would break the
+    /// monotonic ordering of the keyframe track. Candy clamps the keyframe into
+    /// the valid interval between neighbours and continues (non-fatal); the
+    /// offending `kcpush` is effectively repositioned rather than errored.
+    KeyframeOffsetClamp(String, SourceLoc),
+
+    /// W018 — A scene's flow layout overflowed its single page: the content
+    /// spilled onto additional pages, which play **in sequence** on the
+    /// single-page canvas (they do not grow the canvas). This is usually
+    /// unintentional (content was expected to fit one screen), so candy warns
+    /// with the scene name and page count.
+    ///
+    /// Field: a description like `scene 'intro' overflows onto 3 pages`.
+    MultiPage(String),
+
+    /// W019 — The scenes of a single `.tyx` use inconsistent page sizes. Each
+    /// scene's size is the one **actually produced** by the Typst compile
+    /// (the measured canvas, not merely the declared arguments), so a scene
+    /// that omits `width`/`height` counts with the Typst-side default it
+    /// really rendered at. Every frame is composited onto the single largest
+    /// canvas, so smaller scenes render with blank margins — usually
+    /// unintentional, hence the warning. Documents without explicit
+    /// `#scene(...)` calls (a bare root) never warn: the root simply respects
+    /// the document's own `#set page(...)` settings.
+    ///
+    /// Field: a description listing each scene and its actual canvas size.
+    SceneSizeMismatch(String),
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W016).
+    /// Mandatory warning code (W001–W019).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",
@@ -600,6 +630,9 @@ impl CandyWarn {
             CandyWarn::DuplicateName(_, _, _) => "W014",
             CandyWarn::CallingPrivate(_, _) => "W015",
             CandyWarn::Interpolation(_) => "W016",
+            CandyWarn::KeyframeOffsetClamp(_, _) => "W017",
+            CandyWarn::MultiPage(_) => "W018",
+            CandyWarn::SceneSizeMismatch(_) => "W019",
         }
     }
 
@@ -664,6 +697,21 @@ impl CandyWarn {
                 format!("parse: `#{name}` is a private Candy helper, not part of the public API")
             }
             CandyWarn::Interpolation(e) => format!("interpolator: {e}"),
+            CandyWarn::KeyframeOffsetClamp(d, _) => {
+                format!("parse: {d}")
+            }
+            CandyWarn::MultiPage(d) => {
+                format!(
+                    "render: {d}; overflow pages play in sequence on the \
+                     single-page canvas (the canvas does not grow)"
+                )
+            }
+            CandyWarn::SceneSizeMismatch(d) => {
+                format!(
+                    "render: {d}; every frame is composited onto the single \
+                     largest canvas, so smaller scenes render with blank margins"
+                )
+            }
         }
     }
 
@@ -675,6 +723,7 @@ impl CandyWarn {
             CandyWarn::CallingPrivate(_, l) => Some(l),
             CandyWarn::UnknownEasing(_, l) => Some(l),
             CandyWarn::RevealFallback(_, l) => Some(l),
+            CandyWarn::KeyframeOffsetClamp(_, l) => Some(l),
             _ => None,
         }
     }
@@ -699,6 +748,14 @@ impl CandyWarn {
             CandyWarn::RevealFallback(_, _) => Some(
                 "pass a string literal (\"...\") as the body so char/word reveal can measure its \
                  length; falling back to FadeIn",
+            ),
+            CandyWarn::MultiPage(_) => Some(
+                "position mobjects with absolute `to:` coordinates, shrink the content, or split \
+                 it into multiple #scene blocks so each scene fits its page",
+            ),
+            CandyWarn::SceneSizeMismatch(_) => Some(
+                "give every #scene the same width/height (a scene that omits them renders at the \
+                 Typst-side default, not its parent's size) if a uniform output canvas is intended",
             ),
             _ => None,
         }

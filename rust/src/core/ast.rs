@@ -578,6 +578,15 @@ pub struct Scene {
     /// Runtime lifecycle events for counters (`pause` / `resume` / `destroy`).
     #[serde(default)]
     pub counter_events: Vec<CounterEvent>,
+    /// Keyframe counters (the "keyframe-counter module", `kc*`). Discrete
+    /// (time → value) keyframe tracks referenced from mobject / subtitle bodies.
+    #[serde(default)]
+    pub kcdefs: Vec<KeyframeCounterDef>,
+    /// Runtime lifecycle events for keyframe counters (`pause` / `resume` /
+    /// `destroy`). Reuses `CounterEvent` but kept separate from `counter_events`
+    /// so a `kcpause("x")` never affects a same-named `ecnew("x")`.
+    #[serde(default)]
+    pub kc_events: Vec<CounterEvent>,
     /// Lexical Typst scope intervals on the timeline. Drives auto-destroy on
     /// scope exit and parental shadowing for both subtitles and counters.
     #[serde(default)]
@@ -905,6 +914,18 @@ impl Scene {
                 ));
             }
         }
+        // Validate keyframe-counter lifecycle events reference declared kc defs.
+        let kc_names: std::collections::HashSet<&str> =
+            self.kcdefs.iter().map(|c| c.name.as_str()).collect();
+        for ev in &self.kc_events {
+            if !kc_names.contains(ev.name.as_str()) {
+                return Err(CandyError::UnknownKey(
+                    "kcnew".to_string(),
+                    ev.name.clone(),
+                    self.artifacts.name_ref_locs.get(&ev.name).cloned(),
+                ));
+            }
+        }
         // Validate slide actions reference declared mobjects.
         // SceneSwitch targets a scene by name, not a mobject label, so skip it.
         let mobject_names: std::collections::HashSet<&str> =
@@ -1113,6 +1134,47 @@ pub struct CounterEvent {
     pub name: String,
     pub kind: CounterEventKind,
     pub at_ms: u32,
+}
+
+/// A single keyframe on a keyframe counter: the integer `value` reached at
+/// `at_ms` (computed at parse time as `push_cursor + offset`). `easing` is the
+/// *resolved* effective easing for the segment that **starts** at this keyframe
+/// (this node → next node). `"inherit"` is expanded at parse time into the
+/// previous node's effective easing, falling back to the counter-level default
+/// from `kcnew` for the first node, so the stored easing is always concrete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Keyframe {
+    pub at_ms: u32,
+    pub value: i64,
+    #[serde(default)]
+    pub easing: Easing,
+}
+
+/// A keyframe counter declaration (the "keyframe-counter module", `kc*`).
+///
+/// Unlike the easing counter (a single `seed + step` ramp defined in `ecnew`),
+/// a keyframe counter is driven by discrete keyframes pushed at runtime via
+/// `kcpush`. The value at any timeline position interpolates between the two
+/// surrounding keyframes (per-segment easing). Lifecycle (`pause` / `resume` /
+/// `destroy`) reuses `CounterEvent`; the `kc_events` list keeps keyframe-counter
+/// events separate from easing-counter events so a same-named `ecnew` is never
+/// affected by a `kcpause`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyframeCounterDef {
+    /// Counter name (the key).
+    pub name: String,
+    /// Lexical Typst scope id (for shadowing).
+    pub scope: String,
+    /// Integer seed (the value before the first keyframe / when no keyframes).
+    pub seed: i64,
+    /// Counter-level default easing, used by `inherit` on the first node.
+    #[serde(default)]
+    pub easing: Easing,
+    /// Start time on the timeline (ms).
+    pub start_ms: u32,
+    /// Keyframes, kept sorted ascending by `at_ms`.
+    #[serde(default)]
+    pub keyframes: Vec<Keyframe>,
 }
 
 // ============================================================================
@@ -1332,6 +1394,108 @@ impl Scene {
         }
     }
 
+    /// Live value of a keyframe counter named `name` at timeline `time_ms`.
+    ///
+    /// Mirrors [`Scene::counter_value_at`]: shadowing by scope depth, plus
+    /// `destroy` freeze and accumulated `pause`..`resume` intervals. The value
+    /// interpolates between the two surrounding keyframes (the segment uses the
+    /// *starting* keyframe's resolved easing); before the first keyframe it holds
+    /// `seed`, after the last it holds the last keyframe's value.
+    pub fn kc_value_at(&self, name: &str, time_ms: u32) -> i64 {
+        // Collect candidate keyframe counters named `name` that have started.
+        let mut candidates: Vec<&KeyframeCounterDef> = self
+            .kcdefs
+            .iter()
+            .filter(|c| c.name == name && c.start_ms <= time_ms)
+            .collect();
+        if candidates.is_empty() {
+            return self
+                .kcdefs
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.seed)
+                .unwrap_or(0);
+        }
+        // Shadowing: innermost (deepest) active scope wins.
+        candidates.sort_by_key(|c| {
+            std::cmp::Reverse(self.scope_depth(c.scope.parse::<usize>().unwrap_or(0)))
+        });
+        let c = candidates[0];
+
+        // Determine freeze time (destroy) and paused total.
+        let mut freeze_at: Option<u32> = None;
+        for ev in &self.kc_events {
+            if ev.name == name {
+                if let CounterEventKind::Destroy = ev.kind {
+                    if ev.at_ms <= time_ms {
+                        freeze_at = Some(freeze_at.map_or(ev.at_ms, |f| f.max(ev.at_ms)));
+                    }
+                }
+            }
+        }
+        let eval_time = freeze_at.unwrap_or(time_ms);
+        let elapsed_raw = eval_time.saturating_sub(c.start_ms);
+
+        // Subtract paused intervals (pause..resume) up to eval_time.
+        let mut paused: u32 = 0;
+        let mut open_pause: Option<u32> = None;
+        for ev in &self.kc_events {
+            if ev.name != name {
+                continue;
+            }
+            match ev.kind {
+                CounterEventKind::Pause => {
+                    if ev.at_ms <= eval_time && open_pause.is_none() {
+                        open_pause = Some(ev.at_ms);
+                    }
+                }
+                CounterEventKind::Resume => {
+                    if let Some(p) = open_pause.take() {
+                        if ev.at_ms <= eval_time {
+                            paused += ev.at_ms.saturating_sub(p);
+                        } else {
+                            paused += eval_time.saturating_sub(p);
+                        }
+                    }
+                }
+                CounterEventKind::Destroy => {}
+            }
+        }
+        if let Some(p) = open_pause {
+            paused += eval_time.saturating_sub(p);
+        }
+
+        let elapsed = elapsed_raw.saturating_sub(paused) as f64;
+
+        if c.keyframes.is_empty() {
+            return c.seed;
+        }
+        let mut kfs = c.keyframes.clone();
+        kfs.sort_by_key(|k| k.at_ms);
+
+        // Before the first keyframe: hold seed.
+        if elapsed <= kfs[0].at_ms as f64 {
+            return c.seed;
+        }
+        // After the last keyframe: hold the last value.
+        if elapsed >= kfs[kfs.len() - 1].at_ms as f64 {
+            return kfs[kfs.len() - 1].value;
+        }
+        // Find the bracketing segment kfs[i] -> kfs[i+1].
+        for i in 0..kfs.len() - 1 {
+            let a = kfs[i].at_ms as f64;
+            let b = kfs[i + 1].at_ms as f64;
+            if elapsed >= a && elapsed <= b {
+                let denom = (b - a).max(1e-9);
+                let progress = ((elapsed - a) / denom).clamp(0.0, 1.0);
+                let eased = kfs[i].easing.resolve()(progress);
+                return (kfs[i].value as f64 + (kfs[i + 1].value - kfs[i].value) as f64 * eased)
+                    .round() as i64;
+            }
+        }
+        c.seed
+    }
+
     /// The set of **visible** subtitles at `time_ms` (after applying one-per-
     /// scope replacement and parental shadowing). Returns the subtitle ids.
     pub fn visible_subtitle_ids_at(&self, time_ms: u32) -> Vec<String> {
@@ -1431,6 +1595,8 @@ mod tests {
             subtitles: Vec::new(),
             counters: Vec::new(),
             counter_events: Vec::new(),
+            kcdefs: Vec::new(),
+            kc_events: Vec::new(),
             scopes: Vec::new(),
             scenes: Vec::new(),
             root_scene: None,

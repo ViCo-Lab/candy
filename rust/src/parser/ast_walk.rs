@@ -23,8 +23,8 @@ use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse};
 
 use crate::core::ast::{
-    Action, AudioTrack, CounterDef, CounterEvent, FrameData, IncludeRegion, Label, ParseArtifacts,
-    Scene, SceneInfo, Slide, SourceMap, Subtitle, Timing,
+    Action, AudioTrack, CounterDef, CounterEvent, FrameData, IncludeRegion, KeyframeCounterDef,
+    Label, ParseArtifacts, Scene, SceneInfo, Slide, SourceMap, Subtitle, Timing,
 };
 use crate::core::diag::{CandyError, SourceLoc};
 use crate::core::meta::PrivateMeta;
@@ -65,11 +65,20 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 /// can point at the *actual* error inside the included file and walk up the
 /// include chain, instead of pointing at a meaningless offset in the concatenated
 /// document or collapsing to the includer's `#include` line.
+///
+/// `chain` is the stack of *include-call* records from the root down to (but not
+/// including) the file currently being expanded. Each record is
+/// `(canonical_target, includer_path, includer_source, include_call_range)`:
+/// `canonical_target` is the canonicalized path of the included file (used for the
+/// single-chain cycle guard), and the rest describe the *includer's*
+/// `#include "target"` call (its file, its own unexpanded source, and the byte
+/// range of the call) so a diagnostic can be expanded into a layer-by-layer
+/// "included from …" trace that walks the full include path back to the root.
 fn expand_includes(
     source: &str,
     file_path: &Path,
     depth: usize,
-    chain: &mut Vec<PathBuf>,
+    chain: &mut Vec<(PathBuf, PathBuf, String, std::ops::Range<usize>)>,
 ) -> Result<(String, Vec<IncludeRegion>), CandyError> {
     if depth > MAX_INCLUDE_DEPTH {
         return Err(CandyError::Parse(
@@ -144,7 +153,7 @@ fn expand_includes(
 /// `source` is the text of `file_path`; it is used here to attach a precise
 /// [`SourceLoc`] to a circular-include error at the offending `#include` call.
 ///
-/// `chain` is the stack of canonical file paths from the root down to (but not
+/// `chain` is the stack of *include-call* records from the root down to (but not
 /// including) `file_path`. *Single-chain* cycle guard: a file may appear at
 /// most once along the path from the root to this include. If the target is
 /// already on `chain` (i.e. it is an ancestor of itself), the include would
@@ -158,7 +167,7 @@ fn collect_include_edits(
     depth: usize,
     source: &str,
     edits: &mut Vec<(usize, usize, String, PathBuf, Vec<IncludeRegion>)>,
-    chain: &mut Vec<PathBuf>,
+    chain: &mut Vec<(PathBuf, PathBuf, String, std::ops::Range<usize>)>,
 ) -> Result<(), CandyError> {
     // `#include "path"` (and the code-mode form `include "path"`) is parsed
     // by Typst as a `ModuleInclude` AST node (NOT a `FuncCall`), so this is
@@ -239,7 +248,7 @@ fn include_file(
     depth: usize,
     source: &str,
     edits: &mut Vec<(usize, usize, String, PathBuf, Vec<IncludeRegion>)>,
-    chain: &mut Vec<PathBuf>,
+    chain: &mut Vec<(PathBuf, PathBuf, String, std::ops::Range<usize>)>,
 ) -> Result<(), CandyError> {
     // `file_path` is the *includer file*, so resolve `rel` against its
     // parent directory (matching Typst's include path resolution). Using
@@ -256,12 +265,23 @@ fn include_file(
     // include. If the target is already on the chain it is an ancestor of
     // itself → reject as a circular include. Duplicates on *different*
     // branches (a diamond) are allowed.
-    if chain.iter().any(|p| p == &canon) {
+    if chain.iter().any(|(c, _, _, _)| c == &canon) {
         let chain_str = chain
             .iter()
-            .map(|p| p.display().to_string())
+            .map(|(c, _, _, _)| c.display().to_string())
             .collect::<Vec<_>>()
             .join(" -> ");
+        // The deepest frame points at the *current* includer's `#include`
+        // call (the one that closes the cycle). Every outer includer's
+        // `#include` call (recorded in `chain`, skipping the root entry which
+        // has no includer) becomes an "included from …" trace frame so the
+        // user sees the whole `a → b → c → a` path rather than a single line.
+        let mut loc = SourceLoc::at(file_path, source, call_range.clone());
+        loc.include_trace = chain
+            .iter()
+            .skip(1)
+            .map(|(_, inc, src, rg)| SourceLoc::at(inc, src, rg.clone()))
+            .collect();
         return Err(CandyError::Parse(
             format!(
                 "circular include detected: {} is already included on this include path ({} -> {}). \
@@ -271,12 +291,17 @@ fn include_file(
                 chain_str,
                 canon.display()
             ),
-            Some(SourceLoc::at(file_path, source, call_range.clone())),
+            Some(loc),
         ));
     }
     // Expand the included file in the context of *its* own directory so its
     // nested includes resolve correctly (matching Typst's resolution).
-    chain.push(canon);
+    chain.push((
+        canon,
+        file_path.to_path_buf(),
+        source.to_string(),
+        call_range.clone(),
+    ));
     let (expanded, nested) = expand_includes(&content, &target, depth + 1, chain)?;
     chain.pop();
     edits.push((call_range.start, call_range.end, expanded, target, nested));
@@ -300,7 +325,12 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     // `expand_includes` can reject a file that is included twice on the *same*
     // include chain (a cyclic include) while still allowing the same file to
     // appear on different branches.
-    let mut chain = vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())];
+    let mut chain = vec![(
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        path.to_path_buf(),
+        source_file.clone(),
+        0..source_file.len(),
+    )];
     let (raw, include_regions) = expand_includes(&source_file, path, 0, &mut chain)?;
     let source_map = SourceMap {
         regions: include_regions,
@@ -347,6 +377,11 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     ctx.current_scene = 0;
     ctx.next_scene_id = 1;
     walk(&node, &raw, &mut ctx);
+    // Surface any fatal parse error raised lazily by a directive (e.g. a `kc`
+    // operation on a name that is not visible in the current lexical scope).
+    if let Some(e) = ctx.pending_error.take() {
+        return Err(e);
+    }
     // Finalize the root scope's interval [0, cursor].
     ctx.scopes.push(crate::core::ast::ScopeInfo {
         id: 0,
@@ -461,6 +496,8 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         subtitles: ctx.subtitles,
         counters: ctx.counters,
         counter_events: ctx.counter_events,
+        kcdefs: ctx.kcdefs,
+        kc_events: ctx.kc_events,
         scopes: ctx.scopes,
         scenes: ctx.scenes,
         root_scene: Some(0),
@@ -576,6 +613,17 @@ pub(crate) struct ParseCtx {
     /// Per-scope registry of declared **ecnew names** (scope id → names),
     /// mirroring `mobject_names` for the easing-counter namespace.
     pub(crate) ecnew_names: HashMap<String, HashSet<String>>,
+    /// Keyframe counters (the "keyframe-counter module", `kc*`).
+    pub(crate) kcdefs: Vec<KeyframeCounterDef>,
+    pub(crate) kc_events: Vec<CounterEvent>,
+    /// Per-scope registry of declared **kcnew names** (scope id → names),
+    /// mirroring `mobject_names` / `ecnew_names` for the keyframe-counter
+    /// namespace. Used for duplicate-name detection and scope-visibility checks.
+    pub(crate) kcnew_names: HashMap<String, HashSet<String>>,
+    /// First fatal parse error raised lazily by a directive (e.g. a `kc`
+    /// operation on a name that is not visible in the current lexical scope).
+    /// Surfaced from `parse_tyx` after the AST walk completes.
+    pub(crate) pending_error: Option<CandyError>,
     /// Source location of every label's declaration (`#mobject` / `#ecnew`),
     /// keyed by label. Fed into `Scene::artifacts.label_locs` so later
     /// diagnostics (e.g. `E004` LabelNotFound) can point at the declaration.
@@ -654,7 +702,8 @@ impl ParseCtx {
             // shows the real offending line plus every outer includer's
             // `#include` call-site.
             let k = range.start - inc.start;
-            let span = (range.end - range.start).clamp(1, inc.inc_raw.len().saturating_sub(k).max(1));
+            let span =
+                (range.end - range.start).clamp(1, inc.inc_raw.len().saturating_sub(k).max(1));
             let child_range = k..(k + span).min(inc.inc_raw.len());
             return SourceLoc::at_included_error(
                 &inc.inc_path,
@@ -777,9 +826,8 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                             scene_name = Some(s.get().to_string());
                         } else {
                             // Scene name is not a string — warn (W014).
-                            use crate::core::diag::SourceLoc;
                             let cr = node.range();
-                            let loc = SourceLoc::at(&ctx.file_path, raw, cr);
+                            let loc = ctx.loc(cr);
                             crate::warn!(crate::core::diag::CandyWarn::DuplicateName(
                                 "scene".into(),
                                 "<non-string>".into(),
@@ -950,13 +998,12 @@ fn process_import(imp: ast::ModuleImport, range: std::ops::Range<usize>, ctx: &m
                 if path.ends_with("/candy") {
                     ctx.candy_imported = true;
                     ctx.candy_import_version = Some(version.to_string());
-                    ctx.candy_import_loc =
-                        Some(SourceLoc::at(&ctx.file_path, &ctx.source, range.clone()));
+                    ctx.candy_import_loc = Some(ctx.loc(range.clone()));
                 }
             }
         } else if src == "candy" || src.ends_with("/candy") {
             ctx.file_style_candy_import = true;
-            ctx.file_style_import_loc = Some(SourceLoc::at(&ctx.file_path, &ctx.source, range));
+            ctx.file_style_import_loc = Some(ctx.loc(range));
         }
     }
     match imp.imports() {

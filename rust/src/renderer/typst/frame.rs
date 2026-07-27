@@ -226,6 +226,17 @@ impl Renderer {
     pub fn ensure_flow_public(&mut self) -> Result<(), CandyError> {
         self.ensure_flow()
     }
+    /// Global end (ms) of the cross-page playback schedule across every scene.
+    ///
+    /// When a scene's content overflows onto extra pages, the page scheduler
+    /// appends playback windows for those pages *after* the last keyframe
+    /// (a default dwell per silent page). The build loop extends its sampled
+    /// timeline to this end so those pages are actually rendered — otherwise
+    /// they would be timed but never displayed. `0` before `ensure_flow` /
+    /// when there is no page schedule.
+    pub fn page_schedule_end_ms(&self) -> u32 {
+        self.pages.max_end_ms()
+    }
     /// Test-only accessor for the computed flow (first-frame) top-left of a
     /// mobject, in Typst points (page origin). Used by the native-consistency /
     /// declaration-order regression tests.
@@ -429,12 +440,23 @@ impl Renderer {
         let abs_x_cm = nat_cm.0 + st.x;
         let abs_y_cm = nat_cm.1 + st.y;
         let scale_pct = st.scale * 100.0;
-        let (body, unknown_counters) = self.resolve_body(&st.target, time_ms);
+        let (body, unknown_ec, unknown_kc) = self.resolve_body(&st.target, time_ms);
 
         // Report E006 errors for any unknown counters found during rendering.
-        if let Some(counter_name) = unknown_counters.first() {
+        if let Some(counter_name) = unknown_ec.first() {
             return Err(CandyError::UnknownKey(
                 "ecnew".to_string(),
+                counter_name.clone(),
+                self.scene
+                    .artifacts
+                    .name_ref_locs
+                    .get(counter_name)
+                    .cloned(),
+            ));
+        }
+        if let Some(counter_name) = unknown_kc.first() {
+            return Err(CandyError::UnknownKey(
+                "kcnew".to_string(),
                 counter_name.clone(),
                 self.scene
                     .artifacts
@@ -517,7 +539,7 @@ impl Renderer {
         &self,
         label: &Label,
         time_ms: u32,
-    ) -> Option<(String, Vec<String>)> {
+    ) -> Option<(String, Vec<String>, Vec<String>)> {
         for pair in &self.scene.morph_pairs {
             if &pair.to != label {
                 continue;
@@ -533,7 +555,11 @@ impl Renderer {
             if ring.is_empty() {
                 return None;
             }
-            return Some((polygon_svg(&ring, &plan.fill, &plan.stroke), Vec::new()));
+            return Some((
+                polygon_svg(&ring, &plan.fill, &plan.stroke),
+                Vec::new(),
+                Vec::new(),
+            ));
         }
         None
     }

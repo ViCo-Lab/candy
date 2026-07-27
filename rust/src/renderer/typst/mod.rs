@@ -436,7 +436,7 @@ impl Renderer {
     /// (possibly `transform`-swapped, `ecval`-substituted) body is used. This
     /// is the single source of truth that keeps the three render modes unified
     /// — previously the isolated `render_frame` path skipped the morph branch.
-    fn resolve_body(&self, label: &Label, time_ms: u32) -> (String, Vec<String>) {
+    fn resolve_body(&self, label: &Label, time_ms: u32) -> (String, Vec<String>, Vec<String>) {
         self.morph_body_for(label, time_ms)
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
@@ -759,6 +759,207 @@ fn content_timeline_swaps_rendered_body() {
     std::fs::remove_file(&tmp).ok();
 }
 
+/// A cross-page scene whose flow layout overflows onto extra pages must keep
+/// its silent overflow pages *reachable* on the global timeline. The page
+/// scheduler appends a default-dwell window per silent overflow page *after*
+/// the last keyframe, so `max_end_ms` reports a schedule end past the keyframe
+/// timeline and `active_page_of` actually advances onto the overflow page
+/// during that window. This is the scheduling premise behind the render-loop
+/// fix that extends `sample_times` to the schedule end: without it the overflow
+/// pages were timed (a window existed) but never *sampled*, so their content
+/// was never drawn. Regression test for "content after page 1 is only timed
+/// but never displayed".
+///
+/// Driven directly through [`PageScheduler`] (the component that owns the
+/// mapping from global time to active page) so it does not depend on the
+/// Typst flow-layout measurement that decides *how many* pages a scene spilled
+/// onto — only on the scheduler behaviour the fix relies on.
+#[test]
+fn overflow_pages_scheduled_past_timeline() {
+    use crate::core::ast::{Label, Scene, Slide};
+    use crate::renderer::typst::pages::PageScheduler;
+    use std::collections::HashMap;
+
+    // One 300ms slide on the only animated page (page 0); the scene actually
+    // spilled onto 2 pages, with page 1 silent (no animation of its own).
+    let scene = Scene {
+        slides: vec![Slide {
+            start_ms: 0,
+            duration_ms: 300,
+            actions: vec![],
+            loc: None,
+        }],
+        ..Default::default()
+    };
+    // No flow positions: every slide defaults to page 0, so only `page_counts`
+    // carries the "2 pages" fact.
+    let page_of: HashMap<Label, usize> = HashMap::new();
+    let mut page_counts: HashMap<usize, usize> = HashMap::new();
+    page_counts.insert(0, 2);
+
+    let sched = PageScheduler::build(&scene, page_of, &page_counts);
+    let total = scene.total_ms();
+    // The schedule must extend past the keyframe timeline to cover the silent
+    // overflow page's default dwell window.
+    assert!(
+        sched.max_end_ms() > total,
+        "page schedule end {}ms must extend past the keyframe timeline ({}ms) \
+         to cover the overflow page",
+        sched.max_end_ms(),
+        total
+    );
+    // Page 0 plays during the keyframe window; the overflow page is reached
+    // afterwards — proving the renderer can advance onto it and sample it.
+    assert_eq!(sched.active_page_of(0, 0), 0, "page 0 active at t=0");
+    let overflow_mid = total + (sched.max_end_ms() - total) / 2;
+    assert_eq!(
+        sched.active_page_of(0, overflow_mid),
+        1,
+        "overflow page active during its dwell window"
+    );
+}
+
+/// The multi-page overflow condition must be surfaced as a registered,
+/// non-fatal warning code `W018` (the user asked for "detect multi-page →
+/// throw a warning (register a new code)"). Verifies the code is wired up.
+#[test]
+fn multipage_warning_code_is_registered() {
+    use crate::core::diag::CandyWarn;
+    assert_eq!(
+        CandyWarn::MultiPage("scene 'x' overflows".into()).code(),
+        "W018"
+    );
+}
+
+/// The inconsistent-scene-size condition must be surfaced as a registered,
+/// non-fatal warning code `W019` (SceneSizeMismatch). Verifies the code is
+/// wired up.
+#[test]
+fn scene_size_mismatch_warning_code_is_registered() {
+    use crate::core::diag::CandyWarn;
+    assert_eq!(CandyWarn::SceneSizeMismatch("x".into()).code(), "W019");
+}
+
+/// Run `f` with fd 2 redirected to a temp file so we can assert on the
+/// warnings `warn!` prints to stderr. A guard restores fd 2 even if `f`
+/// panics, so other (parallel) tests keep their stderr. Serialized with a
+/// process-wide lock so concurrent captures don't clobber fd 2.
+#[cfg(all(test, unix))]
+fn capture_stderr<F, R>(f: F) -> (R, String)
+where
+    F: FnOnce() -> R,
+{
+    use std::os::unix::io::AsRawFd;
+    use std::sync::Mutex;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap();
+
+    let path = std::env::temp_dir().join(format!("candy_test_stderr_{}.log", std::process::id()));
+    let file = std::fs::File::create(&path).unwrap();
+    let fd = file.as_raw_fd();
+
+    struct RestoreFd(i32);
+    impl Drop for RestoreFd {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.0, 2);
+                libc::close(self.0);
+            }
+        }
+    }
+
+    let saved = unsafe { libc::dup(2) };
+    unsafe {
+        libc::dup2(fd, 2);
+    }
+    let _restore = RestoreFd(saved);
+    let r = f();
+    let out = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    (r, out)
+}
+
+/// Regression: a `.tyx` whose explicit `#scene` calls use different page sizes
+/// must emit `W019` (SceneSizeMismatch). The reported sizes are the *measured*
+/// Typst-compile sizes ("以实际获取为准"), not merely the declared arguments.
+#[cfg(unix)]
+#[test]
+fn scene_size_mismatch_warns_w019() {
+    let src = "#import \"candy\": *\n\
+               #scene(width: 10cm, height: 6cm)[\n\
+               #mobject(\"a\", rect(width: 5cm, height: 1cm))\n\
+               ]\n\
+               #scene(width: 10cm, height: 9cm)[\n\
+               #mobject(\"b\", rect(width: 5cm, height: 1cm))\n\
+               ]\n";
+    let tmp = std::env::temp_dir().join("candy_test_w019_mismatch.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    let ((), stderr) = capture_stderr(|| {
+        r.ensure_flow_public().unwrap();
+    });
+    std::fs::remove_file(&tmp).ok();
+
+    assert!(
+        stderr.contains("W019"),
+        "inconsistent scene page sizes must emit W019; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("inconsistent page sizes"),
+        "W019 message should list the inconsistent scene sizes; stderr was:\n{stderr}"
+    );
+
+    // The per-scene canvas must hold the *measured* (actual) sizes — here the
+    // two scenes differ in height (6cm vs 9cm).
+    let heights: Vec<f64> = r.scene_pages.values().map(|(_, h)| *h).collect();
+    let max = heights.iter().cloned().fold(0.0_f64, f64::max);
+    let min = heights.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!(
+        (max - min) > 1.0,
+        "measured scene heights should differ; got {:?}",
+        heights
+    );
+}
+
+/// Regression: a document with NO explicit `#scene` calls (a bare root) must
+/// respect the document's own `#set page(...)` settings — the canvas adopts the
+/// *measured* page size (here a non-default 12cm × 7cm), and it must NOT emit
+/// `W019` (only inconsistent *explicit* scenes warn).
+#[cfg(unix)]
+#[test]
+fn bare_root_respects_page_settings_no_w019() {
+    let src = "#import \"candy\": *\n\
+               #set page(width: 12cm, height: 7cm)\n\
+               #mobject(\"a\", rect(width: 5cm, height: 1cm))\n";
+    let tmp = std::env::temp_dir().join("candy_test_w019_bareroot.tyx");
+    std::fs::write(&tmp, src).unwrap();
+    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
+    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
+    let ((), stderr) = capture_stderr(|| {
+        r.ensure_flow_public().unwrap();
+    });
+    std::fs::remove_file(&tmp).ok();
+
+    assert!(
+        !stderr.contains("W019"),
+        "bare root must not warn W019; stderr was:\n{stderr}"
+    );
+    let exp_w = 12.0 * PT_PER_CM;
+    let exp_h = 7.0 * PT_PER_CM;
+    assert!(
+        (r.page_w - exp_w).abs() < 1.0,
+        "bare root canvas width should equal measured #set page width (12cm); got {}",
+        r.page_w
+    );
+    assert!(
+        (r.page_h - exp_h).abs() < 1.0,
+        "bare root canvas height should equal measured #set page height (7cm); got {}",
+        r.page_h
+    );
+}
+
 /// An error inside a file pulled in by `#include` must point at the *actual*
 /// error inside the included file (the deepest frame), with the includer's
 /// `#include "…"` line retained as an "included from …" trace — not a
@@ -918,6 +1119,8 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         subtitles: Vec::new(),
         counters,
         counter_events: Vec::new(),
+        kcdefs: Vec::new(),
+        kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
@@ -946,6 +1149,89 @@ fn substitute_counters_expands_ecval_as_ast_node() {
     );
     // The bare-ident form stays accepted for backwards compatibility.
     assert_eq!(substitute_counters(&scene, "ecval(r)", 0).0, "10");
+}
+
+#[test]
+fn keyframe_counter_interpolation_and_lifecycle() {
+    use crate::core::ast::{CounterEvent, CounterEventKind, Keyframe, KeyframeCounterDef, Slide};
+    use crate::core::easing::Easing;
+    use crate::core::meta::PrivateMeta;
+    use std::collections::HashMap;
+    let kc = KeyframeCounterDef {
+        name: "k".into(),
+        scope: "0".into(),
+        seed: 0,
+        easing: Easing::Linear,
+        start_ms: 0,
+        keyframes: vec![
+            Keyframe {
+                at_ms: 0,
+                value: 0,
+                easing: Easing::Linear,
+            },
+            Keyframe {
+                at_ms: 100,
+                value: 100,
+                easing: Easing::Linear,
+            },
+            Keyframe {
+                at_ms: 200,
+                value: 0,
+                easing: Easing::Linear,
+            },
+        ],
+    };
+    let scene = Scene {
+        slides: vec![Slide {
+            start_ms: 0,
+            duration_ms: 100,
+            actions: vec![],
+            loc: None,
+        }],
+        items: HashMap::new(),
+        content_timeline: HashMap::new(),
+        initial: HashMap::new(),
+        audio: Vec::new(),
+        imports: Vec::new(),
+        page_size: None,
+        subtitles: Vec::new(),
+        counters: Vec::new(),
+        counter_events: Vec::new(),
+        kcdefs: vec![kc],
+        kc_events: Vec::new(),
+        scopes: Vec::new(),
+        scenes: Vec::new(),
+        root_scene: None,
+        morph_pairs: Vec::new(),
+        transform_plans: Vec::new(),
+        groups: HashMap::new(),
+        artifacts: ParseArtifacts::default(),
+        private_metadata: PrivateMeta::default(),
+    };
+    let at = |t| scene.kc_value_at("k", t);
+    // Keyframe anchors.
+    assert_eq!(at(0), 0);
+    assert_eq!(at(100), 100);
+    assert_eq!(at(200), 0);
+    // Midpoint under linear easing → 50.
+    assert_eq!(at(50), 50);
+    // Before the first / after the last keyframe holds seed / last value.
+    assert_eq!(at(300), 0);
+    // `kcval` AST substitution emits the live integer.
+    assert_eq!(substitute_counters(&scene, "kcval(\"k\")", 50).0, "50");
+    // Undeclared name is left untouched and reported as unknown_kc.
+    let (s, _ue, uk) = substitute_counters(&scene, "kcval(\"missing\")", 0);
+    assert_eq!(s, "kcval(\"missing\")");
+    assert!(uk.contains(&"missing".to_string()));
+    // `kcdestroy` freezes the value at the destroy time (t=120 → 80).
+    let mut frozen = scene.clone();
+    frozen.kc_events = vec![CounterEvent {
+        name: "k".into(),
+        kind: CounterEventKind::Destroy,
+        at_ms: 120,
+    }];
+    assert_eq!(frozen.kc_value_at("k", 120), 80);
+    assert_eq!(frozen.kc_value_at("k", 300), 80);
 }
 #[test]
 fn subtitle_stays_in_viewport() {
@@ -989,6 +1275,8 @@ fn subtitle_stays_in_viewport() {
         subtitles,
         counters: Vec::new(),
         counter_events: Vec::new(),
+        kcdefs: Vec::new(),
+        kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
@@ -1057,6 +1345,8 @@ fn morph_renders_interpolated_polygon() {
         subtitles: Vec::new(),
         counters: Vec::new(),
         counter_events: Vec::new(),
+        kcdefs: Vec::new(),
+        kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
         root_scene: None,
@@ -1130,6 +1420,8 @@ fn renderer_flow_layout_matches_native_and_declaration_order() {
         subtitles: Vec::new(),
         counters: Vec::new(),
         counter_events: Vec::new(),
+        kcdefs: Vec::new(),
+        kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: vec![SceneInfo {
             id: 0,
@@ -1215,6 +1507,8 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         subtitles: Vec::new(),
         counters: Vec::new(),
         counter_events: Vec::new(),
+        kcdefs: Vec::new(),
+        kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: vec![SceneInfo {
             id: 0,

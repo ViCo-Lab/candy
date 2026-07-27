@@ -39,7 +39,11 @@ pub(crate) fn imports_preamble(scene: &Scene) -> String {
 /// whose `time_ms <= frame`, falling back to `items[label]` (the original
 /// body) before any transform. This lets a single label render different
 /// content before/after a `transform` without corrupting earlier slides.
-pub(crate) fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> (String, Vec<String>) {
+pub(crate) fn content_for(
+    scene: &Scene,
+    label: &Label,
+    time_ms: u32,
+) -> (String, Vec<String>, Vec<String>) {
     let body = if let Some(timeline) = scene.content_timeline.get(label) {
         let mut chosen: Option<&String> = None;
         for (t, body) in timeline {
@@ -55,35 +59,35 @@ pub(crate) fn content_for(scene: &Scene, label: &Label, time_ms: u32) -> (String
     } else {
         scene.items.get(label).cloned().unwrap_or_default()
     };
-    // Substitute `ecval(name)` counter references with their integer value at
-    // this frame (honoring shadowing + lifecycle).
+    // Substitute `ecval(name)` / `kcval(name)` counter references with their
+    // integer value at this frame (honoring shadowing + lifecycle).
     substitute_counters(scene, &body, time_ms)
 }
 
-/// Replace every `ecval("name")` (or `ecval(name)`) counter reference in `body`
-/// with the integer value of counter `name` at `time_ms`, per the scene's scope
+/// Replace every `ecval("name")` / `kcval("name")` counter reference in `body`
+/// with the integer value of the counter at `time_ms`, per the scene's scope
 /// shadowing / lifecycle rules.
 ///
-/// Returns `(substituted_body, unknown_counters)` where `unknown_counters` is a
-/// list of counter names that were referenced but not declared (to be reported
-/// as E006 errors).
+/// Returns `(substituted_body, unknown_ec, unknown_kc)` where `unknown_ec` /
+/// `unknown_kc` are the easing-counter / keyframe-counter names referenced but
+/// not declared (reported as `E006 UnknownKey` with kind `"ecnew"` / `"kcnew"`).
 ///
 /// Expansion is **AST-driven**, not naive string replacement: `body` is parsed
-/// into a Typst `SyntaxNode` tree and every *real* `ecval(..)` function-call
-/// node is swapped for an integer literal. This keeps `ecval` a valid AST node
-/// that composes like any other Typst expression (e.g. inside
-/// `rect(width: ecval("n") * 1cm)`) and avoids rewriting substrings that merely
+/// into a Typst `SyntaxNode` tree and every *real* `ecval(..)` / `kcval(..)`
+/// function-call node is swapped for an integer literal. This keeps the call a
+/// valid AST node that composes like any other Typst expression (e.g. inside
+/// `rect(width: kcval("n") * 1cm)`) and avoids rewriting substrings that merely
 /// *look* like the call (inside strings, comments, …). The canonical call form
-/// is `ecval("name")` (a quoted string); the bare-ident form `ecval(name)` is
-/// also accepted for backwards compatibility with existing `.tyx` sources.
+/// is `ecval("name")` / `kcval("name")` (a quoted string); the bare-ident form
+/// is also accepted for backwards compatibility with existing `.tyx` sources.
 pub(crate) fn substitute_counters(
     scene: &Scene,
     body: &str,
     time_ms: u32,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Vec<String>) {
     // Fast path: no counter read at all → short-circuit.
-    if !body.contains("ecval") {
-        return (body.to_string(), Vec::new());
+    if !body.contains("ecval") && !body.contains("kcval") {
+        return (body.to_string(), Vec::new(), Vec::new());
     }
     // Parse as *code* (the body is a Typst expression, not a markup document),
     // so `ecval(..)` parses to a real `FuncCall` node whose source range maps
@@ -91,10 +95,18 @@ pub(crate) fn substitute_counters(
     let root = parse_code(body);
     let node = LinkedNode::new(&root);
 
-    // Collect (source range → replacement) for every `ecval(..)` call.
+    // Collect (source range → replacement) for every `ecval(..)` / `kcval(..)` call.
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    let mut unknown_counters: Vec<String> = Vec::new();
-    collect_ecval_edits(&node, scene, time_ms, &mut edits, &mut unknown_counters);
+    let mut unknown_ec: Vec<String> = Vec::new();
+    let mut unknown_kc: Vec<String> = Vec::new();
+    collect_ecval_edits(
+        &node,
+        scene,
+        time_ms,
+        &mut edits,
+        &mut unknown_ec,
+        &mut unknown_kc,
+    );
     // Drop any edit whose range is nested inside another (a nested `ecval`),
     // keeping the innermost node so we never clobber an already-replaced child.
     let drop: Vec<bool> = edits
@@ -113,7 +125,7 @@ pub(crate) fn substitute_counters(
     }
     let mut edits = kept;
     if edits.is_empty() {
-        return (body.to_string(), unknown_counters);
+        return (body.to_string(), unknown_ec, unknown_kc);
     }
     // Apply right-to-left so earlier edits don't invalidate later offsets.
     edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
@@ -121,34 +133,46 @@ pub(crate) fn substitute_counters(
     for (range, text) in edits {
         out.replace_range(range, &text);
     }
-    (out, unknown_counters)
+    (out, unknown_ec, unknown_kc)
 }
 
-/// Walk `node`, appending an edit that swaps each `ecval(name)` call for its
-/// current integer value (only for counters actually declared in the scene).
-/// Collects unknown counter names for E006 reporting.
+/// Walk `node`, appending an edit that swaps each `ecval(name)` / `kcval(name)`
+/// call for its current integer value (only for counters actually declared in
+/// the scene). Collects unknown easing-counter / keyframe-counter names for E006
+/// reporting into `unknown_ec` / `unknown_kc`.
 fn collect_ecval_edits(
     node: &LinkedNode,
     scene: &Scene,
     time_ms: u32,
     edits: &mut Vec<(std::ops::Range<usize>, String)>,
-    unknown_counters: &mut Vec<String>,
+    unknown_ec: &mut Vec<String>,
+    unknown_kc: &mut Vec<String>,
 ) {
     if let Some(call) = node.get().cast::<ast::FuncCall>() {
         if let Some(name) = ecval_counter_name(&call) {
             // Only substitute declared counters; collect unknown ones for E006.
             if !scene.counters.iter().any(|c| c.name == name) {
-                if !unknown_counters.contains(&name) {
-                    unknown_counters.push(name);
+                if !unknown_ec.contains(&name) {
+                    unknown_ec.push(name);
                 }
                 return;
             }
             let val = scene.counter_value_at(&name, time_ms).to_string();
             edits.push((node.range(), val));
+        } else if let Some(name) = kcval_counter_name(&call) {
+            // Only substitute declared kc; collect unknown ones for E006 (kind "kcnew").
+            if !scene.kcdefs.iter().any(|c| c.name == name) {
+                if !unknown_kc.contains(&name) {
+                    unknown_kc.push(name);
+                }
+                return;
+            }
+            let val = scene.kc_value_at(&name, time_ms).to_string();
+            edits.push((node.range(), val));
         }
     }
     for child in node.children() {
-        collect_ecval_edits(&child, scene, time_ms, edits, unknown_counters);
+        collect_ecval_edits(&child, scene, time_ms, edits, unknown_ec, unknown_kc);
     }
 }
 
@@ -174,7 +198,29 @@ fn ecval_counter_name(call: &ast::FuncCall) -> Option<String> {
     }
 }
 
-/// Inset (in cm) from the page edge for the named subtitle anchors.
+/// If `call` is a `kcval(..)` read, return the keyframe-counter name it
+/// references (mirrors [`ecval_counter_name`] for the keyframe-counter
+/// namespace).
+fn kcval_counter_name(call: &ast::FuncCall) -> Option<String> {
+    let is_kcval = match call.callee() {
+        Expr::Ident(id) => id.as_str() == "kcval",
+        Expr::FieldAccess(fa) => fa.field().as_str() == "kcval",
+        _ => false,
+    };
+    if !is_kcval {
+        return None;
+    }
+    // The first positional argument is the counter name. A leading named
+    // argument means this isn't the canonical read form → bail.
+    match call.args().items().next() {
+        Some(ast::Arg::Pos(p)) => match p {
+            Expr::Str(s) => Some(s.get().to_string()),
+            Expr::Ident(i) => Some(i.as_str().to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 const SUBTITLE_MARGIN_CM: f64 = 1.0;
 
 /// Build the Typst `place(...)` expression that anchors a subtitle's body,
@@ -214,7 +260,7 @@ pub(crate) fn subtitle_doc(
     page_h: f64,
     time_ms: u32,
 ) -> Result<PagedDocument, CandyError> {
-    let (body, _unknown) = substitute_counters(scene, &sub.body, time_ms);
+    let (body, _, _) = substitute_counters(scene, &sub.body, time_ms);
     let preamble = imports_preamble(scene);
     let pre = if preamble.is_empty() {
         String::new()
