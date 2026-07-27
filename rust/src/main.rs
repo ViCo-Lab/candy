@@ -173,9 +173,6 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Hidden easter-egg command. Invoked as `candy candy` or `candy tyx`.
-    #[command(alias = "tyx", hide = true)]
-    Candy,
 }
 
 /// Accept either a string or a path; we only need the string form from CLI.
@@ -255,6 +252,16 @@ fn main() {
 }
 
 fn run() -> Result<(), CandyError> {
+    // Easter-egg commands (`candy candy` / `candy tyx`) are handled dynamically
+    // here rather than as a clap subcommand, so they are never part of the
+    // static command tree that `candy completions` scans and therefore never
+    // leak into generated shell completion scripts.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && (args[1] == "candy" || args[1] == "tyx") {
+        const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";
+        eprint_styled!("{}", bold!("{}", SECRET));
+        return Ok(());
+    }
     let cli = Cli::parse();
     match cli.command {
         Commands::Completions { shell } => {
@@ -264,11 +271,6 @@ fn run() -> Result<(), CandyError> {
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
-        }
-        Commands::Candy => {
-            // Hidden easter egg: `candy candy` / `candy tyx`.
-            const SECRET: &str = "Built for Candy(TYX). In memory of CChO2025.";
-            eprint_styled!("{}", bold!("{}", SECRET));
         }
         Commands::Build {
             inputs,
