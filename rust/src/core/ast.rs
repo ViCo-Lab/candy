@@ -624,16 +624,19 @@ pub struct Scene {
 /// transparently falls back to its legacy per-object compositing path.
 /// A region of the **expanded** source (the single flat document produced by
 /// recursively inlining `#include "rel"` statements) that came from an *included*
-/// file. When a diagnostic byte offset lands inside `[start, end)`, the error
-/// is reported at the `#include "rel"` call-site that pulled the file in — the
-/// "referenced position" — rather than at a meaningless offset inside the
-/// concatenated document. This is what makes candy's source tracking honest for
-/// included files: an error inside `b.tyx` (pulled in by `#include "b.tyx"`)
-/// points at *that* include line in the parent file.
+/// file. When a diagnostic byte offset lands inside `[start, end)`, the deepest
+/// trace frame points at the *actual* error inside the included file (via
+/// `inc_path`/`inc_raw`), and the includer's `#include "rel"` call-sites are kept
+/// in `chain` so the reporter can print them as a layer-by-layer "included from
+/// …" trace. This makes candy's source tracking honest for included files: an
+/// error inside `b.tyx` (pulled in by `#include "b.tyx"`) points at the real
+/// offending line in `b.tyx`, then walks up the include chain.
 #[derive(Debug, Clone)]
 pub struct IncludeRegion {
     /// Byte range `[start, end)` in the expanded source that belongs to the
-    /// inlined content of the referenced file.
+    /// inlined content of the referenced file. `expanded[start..end]` equals
+    /// `inc_raw` exactly (the spliced content), so an offset inside this range
+    /// maps directly to the same offset inside `inc_raw`.
     pub start: usize,
     pub end: usize,
     /// Absolute path of the file that *contains the `#include "..."` call* (the
@@ -644,12 +647,21 @@ pub struct IncludeRegion {
     pub ref_raw: String,
     /// Byte range of the whole `#include "..."` call within `ref_raw`.
     pub ref_range: std::ops::Range<usize>,
+    /// Absolute path of the *included* file whose content occupies `[start, end)`
+    /// — i.e. where the actual error lives. For a nested include `a → b → c`, the
+    /// innermost region's `inc_path` is `c` (the error originates there).
+    pub inc_path: std::path::PathBuf,
+    /// The included file's inlined content occupying `[start, end)` in the
+    /// expanded source (the fully-expanded text, in the same coordinate space as
+    /// that range). Used to build the deepest trace frame pointing at the real
+    /// error line inside the included file.
+    pub inc_raw: String,
     /// Full include chain from the outermost includer (the root document's
     /// direct child) down to — and including — the immediate includer
     /// (`ref_path`/`ref_raw`/`ref_range` == `chain.last()`). For a top-level
     /// include this is exactly one entry; for a nested include `a → b → c`
-    /// it is `[a's #include "b", b's #include "c"]`, letting diagnostics print
-    /// a layer-by-layer "included from …" trace instead of a single line.
+    /// it is `[a's #include "b", b's #include "c"]`, printed as a layer-by-layer
+    /// "included from …" trace behind the deepest (error) frame.
     pub chain: Vec<(std::path::PathBuf, String, std::ops::Range<usize>)>,
 }
 
@@ -664,11 +676,11 @@ pub struct SourceMap {
 
 impl SourceMap {
     /// If `offset` falls inside an inlined include region, return the
-    /// *innermost* such region (so the caller reports the immediate includer's
-    /// `#include` call-site). For a nested include `a → b → c`, the erroring
+    /// *innermost* such region (so the caller reports the actual error inside
+    /// the deepest included file). For a nested include `a → b → c`, the erroring
     /// content in `c` is contained by both `c`'s region and `b`'s (outer)
     /// region; we want `c`'s (the smallest one), so the deepest trace frame
-    /// points at `b`'s `#include "c"` line and the chain then walks outward.
+    /// points at the real error inside `c` and the chain then walks outward.
     pub(crate) fn region_for(&self, offset: usize) -> Option<&IncludeRegion> {
         self.regions
             .iter()

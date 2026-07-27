@@ -1,10 +1,10 @@
 // Expected to fail: E005 (Typst). Three-level include chain: this file includes
 // `include_chain_mid.tyx`, which includes `include_chain_child.tyx`, whose body
 // calls `panic("boom")`. Because candy inlines everything before compiling, the
-// E005 diagnostic is traced back through the WHOLE include chain: the caret
-// first lands on `mid`'s `#include "child"` line, then a second "included from"
-// frame points at THIS file's `#include "mid"` line. Two levels → two trace
-// frames (layer-by-layer expansion of the include path).
+// E005 diagnostic's deepest frame points at the REAL error inside the deepest
+// included file (`panic("boom")` in `include_chain_child.tyx`), and the WHOLE
+// include chain is printed as layer-by-layer "included from …" trace frames
+// (`mid`'s `#include "child"` line, then THIS file's `#include "mid"` line).
 #import "@preview/candy:0.1.0": *
 #include "include_chain_mid.tyx"
 

@@ -677,19 +677,22 @@ fn map_diag_to_original(
     let avail = (be - bs).saturating_sub(local);
     let span = (range.end - range.start).clamp(1, avail.max(1));
     let oend = (ostart + span).min(be);
-    // If the error landed inside inlined `#include(…)` content, trace it back
-    // to the `#include` call-site (the "referenced position") so an error in an
-    // included file points at the includer's `#include` line, not at a
-    // meaningless offset in the concatenated `artifacts.source`.
+    // If the error landed inside inlined `#include(…)` content, point at the
+    // *actual* error inside the deepest included file (via `inc_path`/`inc_raw`)
+    // and attach the full includer chain as an "included from …" trace, so an
+    // error deep in a `a → b → c` chain shows the real offending line in `c`
+    // plus each outer includer's `#include` call-site.
     if let Some(inc) = artifacts.source_map.region_for(ostart) {
-        // Point at the *immediate* includer's `#include` line, and attach the
-        // outer includers as an `include_trace` so the reporter can expand the
-        // nested include path layer by layer (e.g. `a → b → c` prints `b`'s
-        // `#include "c"` line followed by "included from `a`'s `#include "b"`").
-        return Some(SourceLoc::at_with_chain(
-            &inc.ref_path,
-            &inc.ref_raw,
-            inc.ref_range.clone(),
+        // `expanded[inc.start..inc.end]` equals `inc.inc_raw` exactly, so the
+        // error's offset within the expanded document maps 1:1 to the same
+        // offset inside the included file's own source.
+        let k = ostart - inc.start;
+        let span = (oend - ostart).clamp(1, inc.inc_raw.len().saturating_sub(k).max(1));
+        let child_range = k..(k + span).min(inc.inc_raw.len());
+        return Some(SourceLoc::at_included_error(
+            &inc.inc_path,
+            &inc.inc_raw,
+            child_range,
             &inc.chain,
         ));
     }
@@ -756,11 +759,11 @@ fn content_timeline_swaps_rendered_body() {
     std::fs::remove_file(&tmp).ok();
 }
 
-/// An error inside a file pulled in by `#include` must trace back to the
-/// *referencing* position — i.e. the `#include "…"` call-site in the
-/// includer file — not to a meaningless offset inside the concatenated
-/// (expanded) document. This exercises the `SourceMap` → `region_for`
-/// remap in `map_diag_to_original`.
+/// An error inside a file pulled in by `#include` must point at the *actual*
+/// error inside the included file (the deepest frame), with the includer's
+/// `#include "…"` line retained as an "included from …" trace — not a
+/// meaningless offset inside the concatenated (expanded) document. This
+/// exercises the `SourceMap` → `region_for` remap in `map_diag_to_original`.
 #[test]
 fn include_error_traces_to_include_call_site() {
     let dir = std::env::temp_dir();
@@ -768,9 +771,8 @@ fn include_error_traces_to_include_call_site() {
     let child = dir.join("candy_test_include_trace_child.tyx");
     // Child declares an mobject whose body calls `panic("boom")` so Typst
     // reports a span that lands *inside* the inlined body. `map_diag_to_original`
-    // then maps it through `source_map.region_for` back to `main`'s
-    // `#include` line (the "referenced position"), not at a meaningless
-    // offset inside the concatenated document.
+    // then maps it through `source_map.region_for` to the *real* error inside
+    // `child` (the `panic` line), with `main`'s `#include` kept as a trace frame.
     // NOTE: the child does NOT re-import candy — it is inlined into `main`,
     // which already imports it. This mirrors how the `include_common.tyx`
     // example partial is written without its own import.
@@ -786,25 +788,41 @@ fn include_error_traces_to_include_call_site() {
     std::fs::remove_file(&child).ok();
     match &err {
         CandyError::Typst(_, Some(loc)) => {
-            // Must point at the *includer* (main), not the included child.
+            // Deepest frame: the *actual* error inside the included `child`.
             assert_eq!(
-                loc.path, main,
-                "include error should trace to the includer file, not the included child"
+                loc.path, child,
+                "include error should point at the real error inside the included child"
             );
             assert!(
-                loc.line_text.contains("include"),
-                "include error should point at the `#include` line, got: {:?}",
+                loc.line_text.contains("panic"),
+                "deepest frame should point at the real error inside child, got: {:?}",
                 loc.line_text
+            );
+            // Outer frame: `main`'s `#include "child"` line (the trace).
+            assert_eq!(
+                loc.include_trace.len(),
+                1,
+                "two-level chain must yield exactly one outer trace frame"
+            );
+            let outer = &loc.include_trace[0];
+            assert_eq!(
+                outer.path, main,
+                "outer trace frame must point at the includer (main)"
+            );
+            assert!(
+                outer.line_text.contains("include"),
+                "outer frame should point at the `#include` line, got: {:?}",
+                outer.line_text
             );
         }
         other => panic!("expected CandyError::Typst with a location, got {other:?}"),
     }
 }
 /// A three-level include chain `main → mid → child` (child's body panics) must
-/// produce a layer-by-layer trace: the deepest frame points at `mid`'s
-/// `#include "child"` line, and `include_trace` carries the outer frame at
-/// `main`'s `#include "mid"` line. Regression for the multi-level include
-/// tracking (the old code collapsed to a single line).
+/// produce a layer-by-layer trace: the deepest frame points at the *real* error
+/// inside `child` (the `panic` line), and `include_trace` carries both outer
+/// includers' `#include` lines (`mid`'s `#include "child"` and `main`'s
+/// `#include "mid"`). Regression for the multi-level include tracking.
 #[test]
 fn include_error_traces_through_nested_includes() {
     let dir = std::env::temp_dir();
@@ -829,31 +847,41 @@ fn include_error_traces_through_nested_includes() {
     std::fs::remove_file(&child).ok();
     match &err {
         CandyError::Typst(_, Some(loc)) => {
-            // Deepest frame: `mid`'s `#include "child"` line.
+            // Deepest frame: the *real* error inside `child` (the `panic` line).
             assert_eq!(
-                loc.path, mid,
-                "deepest frame must point at the immediate includer (mid)"
+                loc.path, child,
+                "deepest frame must point at the deepest included file (child)"
             );
             assert!(
-                loc.line_text.contains("include"),
-                "deepest frame should point at the `#include` line, got: {:?}",
+                loc.line_text.contains("panic"),
+                "deepest frame should point at the real error inside child, got: {:?}",
                 loc.line_text
             );
-            // Outer frame: `main`'s `#include "mid"` line.
+            // Two outer frames: `mid`'s `#include "child"` and
+            // `main`'s `#include "mid"`.
             assert_eq!(
                 loc.include_trace.len(),
-                1,
-                "three-level chain must yield exactly one outer trace frame"
+                2,
+                "three-level chain must yield two outer trace frames"
             );
-            let outer = &loc.include_trace[0];
+            // Order is outermost → innermost, so [0] is `main`, [1] is `mid`.
             assert_eq!(
-                outer.path, main,
-                "outer trace frame must point at the root includer (main)"
+                loc.include_trace[0].path, main,
+                "first trace frame must point at the root includer (main)"
             );
             assert!(
-                outer.line_text.contains("include"),
-                "outer frame should point at the `#include` line, got: {:?}",
-                outer.line_text
+                loc.include_trace[0].line_text.contains("include"),
+                "main trace frame should point at the `#include` line, got: {:?}",
+                loc.include_trace[0].line_text
+            );
+            assert_eq!(
+                loc.include_trace[1].path, mid,
+                "second trace frame must point at the immediate includer (mid)"
+            );
+            assert!(
+                loc.include_trace[1].line_text.contains("include"),
+                "mid trace frame should point at the `#include` line, got: {:?}",
+                loc.include_trace[1].line_text
             );
         }
         other => panic!("expected CandyError::Typst with a location, got {other:?}"),

@@ -99,13 +99,14 @@ pub struct SourceLoc {
     /// uses — not `end - start` (byte length), which would be wrong for
     /// multi-byte characters (Chinese, Emoji, …).
     pub char_span: usize,
-    /// When this location points at an `#include` call-site inside a document
-    /// that was itself included, this holds the chain of *outer* includers
-    /// (from the immediate parent up to the root document), each as a
-    /// `SourceLoc` of that includer's `#include` line. The reporter prints
-    /// these as a layer-by-layer "included from …" trace so an error that
-    /// originates deep inside an include chain is not collapsed to a single
-    /// line. Empty for errors that are not inside a nested include.
+    /// When this location is the deepest frame of a nested-include diagnostic
+    /// (i.e. the *actual* error inside the deepest included file), this holds
+    /// the chain of *outer* includers (from the immediate parent up to the root
+    /// document), each as a `SourceLoc` of that includer's `#include` line. The
+    /// reporter prints these as a layer-by-layer "included from …" trace so an
+    /// error that originates deep inside an include chain shows the full path
+    /// back to the root rather than a single line. Empty for errors that are
+    /// not inside a nested include.
     pub include_trace: Vec<SourceLoc>,
 }
 
@@ -165,6 +166,27 @@ impl SourceLoc {
         loc.include_trace = chain
             .iter()
             .take(chain.len().saturating_sub(1))
+            .map(|(p, r, rg)| SourceLoc::at(p, r, rg.clone()))
+            .collect();
+        loc
+    }
+
+    /// Build the *deepest* frame of an include-chain diagnostic: point directly
+    /// at the **real error inside the included file** (path `inc_path`, original
+    /// text `inc_raw`, byte `range` within it), and attach the *full* includer
+    /// chain as an `include_trace` so the reporter prints every outer includer's
+    /// `#include` line as an "included from …" frame. Unlike [`SourceLoc::at`],
+    /// the deepest frame is the genuine error site, not an includer's
+    /// `#include` call-site.
+    pub fn at_included_error(
+        inc_path: &std::path::Path,
+        inc_raw: &str,
+        range: std::ops::Range<usize>,
+        chain: &[(std::path::PathBuf, String, std::ops::Range<usize>)],
+    ) -> SourceLoc {
+        let mut loc = SourceLoc::at(inc_path, inc_raw, range);
+        loc.include_trace = chain
+            .iter()
             .map(|(p, r, rg)| SourceLoc::at(p, r, rg.clone()))
             .collect();
         loc

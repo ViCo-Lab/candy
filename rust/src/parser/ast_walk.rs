@@ -61,9 +61,10 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 ///
 /// Returns the expanded source **and** a [`SourceMap`]: every byte range that
 /// came from an inlined include is recorded together with the `#include(…)`
-/// call-site that pulled it in (the "referenced position"), so later diagnostics
-/// can trace an error inside an included file back to that include line instead
-/// of pointing at a meaningless offset in the concatenated document.
+/// call-site that pulled it in and the included file itself, so later diagnostics
+/// can point at the *actual* error inside the included file and walk up the
+/// include chain, instead of pointing at a meaningless offset in the concatenated
+/// document or collapsing to the includer's `#include` line.
 fn expand_includes(
     source: &str,
     file_path: &Path,
@@ -78,11 +79,12 @@ fn expand_includes(
     }
     let root = parse(source);
     let node = LinkedNode::new(&root);
-    // `(call_start, call_end, expanded_content, nested_regions)`: the whole
-    // `#include "…"` call span and the (already-recursively-expanded) content
-    // that replaces it, plus the regions of *its* included children (in the
-    // child's own coordinate space, shifted into place when spliced).
-    let mut edits: Vec<(usize, usize, String, Vec<IncludeRegion>)> = Vec::new();
+    // `(call_start, call_end, expanded_content, included_path, nested_regions)`:
+    // the whole `#include "…"` call span, the (already-recursively-expanded)
+    // content that replaces it, the absolute path of the included file, plus the
+    // regions of *its* included children (in the child's own coordinate space,
+    // shifted into place when spliced).
+    let mut edits: Vec<(usize, usize, String, PathBuf, Vec<IncludeRegion>)> = Vec::new();
     collect_include_edits(&node, file_path, depth, source, &mut edits, chain)?;
     if edits.is_empty() {
         return Ok((source.to_string(), Vec::new()));
@@ -91,24 +93,28 @@ fn expand_includes(
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut out = source.to_string();
     let mut regions: Vec<IncludeRegion> = Vec::new();
-    for (start, end, rep, nested) in edits {
+    for (start, end, rep, inc_path, nested) in edits {
         out.replace_range(start..end, &rep);
         // The inlined content of *this* include call occupies
-        // `[start, start + rep.len())` in the output; report it at the
-        // call-site in the file that contains this `#include` (i.e. `file_path`,
-        // whose original text is `source`).
+        // `[start, start + rep.len())` in the output and equals `rep` exactly.
+        // `inc_path`/`inc_raw` let the deepest trace frame point at the real
+        // error *inside* the included file (not the includer's `#include` line).
         regions.push(IncludeRegion {
             start,
             end: start + rep.len(),
             ref_path: file_path.to_path_buf(),
             ref_raw: source.to_string(),
             ref_range: start..end,
+            inc_path: inc_path.clone(),
+            inc_raw: rep.clone(),
             chain: vec![(file_path.to_path_buf(), source.to_string(), start..end)],
         });
         // Nested regions live *inside* this inlined content, so shift them by
         // `start` to land in the output coordinate space. Prepend this include's
         // call-site to each nested region's chain so a diagnostic can walk the
         // full include path (root → … → immediate includer) layer by layer.
+        // Keep each nested region's own `inc_path`/`inc_raw` (they already point
+        // at the deeper included file where the real error lives).
         for n in nested {
             let mut chain = vec![(file_path.to_path_buf(), source.to_string(), start..end)];
             chain.extend(n.chain);
@@ -118,6 +124,8 @@ fn expand_includes(
                 ref_path: n.ref_path,
                 ref_raw: n.ref_raw,
                 ref_range: n.ref_range,
+                inc_path: n.inc_path,
+                inc_raw: n.inc_raw,
                 chain,
             });
         }
@@ -149,7 +157,7 @@ fn collect_include_edits(
     file_path: &Path,
     depth: usize,
     source: &str,
-    edits: &mut Vec<(usize, usize, String, Vec<IncludeRegion>)>,
+    edits: &mut Vec<(usize, usize, String, PathBuf, Vec<IncludeRegion>)>,
     chain: &mut Vec<PathBuf>,
 ) -> Result<(), CandyError> {
     // `#include "path"` (and the code-mode form `include "path"`) is parsed
@@ -230,7 +238,7 @@ fn include_file(
     file_path: &Path,
     depth: usize,
     source: &str,
-    edits: &mut Vec<(usize, usize, String, Vec<IncludeRegion>)>,
+    edits: &mut Vec<(usize, usize, String, PathBuf, Vec<IncludeRegion>)>,
     chain: &mut Vec<PathBuf>,
 ) -> Result<(), CandyError> {
     // `file_path` is the *includer file*, so resolve `rel` against its
@@ -271,7 +279,7 @@ fn include_file(
     chain.push(canon);
     let (expanded, nested) = expand_includes(&content, &target, depth + 1, chain)?;
     chain.pop();
-    edits.push((call_range.start, call_range.end, expanded, nested));
+    edits.push((call_range.start, call_range.end, expanded, target, nested));
     Ok(())
 }
 
@@ -640,13 +648,18 @@ impl ParseCtx {
     /// range is mapped to the original `.tyx` file directly.
     pub(crate) fn loc(&self, range: std::ops::Range<usize>) -> SourceLoc {
         if let Some(inc) = self.source_map.region_for(range.start) {
-            // Point at the immediate includer's `#include` line and attach the
-            // outer includers as an `include_trace` so a parse error inside a
-            // nested include prints the full include path layer by layer.
-            return SourceLoc::at_with_chain(
-                &inc.ref_path,
-                &inc.ref_raw,
-                inc.ref_range.clone(),
+            // Point at the *actual* error inside the deepest included file
+            // (`inc_path`/`inc_raw`) and attach the full includer chain as an
+            // "included from …" trace, so a parse error inside a nested include
+            // shows the real offending line plus every outer includer's
+            // `#include` call-site.
+            let k = range.start - inc.start;
+            let span = (range.end - range.start).clamp(1, inc.inc_raw.len().saturating_sub(k).max(1));
+            let child_range = k..(k + span).min(inc.inc_raw.len());
+            return SourceLoc::at_included_error(
+                &inc.inc_path,
+                &inc.inc_raw,
+                child_range,
                 &inc.chain,
             );
         }
