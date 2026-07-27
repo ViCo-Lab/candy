@@ -13,6 +13,6 @@
 // Cycle guard: a file may appear at most once along a single include path.
 // Including the same file twice on one chain (a → b → a) is rejected as a
 // circular include; the same file on two different branches is allowed.
-
+#import "@preview/candy:0.1.0": *
 #mobject("shared-box", square(size: 3cm, fill: green, stroke: black))
 #animate("shared-box", to: (6cm, 0cm), duration: 1500)

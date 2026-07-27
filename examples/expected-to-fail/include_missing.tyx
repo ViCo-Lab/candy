@@ -1,0 +1,4 @@
+// Expected to fail: E002 (Parse, missing include target). The referenced file
+// does not exist, so the include fails with `cannot include "…"`.
+#import "@preview/candy:0.1.0": *
+#include "this_file_does_not_exist.tyx"

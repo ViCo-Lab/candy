@@ -1,0 +1,9 @@
+// Expected to fail: E002 (Parse, circular include). Candy inlines every
+// `#include "…"` *before* it parses the document, and a file may appear at
+// most once along a single include chain. This file includes itself, so the
+// single-chain guard rejects it with `circular include detected`, pointing at
+// the offending `#include` line. (Real cycles span multiple files, e.g.
+// a → b → a; reusing the same partial on *different* branches — a diamond —
+// is allowed.)
+#import "@preview/candy:0.1.0": *
+#include "include_circular.tyx"
