@@ -31,7 +31,15 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(
     name = "candy",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CANDY_CODENAME"), ")"),
+    version = concat!(
+        "v",
+        env!("CARGO_PKG_VERSION"),
+        "@",
+        env!("CANDY_GIT_HASH"),
+        "(",
+        env!("CANDY_CODENAME"),
+        ")"
+    ),
     about = "Candy — Code-oriented Animation eNgine Designed for tYpst"
 )]
 struct Cli {

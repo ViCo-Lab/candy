@@ -1,4 +1,4 @@
-//! Candy — **C**ode-oriented **A**nimation **N**gine **D**esigned for t**Y**pst.
+//! Candy — **C**ode-oriented **A**nimation e**N**gine **D**esigned for t**Y**pst.
 //!
 //! Layered, fully self-contained pipeline:
 //!
