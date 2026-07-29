@@ -587,6 +587,15 @@ impl Renderer {
                 .map(|s| s.owns_labels.clone())
                 .unwrap_or_default()
         };
+        if sid == 7 && std::env::var("CANDY_DBG_COUNTERS_DOC").is_ok() {
+            for label in &owns {
+                eprintln!(
+                    "[CDOC] sid=7 label={} wrapped={}",
+                    label.0,
+                    self.wrapped_bodies.contains_key(label)
+                );
+            }
+        }
         for label in &owns {
             let Some(wrapped) = self.wrapped_bodies.get(label) else {
                 continue;
@@ -1094,6 +1103,21 @@ impl Renderer {
             };
             inputs.insert(format!("candy:{l}:dx").into(), Value::Float(dx));
             inputs.insert(format!("candy:{l}:dy").into(), Value::Float(dy));
+            if (l == "kbar" || l == "knum")
+                && active == 7
+                && std::env::var("CANDY_DBG_KC").is_ok()
+            {
+                eprintln!(
+                    "[KCDBG2] label={} active={} flow_pos_present={} dx={:.2} dy={:.2} st=({:.2},{:.2})",
+                    l,
+                    active,
+                    self.flow_pos.contains_key(label),
+                    dx,
+                    dy,
+                    st.x,
+                    st.y
+                );
+            }
             inputs.insert(
                 format!("candy:{l}:s").into(),
                 Value::Float(st.scale * 100.0),

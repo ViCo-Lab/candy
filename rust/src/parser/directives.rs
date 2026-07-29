@@ -60,6 +60,16 @@ fn emit_slide(
     actions: Vec<Action>,
 ) {
     let start = ctx.entry_start(timing, delay);
+    if std::env::var("CANDY_DBG_SLIDE").is_ok() {
+        let tgs: Vec<String> = actions
+            .iter()
+            .map(|a| format!("{:?}", a.target()))
+            .collect();
+        eprintln!(
+            "[SLIDEDBG] start={} dur={} targets={:?}",
+            start, duration, tgs
+        );
+    }
     ctx.slides.push(Slide {
         start_ms: start,
         duration_ms: duration,
@@ -349,6 +359,14 @@ fn process_animate(
     };
 
     let mut actions = Vec::new();
+    if std::env::var("CANDY_DBG_ANIM").is_ok() {
+        eprintln!(
+            "[ANIMDBG] target={} has_to={} to_e={:?}",
+            label.0,
+            named.contains_key("to"),
+            named.get("to").map(|e| format!("{:?}", e))
+        );
+    }
     // Absolute move: `to: (x, y)`.
     if let Some(to_e) = named.get("to") {
         if let Some((x, y)) = tuple_cm(to_e) {
