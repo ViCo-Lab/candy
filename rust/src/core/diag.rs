@@ -25,7 +25,9 @@ pub use anstream::{AutoStream, ColorChoice};
 // Re-export the `#[macro_export]` macros at the `core::diag` path so existing
 // call sites (`crate::core::diag::cargo_status!`, `candy::core::diag::bold!`, …)
 // keep working.
-pub use crate::{bold, cargo_finished, cargo_status, eprint_styled, print_styled};
+pub use crate::{
+    blue, bold, cargo_finished, cargo_status, dim, eprint_styled, green, print_styled, red, yellow,
+};
 use anstyle::Style;
 
 /// `Color` is re-exported (pub) so the `error!` / `warn!` macros can refer to
@@ -49,9 +51,30 @@ pub fn paint(style: Style, text: &str) -> String {
     format!("{style}{text}{style:#}")
 }
 
-/// Dim (bright-black) style for the rustc-style gutter / arrow / line number.
-fn style_dim() -> Style {
+/// Dim (bright-black) style for the rustc-style gutter / arrow / line number,
+/// and for "unknown" provenance values (e.g. a git hash that couldn't be read).
+pub fn style_dim() -> Style {
     Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::BrightBlack)))
+}
+
+/// Plain green (used for the version number in `candy version`).
+pub fn style_green() -> Style {
+    Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)))
+}
+
+/// Plain blue (used for the git hash in `candy version`).
+pub fn style_blue() -> Style {
+    Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Blue)))
+}
+
+/// Plain yellow (used for the release codename in `candy version`).
+pub fn style_yellow() -> Style {
+    Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow)))
+}
+
+/// Plain red (used for a dirty git hash in `candy version`).
+pub fn style_red() -> Style {
+    Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
 }
 
 /// Bold + colored style for a caret (red errors, yellow warnings, …).
@@ -1005,6 +1028,46 @@ pub fn style_bold() -> Style {
 macro_rules! bold {
     ($($arg:tt)*) => {
         $crate::core::diag::paint($crate::core::diag::style_bold(), &::std::format!($($arg)*))
+    };
+}
+
+/// Green style (ANSI always emitted; stripped off-TTY by the writers).
+#[macro_export]
+macro_rules! green {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_green(), &::std::format!($($arg)*))
+    };
+}
+
+/// Blue style (ANSI always emitted; stripped off-TTY by the writers).
+#[macro_export]
+macro_rules! blue {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_blue(), &::std::format!($($arg)*))
+    };
+}
+
+/// Yellow style (ANSI always emitted; stripped off-TTY by the writers).
+#[macro_export]
+macro_rules! yellow {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_yellow(), &::std::format!($($arg)*))
+    };
+}
+
+/// Red style (ANSI always emitted; stripped off-TTY by the writers).
+#[macro_export]
+macro_rules! red {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_red(), &::std::format!($($arg)*))
+    };
+}
+
+/// Dim (bright-black) style (ANSI always emitted; stripped off-TTY by the writers).
+#[macro_export]
+macro_rules! dim {
+    ($($arg:tt)*) => {
+        $crate::core::diag::paint($crate::core::diag::style_dim(), &::std::format!($($arg)*))
     };
 }
 

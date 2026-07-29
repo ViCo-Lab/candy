@@ -178,6 +178,12 @@
     # Parallel frame rasterization (data-parallel over animation frames).
     rayon = "1"
 
+    # Recursive directory traversal for `--recursive` (the mature, cross-platform
+    # way to walk a tree — no hand-rolled recursion). Used to discover every
+    # `.tyx` under a directory so `candy build -r <dir>` can render a whole tree
+    # while mirroring its structure under `--output-dir`.
+    walkdir = "2.5"
+
     # Shape morphing: earcut triangulation (port of Flubber's triangulate.js)
     # and glyph outline extraction for text morphing.
     earcutr  = "0.5"

@@ -9,6 +9,10 @@
 //! candy build examples/dot_move.tyx --format svg    # SVG draft in .candy/
 //! candy build a.tyx b.tyx --output out_a.mp4 out_b.mp4   # 1:1 custom names
 //! candy build examples/dot_move.tyx --output-dir build/   # redirect all outputs
+//! candy build examples/dot_move.tyx --output ../out/my_clip.mp4  # single-file precise path
+//! candy build examples/dot_move.tyx --output ./out/my_clip.mp4  # `.`/`..` resolved by the OS
+//! candy build -r projects/ --output-dir build/  # recurse, mirror tree, skip hidden dirs
+//! candy build a.tyx -r dir1 -r dir2  # explicit files + recursive dirs (combined)
 //! ```
 //!
 //! Artifacts: intermediates (RGBA/SVG drafts) under `.candy/` (or the chosen
@@ -17,6 +21,7 @@
 //! automatically after a successful run unless `--keep-intermediates` is passed.
 
 #![allow(clippy::result_large_err)]
+use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Instant;
 
@@ -25,21 +30,25 @@ use candy::core::diag::{CandyWarn, bold, cargo_finished, cargo_status, report_er
 use candy::{
     CandyError, Codec, Input, OutputFormat, build_scene_with_gpu, check_input, migrate_file,
 };
-use candy::{eprint_styled, error, warn};
+use candy::{blue, dim, eprint_styled, error, green, print_styled, red, warn, yellow};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+
+/// Full version string baked in at compile time, shared by clap's `--version`
+/// flag and the `version` subcommand: `v<version>@<git-hash>(<codename>)`.
+const VERSION: &str = concat!(
+    "v",
+    env!("CARGO_PKG_VERSION"),
+    "@",
+    env!("CANDY_GIT_HASH"),
+    "(",
+    env!("CANDY_CODENAME"),
+    ")"
+);
 
 #[derive(Parser)]
 #[command(
     name = "candy",
-    version = concat!(
-        "v",
-        env!("CARGO_PKG_VERSION"),
-        "@",
-        env!("CANDY_GIT_HASH"),
-        "(",
-        env!("CANDY_CODENAME"),
-        ")"
-    ),
+    version = VERSION,
     about = "Candy — Code-oriented Animation eNgine Designed for tYpst"
 )]
 struct Cli {
@@ -66,11 +75,17 @@ enum Commands {
         from_svg: bool,
         /// Output file name(s). These must be given **one per input** (a 1:1
         /// correspondence) and must be plain file names — no path separators,
-        /// i.e. no multi-level directories. If the count of names does not
-        /// match the number of inputs, or a name contains a path separator,
-        /// that name is ignored and the default `dist/<stem>.<ext>` is used
-        /// instead (a warning is emitted). Ignored for `--format svg` (the
-        /// draft always lands in `.candy/<stem>/`).
+        /// i.e. no multi-level directories — except in a **single-file,
+        /// non-batch** build: there, `--output` may instead be a precise path
+        /// (it contains `/` or `\`, or is the platform-independent link `.` /
+        /// `..`), in which case the output is written exactly to that path (its
+        /// parent directory is created if needed, and any `.` / `..` hops are
+        /// resolved by the OS) instead of `dist/`, and `--output-dir` is
+        /// ignored. For every other case, if the count of names does not match
+        /// the number of inputs, or a batch name contains a path separator, that
+        /// name is ignored and the default `dist/<stem>.<ext>` is used instead (a
+        /// warning is emitted). Ignored for `--format svg` (the draft always
+        /// lands in `.candy/<stem>/`).
         #[arg(short, long, num_args = 0..)]
         output: Vec<String>,
         /// Redirect **every** output file (including custom `--output` names)
@@ -79,6 +94,21 @@ enum Commands {
         /// outputs go to `dist/`.
         #[arg(long)]
         output_dir: Option<String>,
+        /// Recursively render every `.tyx` under the given directory(ies). Each
+        /// `-r` argument **must be a directory** (passing a file is an error; on
+        /// multiple directories, the `.tyx` files found in all of them are
+        /// collected). The source tree's structure is mirrored under
+        /// `--output-dir` — a file at `<root>/a/b.tyx` is written to
+        /// `<output-dir>/<root-name>/a/b.<ext>` (a root-level `<root>/root.tyx`
+        /// goes to `<output-dir>/<root-name>/root.<ext>`) — while directly-passed
+        /// plain `dist/<stem>.<ext>` (or `--output-dir/<stem>.<ext>`) placement.
+        /// Hidden directories (`.git`, `.candy`, …) are skipped to avoid stray
+        /// recursion. May be combined with explicit `<inputs>` and/or repeated
+        /// (`-r dir1 -r dir2`). Each `-r` takes exactly one directory, so it can
+        /// be placed anywhere on the command line — before or after `<inputs>` —
+        /// without greedily swallowing the following positional file arguments.
+        #[arg(short = 'r', long = "recursive", num_args = 1)]
+        recursive: Vec<PathBufOrStr>,
         /// Output container / target. Default `mp4`. `svg` produces a draft in
         /// `.candy/`; `gif` an animated GIF; `png` a static bitmap of the final
         /// frame.
@@ -181,6 +211,8 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Print candy's version (equivalent to `--version`).
+    Version,
 }
 
 /// Accept either a string or a path; we only need the string form from CLI.
@@ -272,6 +304,30 @@ fn run() -> Result<(), CandyError> {
     }
     let cli = Cli::parse();
     match cli.command {
+        Commands::Version => {
+            // Colored equivalent of clap's `--version`:
+            //   version body → green, hash → blue (dim if "unknown",
+            //   red if dirty `*`), codename → yellow; `@`/parens keep default.
+            // All ANSI is stripped when piped / NO_COLOR by `print_styled!`.
+            let hash = env!("CANDY_GIT_HASH");
+            let colored_hash = if hash == "unknown" {
+                dim!("{}", hash)
+            } else if hash.ends_with('*') {
+                red!("{}", hash)
+            } else {
+                blue!("{}", hash)
+            };
+            print_styled!(
+                "{} {}{}{}{}{}{}",
+                bold!("candy"),
+                green!("v{}", env!("CARGO_PKG_VERSION")),
+                "@",
+                colored_hash,
+                "(",
+                yellow!("{}", env!("CANDY_CODENAME")),
+                ")"
+            );
+        }
         Commands::Completions { shell } => {
             // Delegate entirely to clap_complete: it walks the full `Cli`
             // command tree (subcommands, flags, value enums) and emits the
@@ -294,11 +350,16 @@ fn run() -> Result<(), CandyError> {
             keep_intermediates,
             ignore_version,
             output_dir,
+            recursive,
             jobs,
         } => {
-            // No inputs: print the build subcommand's help and exit cleanly
-            // (the user asked for help on an empty `candy build`).
-            if inputs.is_empty() {
+            // Expand the explicit `<inputs>` plus every `--recursive` directory
+            // into one flat list of `.tyx` render units. A `--recursive` argument
+            // that is not a directory surfaces as an I/O error (E001). With no
+            // files and no directories, print the build subcommand's help and
+            // exit cleanly (the user asked for help on an empty `candy build`).
+            let render_inputs = collect_render_inputs(&inputs, &recursive)?;
+            if render_inputs.is_empty() {
                 let mut cmd = Cli::command();
                 if let Some(build) = cmd.find_subcommand_mut("build") {
                     let _ = build.print_help();
@@ -308,14 +369,20 @@ fn run() -> Result<(), CandyError> {
                 println!();
                 return Ok(());
             }
+            // Single-file (non-batch) builds may pass a precise output path (one
+            // containing a separator) via `--output`; in that case the file is
+            // written exactly to that path instead of `dist/`. Batch builds keep
+            // the stricter "plain file name only" rule, so a path separator there
+            // is rejected.
+            let single_file = render_inputs.len() == 1;
             // Custom `--output` names must correspond 1:1 with the inputs. If
             // the counts disagree, ignore every custom name and warn once.
-            let names_match = output.len() == inputs.len();
+            let names_match = output.len() == render_inputs.len();
             if !names_match && !output.is_empty() {
                 warn!(CandyWarn::OutputNameCountMismatch(format!(
                     "{} --output name(s) given for {} input(s)",
                     output.len(),
-                    inputs.len()
+                    render_inputs.len()
                 )));
             }
             // Build each input in turn, writing a separate output per file.
@@ -330,13 +397,13 @@ fn run() -> Result<(), CandyError> {
             let mut failures: Vec<(std::path::PathBuf, CandyError)> = Vec::new();
             let mut succeeded = 0usize;
             let build_start = Instant::now();
-            for (i, input) in inputs.iter().enumerate() {
-                let input_path = input.0.clone();
+            for (i, ri) in render_inputs.iter().enumerate() {
+                let input_path = ri.path.clone();
                 cargo_status!("Building", "{}", input_path.display());
                 // Run one input; `?` inside collects into `result` instead of
                 // aborting the whole batch.
                 let result: Result<(), CandyError> = (|| {
-                    let input = &input.0;
+                    let input = &ri.path;
                     let stem = input
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
@@ -429,8 +496,14 @@ fn run() -> Result<(), CandyError> {
                     } else {
                         None
                     };
-                    let out_path =
-                        resolve_output(custom, &stem, container_ext, output_dir.as_deref());
+                    let out_path = resolve_output(
+                        custom,
+                        &stem,
+                        container_ext,
+                        output_dir.as_deref(),
+                        single_file,
+                        ri.rel.as_deref(),
+                    );
                     build_scene_with_gpu(
                         scene,
                         project_root,
@@ -458,7 +531,7 @@ fn run() -> Result<(), CandyError> {
                         // In batch mode surface the failure immediately
                         // (real-time); for a single input the diagnostic is
                         // printed once at the end via `error!` below.
-                        if inputs.len() > 1 {
+                        if render_inputs.len() > 1 {
                             report_error(&e);
                         }
                         failures.push((input_path, e));
@@ -468,8 +541,12 @@ fn run() -> Result<(), CandyError> {
             // A clean build prints a single cargo-style `Finished … in Xs` summary
             // (just like `cargo build`), naming the count of animations produced.
             if failures.is_empty() {
-                cargo_finished!(build_start.elapsed(), "{} animation(s)", inputs.len());
-            } else if inputs.len() > 1 {
+                cargo_finished!(
+                    build_start.elapsed(),
+                    "{} animation(s)",
+                    render_inputs.len()
+                );
+            } else if render_inputs.len() > 1 {
                 // Batch mode: each failure was already printed in real time
                 // above, so the final summary is cargo-style — both success and
                 // failure counts, no repeated error text — and forces exit code
@@ -586,19 +663,155 @@ fn run() -> Result<(), CandyError> {
     Ok(())
 }
 
+/// A single render unit produced by [`collect_render_inputs`].
+///
+/// `path` is the `.tyx` file to render; `rel` is the directory portion of that
+/// path relative to the recursive root it was discovered under — but always
+/// **prefixed with the source directory's own name** so the tree is mirrored
+/// inside a folder named after the source. For `-r projects/`, a file at
+/// `projects/a/b/c.tyx` yields `rel = projects/a/b`, and even a root-level
+/// `projects/root.tyx` yields `rel = projects` (never `None`). `resolve_output`
+/// then writes it to `<output_dir>/projects/a/b/c.<ext>` (or
+/// `<output_dir>/projects/root.<ext>`), so `dist/` gets a `<source-name>/`
+/// folder. `rel` is `None` only for a directly-passed `<input>` file, which
+/// lands at the top level of `--output-dir` (not under any source-name folder).
+struct RenderInput {
+    path: std::path::PathBuf,
+    rel: Option<std::path::PathBuf>,
+}
+
+/// Expand the user's explicit `<inputs>` files and `--recursive <dir>` arguments
+/// into one flat, ordered list of `.tyx` render units.
+///
+/// - Directly-passed `<inputs>` become `RenderInput`s with `rel = None` (they
+///   land at the top level of `--output-dir`, not under any source-name folder).
+/// - Each `--recursive` directory is walked (via `walkdir`, a mature
+///   cross-platform tree walker — no hand-rolled recursion) for every `.tyx`
+///   file; for each, `rel` records the path relative to the recursive root,
+///   **prefixed with the source directory's own name**, so [`resolve_output`]
+///   mirrors the source tree under a `<source-name>/` folder inside
+///   `--output-dir` (e.g. `-r projects/` → `dist/projects/a/b/c.<ext>`). Hidden
+///   directories (`.git`, `.candy`, …) are skipped to avoid stray recursion.
+/// - A `--recursive` argument that is **not a directory** is rejected with an
+///   I/O error (E001) — `-r` only accepts directories by design.
+fn collect_render_inputs(
+    files: &[PathBufOrStr],
+    recursive: &[PathBufOrStr],
+) -> Result<Vec<RenderInput>, CandyError> {
+    let mut out = Vec::new();
+    for f in files {
+        out.push(RenderInput {
+            path: f.0.clone(),
+            rel: None,
+        });
+    }
+    for dir in recursive {
+        let dir_path = &dir.0;
+        // `-r` only accepts directories: a non-directory (or missing path)
+        // surfaces as E001 with a clear message.
+        let meta = std::fs::metadata(dir_path).map_err(CandyError::Io)?;
+        if !meta.is_dir() {
+            return Err(CandyError::Io(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("{} is not a directory", dir_path.display()),
+            )));
+        }
+        // The recursive root's own name becomes the top-level mirror folder
+        // under `--output-dir` (e.g. `-r projects/` → `dist/projects/…`), so the
+        // whole source tree is preserved inside a folder named after the source.
+        // Fall back to the full path's string form for odd roots (`.`, `/`, …)
+        // that have no usable `file_name()`.
+        let src_name = dir_path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| dir_path.as_os_str().to_os_string());
+        for entry in walkdir::WalkDir::new(dir_path)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(|e| {
+                // Skip hidden directories (`.git`, `.candy`, …) to avoid
+                // recursing into unrelated trees and stray `.tyx` files.
+                !e.file_name().to_string_lossy().starts_with('.')
+            })
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("tyx") && p.is_file() {
+                // `sub` = the directory portion of `p` relative to `dir_path`
+                // (e.g. `a/b` for `<dir>/a/b/c.tyx`); `None` when the file sits
+                // directly in the root. `rel` always carries at least the
+                // source dir name, so even a root-level `.tyx` lands inside the
+                // `<source-name>/` mirror folder rather than at the output root.
+                let sub = p
+                    .strip_prefix(dir_path)
+                    .ok()
+                    .and_then(|suffix| suffix.parent())
+                    .filter(|pp| !pp.as_os_str().is_empty())
+                    .map(|pp| pp.to_path_buf());
+                let rel = match sub {
+                    Some(s) => std::path::PathBuf::from(&src_name).join(s),
+                    None => std::path::PathBuf::from(&src_name),
+                };
+                out.push(RenderInput {
+                    path: p.to_path_buf(),
+                    rel: Some(rel),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `c` counts as a path separator on the current platform.
+///
+/// `/` is a separator everywhere; `\` is a separator only on Windows (on other
+/// platforms it is a legal filename character, e.g. `a\b.mp4`).
+fn is_separator_char(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
+}
+
 /// Resolve the final output path.
 ///
 /// `output_name` is the user's custom name for this input (already validated to
-/// be a 1:1 match and a plain file name by the caller). When it is `None` or
-/// contains a path separator, the default `dist/<stem>.<ext>` (or
-/// `<output_dir>/<stem>.<ext>` when `--output-dir` is given) is used instead.
+/// be a 1:1 match by the caller). When it is `None`, the default
+/// `dist/<stem>.<ext>` (or `<output_dir>/<stem>.<ext>` when `--output-dir` is
+/// given) is used. When `allow_path` is true (a single-file, non-batch build),
+/// `output_name` may be a precise path: anything containing a separator (`/`
+/// everywhere, or `\` on Windows) or the platform-independent links `.` / `..`.
+/// In that case it is used exactly as written and the file is written to that
+/// path (its parent directory is created by the encoder) instead of `dist/`,
+/// with `--output-dir` ignored. `.` / `..` and any other relative hops are
+/// resolved by the OS when the file is opened — we never hand-roll path
+/// normalization. Otherwise a name containing a separator is rejected (with a
+/// warning) and the default is used.
+///
+/// `rel` mirrors the source tree for `--recursive` builds: it is the directory
+/// portion of the `.tyx`'s path relative to its recursive root (e.g. `a/b` for
+/// `<root>/a/b/c.tyx`). When `rel` is `Some`, the output lands at
+/// `<output_dir>/<rel>/<stem>.<ext>` so the directory structure is preserved;
+/// when `None` (a directly-passed file, or a file sitting at the root of a
+/// recursive directory) the output is `<output_dir>/<stem>.<ext>`. `--output-dir`
+/// itself is a directory path and already permits separators (it is joined
+/// verbatim), so nested output trees work in both batch and recursive modes.
 fn resolve_output(
     output_name: Option<&str>,
     stem: &str,
     ext: &str,
     output_dir: Option<&str>,
+    allow_path: bool,
+    rel: Option<&Path>,
 ) -> std::path::PathBuf {
     let default_name = format!("{stem}.{ext}");
+    // Single-file build with a precise path (separator, or `.` / `..`) → use it
+    // verbatim and let the OS resolve `.` / `..` natively when written.
+    if allow_path {
+        if let Some(n) = output_name {
+            let is_precise_path = n.chars().any(is_separator_char) || n == "." || n == "..";
+            if is_precise_path {
+                return std::path::PathBuf::from(n);
+            }
+        }
+    }
     let name = match output_name {
         Some(n) if is_plain_filename(n) => n.to_string(),
         Some(n) => {
@@ -609,15 +822,20 @@ fn resolve_output(
         }
         None => default_name.clone(),
     };
-    let dir = output_dir.unwrap_or("dist");
-    Path::new(dir).join(name)
+    let dir = Path::new(output_dir.unwrap_or("dist"));
+    match rel {
+        // Preserve the source sub-tree under the output directory.
+        Some(r) => dir.join(r).join(name),
+        None => dir.join(name),
+    }
 }
 
 /// A plain output file name: non-empty and containing no path separators
-/// (`/` or `\\`), and not `.` / `..`. Multi-level directory paths are rejected
-/// so outputs never escape the chosen output directory.
+/// (`/` everywhere, or `\` on Windows), and not `.` / `..`. Multi-level
+/// directory paths are rejected so outputs never escape the chosen output
+/// directory.
 fn is_plain_filename(name: &str) -> bool {
-    !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
+    !name.is_empty() && !name.chars().any(is_separator_char) && name != "." && name != ".."
 }
 
 /// The canvas size (Typst points) of a scene's root for resolution purposes.

@@ -1923,6 +1923,10 @@ fn process_kcpush(
             easing,
         },
     );
+    eprintln!(
+        "[KCDBG] push name={name} final_at={final_at} value={value} (cursor={} offset={} at_ms={})",
+        ctx.cursor, offset, at_ms
+    );
 }
 
 /// Resolve the effective easing for a `kcpush`, handling the `inherit` default:

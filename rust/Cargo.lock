@@ -408,6 +408,7 @@ dependencies = [
  "usvg 0.47.0",
  "vello",
  "vello_svg",
+ "walkdir",
  "wgpu",
 ]
 

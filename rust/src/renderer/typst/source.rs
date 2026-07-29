@@ -1024,6 +1024,16 @@ impl Renderer {
         }
         for (label, st) in states {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
+            if std::env::var("CANDY_DBG_ABSENT").is_ok() && (label.0 == "kbar" || label.0 == "knum")
+            {
+                eprintln!(
+                    "[ABSENTDBG] label={} owner={} active={} absent_set={}",
+                    label.0,
+                    owner,
+                    active,
+                    owner != active
+                );
+            }
             if owner != active {
                 // A mobject owned by a non-active scene (e.g. a parent scene
                 // whose child is currently active) must be removed so the active
@@ -1149,6 +1159,16 @@ impl Renderer {
         // holds the final color.
         for (label, changes) in &self.color_changes {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
+            if std::env::var("CANDY_DBG_ABSENT").is_ok() && (label.0 == "kbar" || label.0 == "knum")
+            {
+                eprintln!(
+                    "[ABSENTDBG] label={} owner={} active={} absent_set={}",
+                    label.0,
+                    owner,
+                    active,
+                    owner != active
+                );
+            }
             if owner != active {
                 continue;
             }
