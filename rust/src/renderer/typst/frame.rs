@@ -56,11 +56,7 @@ impl Renderer {
         hide_fading: bool,
         transparent_bg: bool,
     ) -> Result<String, CandyError> {
-        let active = if self.scene.scenes.is_empty() {
-            0
-        } else {
-            self.scene.active_scene_at(time_ms)
-        };
+        let active = self.active_scene_for_render(time_ms);
         let active_page = self.pages.active_page_of(active, time_ms);
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
@@ -256,6 +252,59 @@ impl Renderer {
             .max()
             .unwrap_or(0)
     }
+    /// Reorder sampled frame times into **presentation order**.
+    ///
+    /// Silent overflow-page dwell windows live *past* the keyframe timeline
+    /// (they are carved out of a shared cursor after every scene's content —
+    /// see `PageScheduler::build`), but they must *play* right after their own
+    /// scene's content: `A page 1 → A page 2 → B`, not `A page 1 → B → A
+    /// page 2`. Each frame is a pure function of its sample time and the
+    /// streaming pipeline encodes frames strictly in `sample_times` index
+    /// order, so reordering this list is sufficient (and the only place the
+    /// presentation order is decided).
+    ///
+    /// A time inside a dwell window is only relocated when the window's scene
+    /// actually resolves as the active scene there (`active_scene_at`) — a
+    /// boundary sample owned by the next scene stays in place.
+    pub fn presentation_order(&self, mut times: Vec<u32>) -> Vec<u32> {
+        let windows = self.pages.dwell_windows();
+        if windows.is_empty() {
+            return times;
+        }
+        times.sort_by_key(|&t| {
+            for w in windows {
+                if t >= w.start_ms && t < w.end_ms {
+                    // Dwell frames sort at their scene's content end, *before*
+                    // any normal frame at that same time (`0 < 1`), keeping
+                    // their internal chronology via the final `t`.
+                    return (w.anchor_ms, 0u8, t);
+                }
+            }
+            (t, 1u8, t)
+        });
+        times
+    }
+    /// The scene to draw at `time_ms`.
+    ///
+    /// A silent overflow-page dwell window is authoritative: the windows are
+    /// globally disjoint (carved from one shared cursor past the keyframe
+    /// timeline), whereas `active_scene_at` cannot resolve them — every
+    /// overflowing scene's `end_ms` is extended over the *whole* dwell region,
+    /// so sibling intervals overlap there and the deepest/last scene would
+    /// shadow the others (their overflow pages would render the wrong scene).
+    /// Outside any dwell window this defers to `active_scene_at` as before.
+    pub(crate) fn active_scene_for_render(&self, time_ms: u32) -> usize {
+        for w in self.pages.dwell_windows() {
+            if time_ms >= w.start_ms && time_ms < w.end_ms {
+                return w.sid;
+            }
+        }
+        if self.scene.scenes.is_empty() {
+            0
+        } else {
+            self.scene.active_scene_at(time_ms)
+        }
+    }
     /// Test-only accessor for the computed flow (first-frame) top-left of a
     /// mobject, in Typst points (page origin). Used by the native-consistency /
     /// declaration-order regression tests.
@@ -335,11 +384,7 @@ impl Renderer {
         th: u32,
     ) -> Result<RenderedFrame, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
-        let active = if self.scene.scenes.is_empty() {
-            0
-        } else {
-            self.scene.active_scene_at(time_ms)
-        };
+        let active = self.active_scene_for_render(time_ms);
         let active_page = self.pages.active_page_of(active, time_ms);
         // Base: every *non-fading* object at full opacity. Fading objects
         // are excluded from the base and re-composited on top at their

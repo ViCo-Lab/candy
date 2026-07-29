@@ -339,6 +339,14 @@ pub fn build_scene_with_gpu(
     sample_times.sort();
     sample_times.dedup();
 
+    // Cross-page scenes: relocate each scene's silent overflow-page dwell
+    // frames (scheduled past the keyframe timeline) to right after that
+    // scene's own content, so pages play in sequence *within* their scene
+    // (`A p1 → A p2 → B`) instead of at the tail of the whole video. Frames
+    // are pure functions of their sample time and the pipeline encodes in
+    // index order, so reordering the list is all that's needed.
+    let mut sample_times = renderer.presentation_order(sample_times);
+
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
         std::fs::create_dir_all(intermediate_dir)?;

@@ -32,6 +32,23 @@ pub(crate) struct PageSegment {
 /// so the renderer still advances to it in order after the animated pages.
 const DEFAULT_PAGE_MS: u32 = 800;
 
+/// A silent overflow-page dwell window that lives *past* the keyframe timeline
+/// but must be **presented** right after its scene's own content — not at the
+/// tail of the whole video. The render loop uses these to reorder its sampled
+/// frames into presentation order (see `Renderer::presentation_order`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DwellWindow {
+    /// The scene this dwell window belongs to.
+    pub sid: usize,
+    /// Global time (ms) the scene's own content ends — the presentation
+    /// anchor: frames inside this window play right after this time.
+    pub anchor_ms: u32,
+    /// Global start time (ms) of the dwell window (inclusive).
+    pub start_ms: u32,
+    /// Global end time (ms) of the dwell window (exclusive).
+    pub end_ms: u32,
+}
+
 /// Builds and answers queries about per-scene page playback schedules.
 ///
 /// Constructed once in [`Renderer::ensure_flow`](super::Renderer::ensure_flow)
@@ -42,6 +59,12 @@ pub(crate) struct PageScheduler {
     /// Per-scene page playback schedule: the ordered list of page-segments that
     /// make up the scene's timeline.
     page_schedules: HashMap<usize, Vec<PageSegment>>,
+    /// Every silent overflow-page dwell window across all scenes, in scene
+    /// order. Disjoint: allocated sequentially from a single global cursor
+    /// starting at the end of the keyframe timeline, so two overflowing scenes
+    /// never claim the same window (which would shadow one scene's overflow
+    /// page entirely — dropped content).
+    dwell_windows: Vec<DwellWindow>,
 }
 
 impl PageScheduler {
@@ -51,6 +74,7 @@ impl PageScheduler {
         Self {
             page_of: HashMap::new(),
             page_schedules: HashMap::new(),
+            dwell_windows: Vec::new(),
         }
     }
 
@@ -67,13 +91,28 @@ impl PageScheduler {
         } else {
             scene.scenes.iter().map(|s| s.id).collect()
         };
+        // Silent overflow-page dwell windows are allocated *sequentially* from
+        // this shared cursor (starting at the end of the keyframe timeline).
+        // A per-scene cursor would make two overflowing scenes claim the same
+        // window, and `active_scene_at` can only resolve one of them there —
+        // the other scene's overflow page would be shadowed (never rendered).
+        let mut extra_cursor: u32 = scene.slides.iter().map(|s| s.duration_ms).sum();
+        let mut dwell_windows: Vec<DwellWindow> = Vec::new();
         for sid in scene_ids {
-            let segs = Self::scene_segments(scene, &page_of, sid, page_counts);
+            let segs = Self::scene_segments(
+                scene,
+                &page_of,
+                sid,
+                page_counts,
+                &mut extra_cursor,
+                &mut dwell_windows,
+            );
             page_schedules.insert(sid, segs);
         }
         Self {
             page_of,
             page_schedules,
+            dwell_windows,
         }
     }
 
@@ -141,12 +180,22 @@ impl PageScheduler {
         self.page_schedules.keys().copied().collect()
     }
 
+    /// The silent overflow-page dwell windows across every scene, in scene
+    /// order. Used by the render loop to reorder its sampled frames so each
+    /// scene's overflow pages play right after that scene's own content
+    /// instead of at the tail of the whole video.
+    pub(crate) fn dwell_windows(&self) -> &[DwellWindow] {
+        &self.dwell_windows
+    }
+
     /// Partition one scene's timeline into ordered page-segments.
     fn scene_segments(
         scene: &Scene,
         page_of: &HashMap<Label, usize>,
         sid: usize,
         page_counts: &HashMap<usize, usize>,
+        extra_cursor: &mut u32,
+        dwell_windows: &mut Vec<DwellWindow>,
     ) -> Vec<PageSegment> {
         // In a multi-scene document a slide belongs to this scene only if the
         // scene is active at the slide's midpoint.
@@ -162,6 +211,11 @@ impl PageScheduler {
         let mut cur_page: Option<usize> = None;
         let mut seg_start: Option<u32> = None;
         let mut seg_page: usize = 0;
+        // End (ms) of the *last slide that belongs to this scene* — the scene's
+        // own content end. `ptr` keeps accumulating across every scene's slides,
+        // so using `ptr` for the final segment / dwell anchor would leak other
+        // scenes' time into this scene's schedule.
+        let mut last_end: Option<u32> = None;
         for slide in &scene.slides {
             let start = ptr;
             let end = ptr + slide.duration_ms;
@@ -169,6 +223,7 @@ impl PageScheduler {
             if !in_scene(start + slide.duration_ms / 2) {
                 continue;
             }
+            last_end = Some(end);
             // Page of this slide = the page of its first targeted mobject, or
             // the inherited current page for untargeted slides (pauses / camera
             // moves), defaulting to page 0.
@@ -198,28 +253,54 @@ impl PageScheduler {
             }
             cur_page = Some(page);
         }
+        let content_end = last_end.unwrap_or(ptr);
         if let Some(s) = seg_start {
             segs.push(PageSegment {
                 page: seg_page,
                 start_ms: s,
-                end_ms: ptr,
+                end_ms: content_end,
             });
+        }
+        // A pure container scene (no slide of its own *and* no mobjects — e.g.
+        // the implicit root of an explicit-`#scene` document) has nothing to
+        // show: without this guard its empty `present` set marks page 0 as
+        // "missing" and allocates a phantom dwell window that pushes every
+        // later scene's dwell windows further out and injects unowned blank
+        // (or stale-page) frames into the timeline.
+        let owns_any = scene
+            .scenes
+            .iter()
+            .find(|s| s.id == sid)
+            .map(|s| !s.owns_labels.is_empty())
+            .unwrap_or(true);
+        if segs.is_empty() && !owns_any {
+            return segs;
         }
         // Pages that received no animation still need a window so the renderer
         // advances to them in order (after the animated pages). Give each a
-        // short default dwell.
+        // short default dwell. The windows are carved out of the shared
+        // `extra_cursor` (past the whole keyframe timeline) so they never
+        // collide with another scene's dwell windows; their *presentation*
+        // position (right after this scene's own content) is restored by the
+        // render loop via [`PageScheduler::dwell_windows`].
         let max_page = page_counts.get(&sid).copied().unwrap_or(1).max(1);
         let present: HashSet<usize> = segs.iter().map(|s| s.page).collect();
         let mut missing: Vec<usize> = (0..max_page).filter(|p| !present.contains(p)).collect();
         missing.sort_unstable();
-        let mut t = ptr;
         for p in missing {
+            let t = *extra_cursor;
             segs.push(PageSegment {
                 page: p,
                 start_ms: t,
                 end_ms: t + DEFAULT_PAGE_MS,
             });
-            t += DEFAULT_PAGE_MS;
+            dwell_windows.push(DwellWindow {
+                sid,
+                anchor_ms: content_end,
+                start_ms: t,
+                end_ms: t + DEFAULT_PAGE_MS,
+            });
+            *extra_cursor = t + DEFAULT_PAGE_MS;
         }
         segs
     }

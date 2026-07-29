@@ -7,6 +7,7 @@
 // Run:  candy build examples/easing_showcase.tyx
 
 #scene(width: 16cm, height: 9cm, bg: white)[
+  #set block(above: 0.5em, below: 0.5em)
   // A row of dots, each labeled, starting at the left edge.
   #mobject("linear", circle(radius: 0.5cm, fill: red))
   #mobject("smooth", circle(radius: 0.5cm, fill: orange))

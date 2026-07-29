@@ -819,6 +819,94 @@ fn overflow_pages_scheduled_past_timeline() {
     );
 }
 
+/// When *two* scenes both overflow, their silent overflow-page dwell windows
+/// must be **disjoint** (allocated sequentially from one shared cursor) and
+/// carry each scene's own content end as the presentation anchor. With a
+/// per-scene cursor both windows started at the same global time, so
+/// `active_scene_at` could only resolve one of them there — the other scene's
+/// overflow page was shadowed and its content silently dropped. Regression
+/// test for "cross-page overflow content must play in sequence, not be
+/// dropped".
+#[test]
+fn double_overflow_dwell_windows_are_disjoint_and_anchored() {
+    use crate::core::ast::{Label, Scene, SceneInfo, Slide};
+    use crate::renderer::typst::pages::PageScheduler;
+    use std::collections::HashMap;
+
+    // Scene A [0,400] then scene B [400,800]; each has one 400ms slide and
+    // spilled onto 2 pages (page 1 silent for both).
+    let mk_scene = |id: usize, name: &str, start: u32, end: u32, label: &str| SceneInfo {
+        id,
+        name: Some(name.to_string()),
+        parent: Some(0),
+        scope: 0,
+        page_size: None,
+        bg: None,
+        start_ms: start,
+        end_ms: end,
+        owns_labels: vec![Label(label.to_string())],
+    };
+    let scene = Scene {
+        scenes: vec![
+            SceneInfo {
+                id: 0,
+                name: Some("root".to_string()),
+                parent: None,
+                scope: 0,
+                page_size: None,
+                bg: None,
+                start_ms: 0,
+                end_ms: 800,
+                owns_labels: Vec::new(),
+            },
+            mk_scene(1, "a", 0, 400, "a1"),
+            mk_scene(2, "b", 400, 800, "b1"),
+        ],
+        slides: vec![
+            Slide {
+                start_ms: 0,
+                duration_ms: 400,
+                actions: vec![],
+                loc: None,
+            },
+            Slide {
+                start_ms: 400,
+                duration_ms: 400,
+                actions: vec![],
+                loc: None,
+            },
+        ],
+        ..Default::default()
+    };
+    let page_of: HashMap<Label, usize> = HashMap::new();
+    let mut page_counts: HashMap<usize, usize> = HashMap::new();
+    page_counts.insert(1, 2);
+    page_counts.insert(2, 2);
+
+    let sched = PageScheduler::build(&scene, page_of, &page_counts);
+    let wins = sched.dwell_windows();
+    assert_eq!(wins.len(), 2, "one dwell window per overflowing scene");
+    // Disjoint and past the 800ms keyframe timeline.
+    for w in wins {
+        assert!(w.start_ms >= 800, "dwell windows live past the timeline");
+    }
+    for pair in wins.windows(2) {
+        assert!(
+            pair[0].end_ms <= pair[1].start_ms || pair[1].end_ms <= pair[0].start_ms,
+            "dwell windows must not overlap: {pair:?}"
+        );
+    }
+    // Each window anchors at its own scene's content end so the render loop
+    // can put the overflow page right after that scene's content.
+    let wa = wins.iter().find(|w| w.sid == 1).expect("scene a window");
+    let wb = wins.iter().find(|w| w.sid == 2).expect("scene b window");
+    assert_eq!(wa.anchor_ms, 400, "scene a's overflow plays after t=400");
+    assert_eq!(wb.anchor_ms, 800, "scene b's overflow plays after t=800");
+    // The pure-container root (no labels, no slides of its own) must NOT get a
+    // phantom dwell window.
+    assert!(wins.iter().all(|w| w.sid != 0), "root gets no dwell window");
+}
+
 /// The multi-page overflow condition must be surfaced as a registered,
 /// non-fatal warning code `W018` (the user asked for "detect multi-page →
 /// throw a warning (register a new code)"). Verifies the code is wired up.
