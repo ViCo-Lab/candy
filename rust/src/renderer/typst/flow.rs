@@ -404,29 +404,6 @@ impl Renderer {
                 .map(|p| p + 1)
                 .unwrap_or(1);
             scene_page_counts.insert(sid, true_pages.max(1));
-            if std::env::var("CANDY_DBG_FLOW").is_ok() {
-                let sname = self
-                    .scene
-                    .scenes
-                    .iter()
-                    .find(|s| s.id == sid)
-                    .and_then(|s| s.name.clone())
-                    .unwrap_or_default();
-                if sname == "counters" {
-                    eprintln!(
-                        "[FLOWDBG] scene={sname} sid={sid} true_pages={true_pages} labels={}",
-                        labels.len()
-                    );
-                    for l in &labels {
-                        eprintln!(
-                            "   label={} page_of={} final_flow_y={:.1}",
-                            l.0,
-                            page_of.get(l).copied().unwrap_or(0),
-                            flow_pos.get(l).map_or(0.0, |(_, y)| *y)
-                        );
-                    }
-                }
-            }
             if true_pages > 1 {
                 let name = self
                     .scene
@@ -550,22 +527,6 @@ impl Renderer {
         // own independent timeline, and the renderer auto-advances from one page
         // to the next once the current page's content has finished playing.
         self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
-        if std::env::var("CANDY_DBG_SCENES").is_ok() {
-            for s in &self.scene.scenes {
-                eprintln!(
-                    "[SCN] id={} name={:?} parent={:?} start={} end={} owns={:?}",
-                    s.id, s.name, s.parent, s.start_ms, s.end_ms, s.owns_labels
-                );
-            }
-            for l in ["num", "bar", "note", "vid", "kbar", "knum"] {
-                let lab = crate::core::ast::Label(l.to_string());
-                eprintln!(
-                    "[LSC] label={} label_scene={:?}",
-                    l,
-                    self.scene.label_scene_map().get(&lab).copied()
-                );
-            }
-        }
         // Assemble the per-page render documents: one standalone Typst document
         // per (scene, page), each containing only that page's mobjects laid out
         // from the top in raw flow ("裸排"), with the scene's runtime context

@@ -573,9 +573,6 @@ impl Renderer {
     /// rendering exactly as they did under the whole-document path.
     pub(crate) fn assemble_page_doc(&self, sid: usize, page: usize) -> String {
         let mut doc = self.scene_context_preamble(sid);
-        if std::env::var("CANDY_DBG_DOC").is_ok() {
-            eprintln!("DBG DOC sid={sid} page={page}:\n<<<\n{doc}\n>>>");
-        }
         let label_scene = self.scene.label_scene_map();
         let owns: Vec<Label> = if self.scene.scenes.is_empty() {
             self.scene.items.keys().cloned().collect()
@@ -587,15 +584,6 @@ impl Renderer {
                 .map(|s| s.owns_labels.clone())
                 .unwrap_or_default()
         };
-        if sid == 7 && std::env::var("CANDY_DBG_COUNTERS_DOC").is_ok() {
-            for label in &owns {
-                eprintln!(
-                    "[CDOC] sid=7 label={} wrapped={}",
-                    label.0,
-                    self.wrapped_bodies.contains_key(label)
-                );
-            }
-        }
         for label in &owns {
             let Some(wrapped) = self.wrapped_bodies.get(label) else {
                 continue;
@@ -620,9 +608,6 @@ impl Renderer {
                 continue;
             }
             doc.push_str(&format!("#mobject(\"{}\", {})\n", label.0, wrapped));
-        }
-        if std::env::var("CANDY_DBG_DOC").is_ok() {
-            eprintln!("DBG FULLDOC sid={sid} page={page}:\n<<<\n{doc}\n>>>");
         }
         doc
     }
@@ -1033,16 +1018,6 @@ impl Renderer {
         }
         for (label, st) in states {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
-            if std::env::var("CANDY_DBG_ABSENT").is_ok() && (label.0 == "kbar" || label.0 == "knum")
-            {
-                eprintln!(
-                    "[ABSENTDBG] label={} owner={} active={} absent_set={}",
-                    label.0,
-                    owner,
-                    active,
-                    owner != active
-                );
-            }
             if owner != active {
                 // A mobject owned by a non-active scene (e.g. a parent scene
                 // whose child is currently active) must be removed so the active
@@ -1103,21 +1078,6 @@ impl Renderer {
             };
             inputs.insert(format!("candy:{l}:dx").into(), Value::Float(dx));
             inputs.insert(format!("candy:{l}:dy").into(), Value::Float(dy));
-            if (l == "kbar" || l == "knum")
-                && active == 7
-                && std::env::var("CANDY_DBG_KC").is_ok()
-            {
-                eprintln!(
-                    "[KCDBG2] label={} active={} flow_pos_present={} dx={:.2} dy={:.2} st=({:.2},{:.2})",
-                    l,
-                    active,
-                    self.flow_pos.contains_key(label),
-                    dx,
-                    dy,
-                    st.x,
-                    st.y
-                );
-            }
             inputs.insert(
                 format!("candy:{l}:s").into(),
                 Value::Float(st.scale * 100.0),
@@ -1183,16 +1143,6 @@ impl Renderer {
         // holds the final color.
         for (label, changes) in &self.color_changes {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
-            if std::env::var("CANDY_DBG_ABSENT").is_ok() && (label.0 == "kbar" || label.0 == "knum")
-            {
-                eprintln!(
-                    "[ABSENTDBG] label={} owner={} active={} absent_set={}",
-                    label.0,
-                    owner,
-                    active,
-                    owner != active
-                );
-            }
             if owner != active {
                 continue;
             }
