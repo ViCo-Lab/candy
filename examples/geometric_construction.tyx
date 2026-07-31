@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Step-by-step Euclidean construction of a regular hexagon inscribed in a
 // circle: draw the circle, drop six vertices on it, connect them with edges,

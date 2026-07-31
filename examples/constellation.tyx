@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // A "connect the stars" animation: scattered stars spiral-in one by one, then
 // the constellation's connecting lines fade in sequentially, and the stars

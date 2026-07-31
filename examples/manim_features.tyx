@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Candy example: demonstrate Manim-inspired directives.
 // A blue circle moves, saves state, moves again, then restores back. Then it

@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #save_state — docs/reference/directives.md
 // Snapshot a mobject's current transform (x / y / scale / rotation / opacity)

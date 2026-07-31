@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Demonstrates `#video` — since Typst cannot embed video, candy renders a labeled
 // placeholder box (rounded rect + ▶ icon + filename) that behaves like any other

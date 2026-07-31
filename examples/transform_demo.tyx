@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Demonstrates Manim-style smooth object transitions via `#transform`.
 //

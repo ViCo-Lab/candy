@@ -3,4 +3,5 @@
 // E006 code as #animate on an undeclared target — confirming the code is
 // assigned by the *kind of failure* (undeclared key), not by the directive used.
 #import "@preview/candy:0.1.0": *
+#show: candy
 #appear("ghost")

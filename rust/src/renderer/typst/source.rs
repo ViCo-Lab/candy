@@ -529,7 +529,12 @@ impl Renderer {
                 .unwrap_or_else(|| self.scene.effective_page_pt(sid))
         };
         let pw_cm = pw_pt / PT_PER_CM;
-        let ph_cm = ph_pt / PT_PER_CM;
+        // Compile-page height defaults to the viewport, but widens to
+        // `scene_doc_h` (computed in `ensure_flow`) when larger, so off-viewport
+        // mobjects stay on a single Typst page. The output `viewBox` still uses
+        // the viewport height below — only the compile page grows.
+        let doc_h_pt = self.scene_doc_h.get(&sid).copied().unwrap_or(ph_pt);
+        let doc_h_cm = doc_h_pt / PT_PER_CM;
         let bg = if self.scene.scenes.is_empty() {
             "white".to_string()
         } else {
@@ -556,21 +561,23 @@ impl Renderer {
             preamble.push_str(&format!("#import \"@preview/candy:{v}\": *\n"));
         }
         preamble.push_str(&format!(
-            "#set page(width: {pw_cm}cm, height: {ph_cm}cm, margin: 0pt, fill: {bg_expr})\n",
+            "#set page(width: {pw_cm}cm, height: {doc_h_cm}cm, margin: 0pt, fill: {bg_expr})\n",
             pw_cm = pw_cm,
-            ph_cm = ph_cm,
+            doc_h_cm = doc_h_cm,
             bg_expr = bg_expr,
         ));
         preamble.push_str(&ctx);
         preamble
     }
 
-    /// Assemble the standalone per-page render document for `(sid, page)`: the
-    /// scene's injected context preamble followed by only the mobjects that
-    /// belong to `sid` and landed on `page`, each laid out from the top in raw
-    /// Typst flow ("裸排"), in declaration order. Mobjects with no recorded page
-    /// (absent from the flow layout) are emitted on every page so they keep
-    /// rendering exactly as they did under the whole-document path.
+    /// Assemble the standalone render document for `sid`: the scene's injected
+    /// context preamble followed by every mobject that belongs to `sid`, each
+    /// laid out from the top in raw Typst flow ("裸排"), in declaration order.
+    /// The document's page is tall enough to hold overflow content on a single
+    /// page; anything outside the viewport is clipped by the fixed `viewBox` at
+    /// rasterization. Mobjects with no recorded page (absent from the flow
+    /// layout) are emitted so they keep rendering as under the whole-document
+    /// path.
     pub(crate) fn assemble_page_doc(&self, sid: usize) -> String {
         let mut doc = self.scene_context_preamble(sid);
         let label_scene = self.scene.label_scene_map();
@@ -594,13 +601,6 @@ impl Renderer {
             // content and drift it back to the page end ("play 遮罩和内容错位").
             if label.0.starts_with("__block_") {
                 continue;
-            }
-            // Page filter: skip mobjects that overflowed the viewport (page > 0).
-            // Only the viewport interior (page 0) is rendered; overflow is dropped.
-            if let Some(&p) = self.label_page.get(label) {
-                if p != 0 {
-                    continue;
-                }
             }
             // Scene ownership filter (only for real scene trees; hand-built
             // scenes have no tree and own every mobject).
@@ -1036,14 +1036,6 @@ impl Renderer {
                 );
                 continue;
             }
-            // Only draw mobjects that landed in the viewport (page 0). Mobjects
-            // without a recorded `page_of` (e.g. absent from the flow layout) are
-            // drawn in the viewport too; overflow (page > 0) is dropped.
-            if let Some(&p) = self.label_page.get(label) {
-                if p != 0 {
-                    continue;
-                }
-            }
             let l = &label.0;
             if self.transform_hidden(label, time_ms) {
                 // The target/old mobjects are replaced by the interpolated
@@ -1145,11 +1137,6 @@ impl Renderer {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
             if owner != active {
                 continue;
-            }
-            if let Some(&p) = self.label_page.get(label) {
-                if p != 0 {
-                    continue;
-                }
             }
             let mut chosen: Option<[u8; 4]> = None;
             for ch in changes {

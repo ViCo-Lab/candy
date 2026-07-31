@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #set_color — docs/reference/directives.md
 // Lerp the box's `fill:` from red to green over 300ms with the "smooth" easing.

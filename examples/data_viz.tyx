@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // An animated horizontal bar chart. Bars start as short stubs and "race" to
 // their final lengths via `#transform` (which keeps each label, so we can

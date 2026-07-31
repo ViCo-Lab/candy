@@ -3,4 +3,5 @@
 // range, so the document is rejected before any rendering. Pass --ignore-version
 // to bypass. (Also used as the sentinel version in lib.rs unit tests.)
 #import "@preview/candy:11.45.14": *
+#show: candy
 What a stinky version...

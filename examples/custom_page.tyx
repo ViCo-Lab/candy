@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 #set page(width: 20cm, height: 10cm, margin: 0pt, fill: white)
 

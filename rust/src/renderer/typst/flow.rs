@@ -301,10 +301,18 @@ impl Renderer {
                 // document (which lays the mobject out from the top) and the
                 // `move` delta agree and the final rendered position equals the
                 // absolute target.
-                let page_top = page_idx as f64 * ph_pt;
+                // Continuous (absolute) flow position across every page. The
+                // render document is a single page tall enough to contain each
+                // mobject's identity position, so its `move` delta (`target −
+                // flow_pos`) places it at its true position; anything outside
+                // the viewport is clipped by the rasterizer's fixed `viewBox`,
+                // never dropped here.
                 flow_pos.insert(
                     label.clone(),
-                    (pos.point.x.to_pt(), pos.point.y.to_pt() - page_top),
+                    (
+                        pos.point.x.to_pt(),
+                        pos.point.y.to_pt() + page_idx as f64 * ph_pt,
+                    ),
                 );
                 page_of.insert(label.clone(), page_idx);
                 first_label_page = Some(first_label_page.map_or(page_idx, |p| p.min(page_idx)));
@@ -325,7 +333,6 @@ impl Renderer {
                 if tmp_to_target.contains_key(label) {
                     continue;
                 }
-                let old_p = page_of.get(label).copied().unwrap_or(0);
                 // Only a mobject with an explicit final position (absolute
                 // `#animate(to: …)`, relative `#animate(dx/dy)`, `#track`, or
                 // `#move-along-path`) may override its flow-derived page. Such a
@@ -338,8 +345,7 @@ impl Renderer {
                 let mut final_cm: Option<(f64, f64)> = None;
                 let init_cont_cm = (
                     flow_pos.get(label).map_or(0.0, |(x, _)| *x) / PT_PER_CM,
-                    (flow_pos.get(label).map_or(0.0, |(_, y)| *y) + old_p as f64 * ph_pt)
-                        / PT_PER_CM,
+                    flow_pos.get(label).map_or(0.0, |(_, y)| *y) / PT_PER_CM,
                 );
                 for slide in &self.scene.slides {
                     for a in &slide.actions {
@@ -382,21 +388,19 @@ impl Renderer {
                 }
                 if let Some(fc) = final_cm {
                     let new_p = (fc.1 / ph_cm).max(0.0).floor() as usize;
-                    if new_p != old_p {
-                        if let Some(fp) = flow_pos.get_mut(label) {
-                            fp.1 += (old_p as f64 - new_p as f64) * ph_pt;
-                        }
-                        page_of.insert(label.clone(), new_p);
-                    }
+                    // `flow_pos` is continuous, so no in-page rebasing of the
+                    // position is required; only the final page (for the
+                    // overflow warning) is tracked.
+                    page_of.insert(label.clone(), new_p);
                 }
             }
             // The scene's true page count follows the mobjects' (now corrected)
             // page assignment. Absolutely-positioned mobjects that all land on
-            // page 0 collapse the phantom flow overflow to a single page, so the
-            // content fits the viewport. Any content that lands beyond page 0
-            // overflows the single-page viewport and is dropped (only the
-            // viewport interior is rendered). The warning is emitted when the
-            // flow spills past the first page.
+            // page 0 collapse the phantom flow overflow to a single page. Any
+            // content that lands beyond page 0 overflows the fixed viewport and
+            // is *rendered but clipped at rasterization* by the viewport's
+            // `viewBox` — it is no longer dropped. The warning is emitted when
+            // the flow spills past the first page.
             let true_pages = labels
                 .iter()
                 .filter_map(|l| page_of.get(l))
@@ -419,9 +423,18 @@ impl Renderer {
                         }
                     });
                 crate::warn!(CandyWarn::ContentOverflow(format!(
-                    "scene '{name}' content overflows the viewport"
+                    "scene '{name}' content overflows the viewport (rendered; clipped to the viewport at rasterization)"
                 )));
             }
+            // Compile-page height: tall enough to hold every mobject's identity
+            // flow position on a single Typst page (so overflow isn't split into
+            // extra pages and silently dropped); the output `viewBox` stays the
+            // fixed viewport. `true_pages` bounds the in-flow (non-moved)
+            // content; the +1 page margin absorbs preamble/context additions.
+            // Moved (floated) content never creates pages, so it needs no extra
+            // room here.
+            let doc_h = (true_pages as f64 + 1.0) * ph_pt;
+            self.scene_doc_h.insert(sid, doc_h);
             // Measure the scene's *actual* canvas size from the compiled
             // document. The measured page is the one the scene's own labels
             // landed on; a bare root (no explicit `#scene` calls) uses page 0
@@ -522,10 +535,9 @@ impl Renderer {
                 )));
             }
         }
-        // Record the per-label page assignment so the renderer filters to the
-        // viewport interior (page 0); overflow pages are dropped (only viewport
-        // content is rendered).
-        self.label_page = page_of;
+        // `page_of` (and `flow_pos`) are now continuous; overflow content is
+        // rendered and clipped by the fixed viewport `viewBox` at rasterization
+        // rather than dropped, so no per-label page filter is recorded.
         // Assemble the per-page render documents: one standalone Typst document
         // per (scene, page), each containing only that page's mobjects laid out
         // from the top in raw flow ("裸排"), with the scene's runtime context

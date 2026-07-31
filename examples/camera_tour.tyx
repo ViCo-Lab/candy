@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // A cinematic "camera tour": a field of labelled markers is explored with the
 // global `#camera` (pan + zoom + rotate), then a nested scene presents a title

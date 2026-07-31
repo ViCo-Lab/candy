@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #move-along-path — docs/reference/directives.md
 // Move a target along a polyline through `path` (array of (x, y) points in cm,

@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #video — docs/reference/directives.md
 // Insert a video reference as a placeholder mobject (Typst cannot embed video).

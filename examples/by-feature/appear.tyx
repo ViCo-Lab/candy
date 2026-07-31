@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #appear / #disappear — docs/reference/directives.md
 // Instant visibility toggle (no interpolation). Useful for

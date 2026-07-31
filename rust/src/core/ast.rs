@@ -19,6 +19,37 @@ pub const PT_PER_CM: f64 = 28.346_456_692_913_385;
 /// Default canvas size in Typst points: 16 cm × 9 cm (16:9 slide).
 pub const DEFAULT_PAGE_PT: (f64, f64) = (16.0 * PT_PER_CM, 9.0 * PT_PER_CM);
 
+/// Global canvas / export configuration for a Candy animation, declared once
+/// per `.tyx` via the `candy` show rule:
+///
+/// ```typst
+/// #show: candy
+/// #show: candy.with(width: 13.33in, height: 7.5in, ppi: 144, fps: 30)
+/// ```
+///
+/// `width_pt` / `height_pt` are the *viewport* dimensions in Typst points.
+/// The rendering canvas equals `(width_pt, height_pt)` for every scene (the
+/// page size is derived from the global config, not per-scene `width` /
+/// `height` — those were deprecated in favor of `candy`). `ppi` drives
+/// rasterization resolution and `fps` the output frame rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GlobalConfig {
+    pub width_pt: f64,
+    pub height_pt: f64,
+    pub ppi: u32,
+    pub fps: u32,
+}
+impl GlobalConfig {
+    /// The default global config, matching `show: candy` with no overrides:
+    /// `width: 13.33in`, `height: 7.5in`, `ppi: 144`, `fps: 30`.
+    pub const DEFAULT: GlobalConfig = GlobalConfig {
+        width_pt: 13.33 * 72.0,
+        height_pt: 7.5 * 72.0,
+        ppi: 144,
+        fps: 30,
+    };
+}
+
 /// Unique identifier for an animatable element.
 ///
 /// Matches an `@label` reference in Typst / the `.tyx` DSL. Serialized
@@ -745,6 +776,13 @@ pub struct ParseArtifacts {
     /// UnknownKey) point at the *usage* site when the name is never declared.
     /// Default-empty so synthetic `Scene`s (tests) stay trivial.
     pub name_ref_locs: HashMap<String, SourceLoc>,
+    /// Global canvas / export config declared via the `candy` show rule
+    /// (`show: candy` / `show: candy.with(...)`). Defaults to
+    /// [`GlobalConfig::DEFAULT`]. The rendering canvas equals
+    /// `(config.width_pt, config.height_pt)` for every scene. Not serialized
+    /// as part of the document body; it is a re-derivable cache of the
+    /// `candy` config, defaulting for synthetic (hand-built) `Scene`s.
+    pub config: GlobalConfig,
 }
 
 impl Scene {
@@ -788,9 +826,11 @@ impl Scene {
     }
 
     /// Resolve the effective canvas size (in Typst points) for `scene_id`,
-    /// inheriting from the nearest ancestor that declares a page size, then
-    /// the root scene, then the 16:9 default. A scene that declares no
-    /// `width`/`height` therefore fills its parent's canvas.
+    /// inheriting from the nearest ancestor that declares a page size, then the
+    /// root scene, then the 16:9 default. After `parse_tyx` the root scene's
+    /// `page_size` is set from the global `candy` config, so every scene renders
+    /// on the global viewport. (Per-scene `width`/`height` on `#scene` are
+    /// deprecated and ignored — they no longer set the canvas.)
     pub fn effective_page_pt(&self, scene_id: usize) -> (f64, f64) {
         let mut cur = Some(scene_id);
         while let Some(id) = cur {

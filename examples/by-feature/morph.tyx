@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #morph — docs/reference/directives.md
 // Morph one mobject into another by crossfade + scale (simplified Morph).

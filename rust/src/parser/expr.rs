@@ -64,6 +64,10 @@ pub(crate) const CANDY: &[&str] = &[
     // Scene module: `scene` establishes a nestable, scope-bounded, one-page
     // segment of the timeline (parent auto-hides when a child is active).
     "scene",
+    // Global animation config: `candy` is the show-rule target that declares the
+    // global canvas / resolution / frame rate (`show: candy` /
+    // `show: candy.with(width:.., height:.., ppi:.., fps:..)`).
+    "candy",
     // Easing-counter module: `ecnew` defines a named integer counter, `ecval`
     // reads its current integer value (substituted per-frame by the renderer),
     // and `ecpause` / `ecresume` / `ecdestroy` drive its lifecycle. `ecval` is a

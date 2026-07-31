@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #typewriter — docs/reference/directives.md
 // Convenience alias for #reveal(.., by: "char") — a classic typewriter reveal.

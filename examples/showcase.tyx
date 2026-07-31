@@ -15,6 +15,7 @@
 //   move-along-path · zoom-to · track · camera · group · reveal · typewriter
 //   morph · transform · ecnew · ecval · ecpause · ecresume · ecdestroy
 #import "@preview/candy:0.1.0": *
+#show: candy
 #scene(name: "intro", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
   // Title card: spiral in from a scaled / rotated / invisible state.
   #mobject("title", text(34pt, weight: "bold", fill: rgb("#7fe3ff"))[Candy — directive showcase])

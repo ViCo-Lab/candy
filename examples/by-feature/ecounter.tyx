@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #ecnew / #ecval — docs/reference/counters.md
 // Register an animatable integer counter; read it via #ecval. Under standard

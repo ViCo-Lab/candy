@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #play — docs/reference/directives.md
 // Show a block of content for `duration` milliseconds as its own animation

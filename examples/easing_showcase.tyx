@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Demonstrates every named easing curve plus the custom `expr:` and `bezier:`
 // easings. Each dot slides the same distance with a different rate curve so the

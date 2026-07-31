@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // A long, step-by-step math derivation — the quadratic formula — driven by
 // `#transform` (morph the running equation in place), `#subtitle` (on-screen

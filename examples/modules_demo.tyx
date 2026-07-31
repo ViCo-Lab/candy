@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 #scene(width: 16cm, height: 9cm, bg: white)[
 

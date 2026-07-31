@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #kcnew / #kcpush / #kcval — docs/reference/counters.md
 // Register a discrete keyframe counter; push keyframes at runtime (the keyframe

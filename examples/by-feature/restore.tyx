@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #restore — docs/reference/directives.md
 // Interpolate back to a previously saved state (see #save_state).

@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #scene — docs/tutorial/scenes-camera-groups.md
 // Define a sized, backgrounded canvas. Multiple scenes are mutually exclusive

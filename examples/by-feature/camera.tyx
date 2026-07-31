@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #camera — docs/reference/directives.md
 // A global camera move (pan + zoom + rotate) applied to the whole scene.

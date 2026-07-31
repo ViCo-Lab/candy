@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: helpers & constants — docs/reference/directives.md
 // Direction vectors (cm): dir-left/right/up/down/...; scale factors: grow (150%)

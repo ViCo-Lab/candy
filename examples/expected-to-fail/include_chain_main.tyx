@@ -6,6 +6,7 @@
 // include chain is printed as layer-by-layer "included from …" trace frames
 // (`mid`'s `#include "child"` line, then THIS file's `#include "mid"` line).
 #import "@preview/candy:0.1.0": *
+#show: candy
 #include "include_chain_mid.tyx"
 
 #mobject("a", circle(radius: 1cm))

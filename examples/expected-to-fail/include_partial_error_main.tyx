@@ -5,6 +5,7 @@
 // (the `panic("boom")` line in `include_partial_error_child.tyx`), with this
 // file's `#include` call kept as an "included from …" trace frame.
 #import "@preview/candy:0.1.0": *
+#show: candy
 #include "include_partial_error_child.tyx"
 
 #mobject("a", circle(radius: 1cm))

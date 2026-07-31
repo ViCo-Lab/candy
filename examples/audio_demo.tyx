@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Demonstrates `#audio` — attach a voice / audio track to the animation. The
 // audio file is referenced by path; place `voice.opus` (or `.aac` for MP4) next

@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #fade-transform — docs/reference/directives.md
 // Crossfade two pre-registered mobjects: fade out `from` while fading in `to`.

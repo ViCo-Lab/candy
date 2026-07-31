@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #subtitle with fixed style — white text, black stroke
 // Demonstrates maximum contrast subtitle on any background.

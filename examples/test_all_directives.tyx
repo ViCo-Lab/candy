@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #mobject("box", rect(width: 2cm, height: 2cm, fill: red))

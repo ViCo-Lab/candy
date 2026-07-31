@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #audio — docs/reference/directives.md
 // Insert a voice / audio track. Inert under standard Typst.

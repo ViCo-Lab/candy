@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Pillars 1-3 verification: track (multi-keyframe), camera (pan/zoom),
 // group (parent-child transform), reveal/typewriter (text animation).

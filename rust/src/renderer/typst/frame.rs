@@ -322,7 +322,6 @@ impl Renderer {
             .filter(|(l, s)| {
                 let owner = self.label_scene.get(*l).copied().unwrap_or(active);
                 owner == active
-                    && self.label_page.get(*l).is_none_or(|&p| p == 0)
                     && !self.transform_hidden(l, time_ms)
                     && s.opacity > 1e-4
                     && s.opacity < 1.0 - 1e-4

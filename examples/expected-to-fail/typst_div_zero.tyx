@@ -2,5 +2,6 @@
 // raises a Typst error (here, integer division by zero) must surface the
 // underlying Typst diagnostic instead of a generic candy error.
 #import "@preview/candy:0.1.0": *
+#show: candy
 #mobject("a", #(1 / 0))
 #animate("a", to: (4cm, 0pt), duration: 30)

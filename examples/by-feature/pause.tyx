@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #pause — docs/reference/directives.md
 // Hold the current frame for `duration` milliseconds. Inert under standard Typst.

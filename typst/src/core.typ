@@ -55,21 +55,49 @@
 ///   a human-readable name. Then use `#scene-switch(target: "foo")` to jump the
 ///   timeline cursor to that scene. Anonymous scenes get auto-assigned UUID
 ///   names (e.g., `"scene_a1b2c3d4"`) which can also be targeted.
+/// Configure the global canvas / resolution / frame rate for the whole
+/// animation. Call it as a show rule at the top of your `.tyx`:
 ///
-/// Call `scene` at the top of your `.tyx` to set the canvas size. Without it,
-/// candy defaults to 16cm × 9cm.
+/// ```typst
+/// #show: candy
+/// #show: candy.with(width: 13.33in, height: 7.5in, ppi: 144, fps: 30)
+/// ```
+///
+/// - `width` / `height`: the *viewport* dimensions (default `13.33in × 7.5in`).
+/// - `ppi`: pixels per inch for rasterization (default `144`).
+/// - `fps`: output frame rate (default `30`).
+///
+/// The page size is derived from this config; per-scene `width` / `height` /
+/// `bg` on `#scene` are deprecated and ignored. Under a plain `typst compile`
+/// this `set page` is what sizes the first-frame preview.
+#let candy(width: 13.33in, height: 7.5in, ppi: 144, fps: 30, body) = {
+  set page(width: width, height: height, margin: 0pt)
+  body
+}
+
+/// Define a scene — a nestable, scope-bounded segment of the timeline.
+///
+/// `#scene(width: 16cm, height: 9cm, bg: white, body)` is **deprecated**: the
+/// per-scene `width` / `height` / `bg` no longer size the canvas. Configure the
+/// whole animation globally via the `candy` show function instead:
+///
+/// ```typst
+/// #show: candy
+/// ```
+///
+/// `scene` no longer sets the page; it relies on the global `candy` config (and
+/// any `#set page`) for the canvas. Under candy's renderer the active-scene
+/// gating is injected around this call by the Rust toolchain. Under a plain
+/// `typst compile` the body renders inside the `candy`-configured page.
 #let scene(name: none, width: 16cm, height: 9cm, bg: white, body) = {
   if name != none and type(name) != str {
     panic("scene name must be a string")
   }
-  _assert_length(width, "scene width")
-  _assert_length(height, "scene height")
-  // Under candy's whole-document renderer the gating (which scene is active
-  // each frame) is injected *around* this call by the Rust toolchain — this
-  // function stays a clean, standard-Typst `page()` so it renders the first
-  // frame correctly under a plain `typst compile` too. See
-  // `rust/src/renderer/typst/source.rs` for the gating wrapper.
-  page(width: width, height: height, margin: 0pt, fill: bg, body)
+  // DEPRECATED (2026-07): width/height/bg are ignored. The renderer emits W021
+  // when they are present; the global `candy` config drives the viewport.
+  // `scene` returns its body so the surrounding `candy` show rule (and any
+  // `#set page`) provides the page.
+  body
 }
 
 /// Switch to a named scene by `target` (the scene's `name:` value or UUID-like

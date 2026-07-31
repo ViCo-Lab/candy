@@ -140,11 +140,12 @@ pub struct Renderer {
     scene_pages: HashMap<usize, (f64, f64)>,
     /// label -> owning scene id (for parent auto-hide).
     label_scene: HashMap<Label, usize>,
-    /// Per-label page assignment: `0` is the single viewport page; `>0` marks
-    /// content that overflowed the viewport and is dropped from the output.
-    /// Used by `assemble_page_doc` / `build_frame_inputs` to filter to the
-    /// viewport interior.
-    label_page: HashMap<Label, usize>,
+    /// Per-scene compile-page height (pt). Kept taller than the viewport so
+    /// off-viewport (overflow) mobjects stay on a single Typst page and are
+    /// clipped at rasterization by the fixed viewport `viewBox`, rather than
+    /// being split into extra pages and silently dropped. The output `viewBox`
+    /// is the viewport (`scene_pages` / `page_w`/`page_h`), not this height.
+    scene_doc_h: HashMap<usize, f64>,
     /// Precomputed outline interpolators for `#morph` pairs, keyed by
     /// `(from, to)`. Built once in `ensure_flow` (the expensive part:
     /// render both bodies to SVG, extract + align their outline rings). Each
@@ -269,7 +270,7 @@ impl Renderer {
             flow_computed: false,
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
-            label_page: HashMap::new(),
+            scene_doc_h: HashMap::new(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
             cam_start: None,
@@ -737,7 +738,7 @@ pub(crate) fn compile_file_for_test(
 /// the switch and the NEW content after, without corrupting earlier frames).
 #[test]
 fn content_timeline_swaps_rendered_body() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"box\", rect(width: 2cm, height: 2cm))\n\
                #transform(\"box\", to: circle(radius: 1cm), duration: 50)\n\
@@ -820,13 +821,14 @@ where
     (r, out)
 }
 
-/// Regression: a `.tyx` whose explicit `#scene` calls use different page sizes
-/// must emit `W019` (SceneSizeMismatch). The reported sizes are the *measured*
-/// Typst-compile sizes ("以实际获取为准"), not merely the declared arguments.
+/// Regression: under the global `candy` config, the canvas is a single uniform
+/// page owned by `#show: candy`. Per-scene `width`/`height` args are deprecated
+/// (W021), so two scenes with differing *declared* sizes no longer produce a
+/// measured-size mismatch and must NOT emit W019 (SceneSizeMismatch).
 #[cfg(unix)]
 #[test]
-fn scene_size_mismatch_warns_w019() {
-    let src = "#import \"candy\": *\n\
+fn deprecated_scene_sizes_uniform_canvas_w021_not_w019() {
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 10cm, height: 6cm)[\n\
                #mobject(\"a\", rect(width: 5cm, height: 1cm))\n\
                ]\n\
@@ -835,30 +837,33 @@ fn scene_size_mismatch_warns_w019() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_w019_mismatch.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
+    // W021 (deprecated per-scene size) is emitted during parsing.
+    let (scene, parse_stderr) =
+        capture_stderr(|| crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap());
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    let ((), stderr) = capture_stderr(|| {
+    let ((), flow_stderr) = capture_stderr(|| {
         r.ensure_flow_public().unwrap();
     });
     std::fs::remove_file(&tmp).ok();
 
+    // Deprecated per-scene sizes are warned (W021), but the uniform canvas
+    // means there is no measured mismatch to warn about (W019).
     assert!(
-        stderr.contains("W019"),
-        "inconsistent scene page sizes must emit W019; stderr was:\n{stderr}"
+        parse_stderr.contains("W021"),
+        "deprecated per-scene sizes must emit W021; stderr was:\n{parse_stderr}"
     );
     assert!(
-        stderr.contains("inconsistent page sizes"),
-        "W019 message should list the inconsistent scene sizes; stderr was:\n{stderr}"
+        !flow_stderr.contains("W019"),
+        "uniform canvas must not emit W019; stderr was:\n{flow_stderr}"
     );
 
-    // The per-scene canvas must hold the *measured* (actual) sizes — here the
-    // two scenes differ in height (6cm vs 9cm).
+    // The measured scene heights are now identical (single global canvas).
     let heights: Vec<f64> = r.scene_pages.values().map(|(_, h)| *h).collect();
     let max = heights.iter().cloned().fold(0.0_f64, f64::max);
     let min = heights.iter().cloned().fold(f64::INFINITY, f64::min);
     assert!(
-        (max - min) > 1.0,
-        "measured scene heights should differ; got {:?}",
+        (max - min) < 1.0,
+        "measured scene heights should be uniform under the global config; got {:?}",
         heights
     );
 }
@@ -870,7 +875,7 @@ fn scene_size_mismatch_warns_w019() {
 #[cfg(unix)]
 #[test]
 fn bare_root_respects_page_settings_no_w019() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #set page(width: 12cm, height: 7cm)\n\
                #mobject(\"a\", rect(width: 5cm, height: 1cm))\n";
     let tmp = std::env::temp_dir().join("candy_test_w019_bareroot.tyx");
@@ -918,9 +923,10 @@ fn include_error_traces_to_include_call_site() {
     // which already imports it. This mirrors how the `include_common.tyx`
     // example partial is written without its own import.
     std::fs::write(&child, "#mobject(\"b\", panic(\"boom\"))\n").unwrap();
-    let src = "#import \"candy\": *\n#include \"candy_test_include_trace_child.tyx\"\n\
+    let src =
+        "#import \"candy\": *\n#show: candy\n#include \"candy_test_include_trace_child.tyx\"\n\
          #mobject(\"a\", circle(radius: 1cm))\n"
-        .to_string();
+            .to_string();
     std::fs::write(&main, &src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&main, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -976,7 +982,7 @@ fn include_error_traces_through_nested_includes() {
         "#include \"candy_test_chain_child.tyx\"\n#mobject(\"m\", circle(radius: 1cm))\n",
     )
     .unwrap();
-    let src = "#import \"candy\": *\n#include \"candy_test_chain_mid.tyx\"\n\
+    let src = "#import \"candy\": *\n#show: candy\n#include \"candy_test_chain_mid.tyx\"\n\
          #mobject(\"a\", circle(radius: 1cm))\n"
         .to_string();
     std::fs::write(&main, &src).unwrap();
@@ -1491,7 +1497,7 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
 /// entry as the old body.
 #[test]
 fn transform_splits_inline_content_into_glyph_fragments() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -1533,7 +1539,7 @@ fn transform_splits_inline_content_into_glyph_fragments() {
 /// window from the original paint to the target color.
 #[test]
 fn set_color_recolors_body_and_lerps() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"box\", rect(width: 2cm, height: 2cm, fill: red))\n\
                #set-color(\"box\", color: green, duration: 300, easing: \"smooth\")\n\
@@ -1564,7 +1570,7 @@ fn set_color_recolors_body_and_lerps() {
 /// NEW content (the content-timeline swap), not disappear.
 #[test]
 fn transform_target_renders_after_window() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -1651,7 +1657,7 @@ fn transform_target_renders_after_window() {
 fn chained_transform_persists_intermediate() {
     let v = crate::typst_package_version().expect("typst/typst.toml must declare a `version`");
     let pkg = format!("@preview/candy:{v}");
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -1746,7 +1752,7 @@ fn chained_transform_persists_intermediate() {
 /// edges instead of the canvas background color.
 #[test]
 fn camera_background_stays_fixed_outside_camera_group() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm, bg: rgb(\"#05060f\"))[\n\
                #mobject(\"a\", circle(radius: 1cm, fill: blue))\n\
                ]\n";
@@ -1814,7 +1820,7 @@ fn camera_background_stays_fixed_outside_camera_group() {
 /// multi-byte char. `reveal_wrap_body` now slices the codepoint array instead.
 #[test]
 fn typewriter_multibyte_prefix_does_not_panic() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"outro\", \"The quadratic formula — done.\")\n\
                #typewriter(\"outro\", duration: 100)\n\
@@ -1862,7 +1868,7 @@ fn typewriter_multibyte_prefix_does_not_panic() {
 /// garbage" artefact). This pins the restored SVG rendering path.
 #[test]
 fn transform_overlay_uses_defs_and_use_in_svg() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -1930,7 +1936,7 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
 /// move/scale/rotate on the transformed label silently did nothing).
 #[test]
 fn transform_composes_with_concurrent_animate() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -2040,13 +2046,13 @@ fn transform_translation_animate_shifts_all_fragments() {
     // come BEFORE the transform for the translation to be live during the
     // transform window (at the transform's mid, the animate has already
     // finished and its dx=5cm is inherited as the transform's base offset).
-    let base = "#import \"candy\": *\n\
+    let base = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";
-    let moved = "#import \"candy\": *\n\
+    let moved = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #animate(\"eq\", dx: 5cm, duration: 60)\n\
@@ -2090,7 +2096,7 @@ fn transform_translation_animate_shifts_all_fragments() {
 /// formula fragments off-screen or create a displaced duplicate).
 #[test]
 fn chained_transforms_hide_future_tmp_during_first_window() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #animate(\"eq\", to: (0cm, 3cm), duration: 60)\n\
@@ -2184,7 +2190,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
 /// show the block prematurely.
 #[test]
 fn play_block_hidden_when_not_rendered() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #mobject(\"a\", rect(width: 3cm, height: 1cm))\n\
                #play(rect(width: 2cm, height: 1cm, fill: green), duration: 25)\n";
     let tmp = std::env::temp_dir().join("candy_test_play_hide.tyx");
@@ -2230,7 +2236,7 @@ fn play_block_hidden_when_not_rendered() {
 /// and whose line text is the offending source line.
 #[test]
 fn e005_typst_error_carries_source_location() {
-    let src = "#import \"candy\": *\n\
+    let src = "#import \"candy\": *\n#show: candy\n\
                #scene(width: 16cm, height: 9cm)[\n\
                #mobject(\"bad\", #(1cm + \"x\"))\n\
                ]\n";

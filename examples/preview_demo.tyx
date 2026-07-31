@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 #import "@preview/cetz:0.4.0": *
 
 // Demonstrates that candy's in-process World (via typst-kit) resolves and

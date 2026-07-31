@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #blink — docs/reference/directives.md
 // Alternate opacity 1↔0 `blinks` times.

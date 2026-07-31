@@ -6,4 +6,5 @@
 // a → b → a; reusing the same partial on *different* branches — a diamond —
 // is allowed.)
 #import "@preview/candy:0.1.0": *
+#show: candy
 #include "include_circular.tyx"

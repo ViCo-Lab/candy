@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #track — docs/reference/directives.md
 // Drive a single target through several keyframes (a timeline track that

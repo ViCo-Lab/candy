@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // Feature: #subtitle — docs/reference/directives.md
 // Overlay `body` (any Typst block content) on top of the animation.

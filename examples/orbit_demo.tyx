@@ -1,4 +1,5 @@
 #import "@preview/candy:0.1.0": *
+#show: candy
 
 // A tiny orrery: a sun at the center, a ring of eight moons grouped with
 // `#group` and spun with `#animate(rotate:)`, plus a planet that orbits along a
