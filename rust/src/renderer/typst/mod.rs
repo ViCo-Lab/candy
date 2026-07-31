@@ -907,14 +907,14 @@ fn double_overflow_dwell_windows_are_disjoint_and_anchored() {
     assert!(wins.iter().all(|w| w.sid != 0), "root gets no dwell window");
 }
 
-/// The multi-page overflow condition must be surfaced as a registered,
-/// non-fatal warning code `W018` (the user asked for "detect multi-page →
-/// throw a warning (register a new code)"). Verifies the code is wired up.
+/// The content-overflow condition must be surfaced as a registered,
+/// non-fatal warning code `W018` (content that spills past the single-page
+/// viewport is dropped, so the user is warned). Verifies the code is wired up.
 #[test]
-fn multipage_warning_code_is_registered() {
+fn content_overflow_warning_code_is_registered() {
     use crate::core::diag::CandyWarn;
     assert_eq!(
-        CandyWarn::MultiPage("scene 'x' overflows".into()).code(),
+        CandyWarn::ContentOverflow("scene 'x' overflows".into()).code(),
         "W018"
     );
 }

@@ -610,14 +610,15 @@ pub enum CandyWarn {
     /// offending `kcpush` is effectively repositioned rather than errored.
     KeyframeOffsetClamp(String, SourceLoc),
 
-    /// W018 — A scene's flow layout overflowed its single page: the content
-    /// spilled onto additional pages, which play **in sequence** on the
-    /// single-page canvas (they do not grow the canvas). This is usually
-    /// unintentional (content was expected to fit one screen), so candy warns
-    /// with the scene name and page count.
+    /// W018 — A scene's content overflowed the single-page viewport: the flow
+    /// layout spilled past the declared/page height, so anything beyond the
+    /// viewport is dropped (only the viewport interior is rendered — multi-page
+    /// output is no longer supported). This is usually unintentional (the
+    /// content was expected to fit one screen), so candy warns with the scene
+    /// name.
     ///
-    /// Field: a description like `scene 'intro' overflows onto 3 pages`.
-    MultiPage(String),
+    /// Field: a description like `scene 'intro' content overflows the viewport`.
+    ContentOverflow(String),
 
     /// W019 — The scenes of a single `.tyx` use inconsistent page sizes. Each
     /// scene's size is the one **actually produced** by the Typst compile
@@ -654,7 +655,7 @@ impl CandyWarn {
             CandyWarn::CallingPrivate(_, _) => "W015",
             CandyWarn::Interpolation(_) => "W016",
             CandyWarn::KeyframeOffsetClamp(_, _) => "W017",
-            CandyWarn::MultiPage(_) => "W018",
+            CandyWarn::ContentOverflow(_) => "W018",
             CandyWarn::SceneSizeMismatch(_) => "W019",
         }
     }
@@ -723,10 +724,10 @@ impl CandyWarn {
             CandyWarn::KeyframeOffsetClamp(d, _) => {
                 format!("parse: {d}")
             }
-            CandyWarn::MultiPage(d) => {
+            CandyWarn::ContentOverflow(d) => {
                 format!(
-                    "render: {d}; overflow pages play in sequence on the \
-                     single-page canvas (the canvas does not grow)"
+                    "render: {d}; only the viewport interior is rendered, so \
+                     content beyond it is dropped"
                 )
             }
             CandyWarn::SceneSizeMismatch(d) => {
@@ -772,9 +773,9 @@ impl CandyWarn {
                 "pass a string literal (\"...\") as the body so char/word reveal can measure its \
                  length; falling back to FadeIn",
             ),
-            CandyWarn::MultiPage(_) => Some(
-                "position mobjects with absolute `to:` coordinates, shrink the content, or split \
-                 it into multiple #scene blocks so each scene fits its page",
+            CandyWarn::ContentOverflow(_) => Some(
+                "shrink the content or position mobjects with absolute `to:` coordinates so it \
+                fits the viewport, or split it into multiple #scene blocks",
             ),
             CandyWarn::SceneSizeMismatch(_) => Some(
                 "give every #scene the same width/height (a scene that omits them renders at the \

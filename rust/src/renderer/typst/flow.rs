@@ -394,8 +394,10 @@ impl Renderer {
             // The scene's true page count follows the mobjects' (now corrected)
             // page assignment. Absolutely-positioned mobjects that all land on
             // page 0 collapse the phantom flow overflow to a single page, so the
-            // page scheduler no longer appends silent dwell windows (blank
-            // frames). Genuine multi-page scenes keep their real count.
+            // content fits the viewport. Any content that lands beyond page 0
+            // overflows the single-page viewport and is dropped (only the
+            // viewport interior is rendered). The warning is emitted when the
+            // flow spills past the first page.
             let true_pages = labels
                 .iter()
                 .filter_map(|l| page_of.get(l))
@@ -403,7 +405,7 @@ impl Renderer {
                 .max()
                 .map(|p| p + 1)
                 .unwrap_or(1);
-            scene_page_counts.insert(sid, true_pages.max(1));
+            scene_page_counts.insert(sid, 1);
             if true_pages > 1 {
                 let name = self
                     .scene
@@ -418,8 +420,8 @@ impl Renderer {
                             format!("#{sid}")
                         }
                     });
-                crate::warn!(CandyWarn::MultiPage(format!(
-                    "scene '{name}' overflows onto {true_pages} pages"
+                crate::warn!(CandyWarn::ContentOverflow(format!(
+                    "scene '{name}' content overflows the viewport"
                 )));
             }
             // Measure the scene's *actual* canvas size from the compiled
