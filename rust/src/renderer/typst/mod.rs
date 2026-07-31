@@ -30,9 +30,6 @@
 //! * [`composite`] — formula-id localization for the per-glyph transform path.
 //! * [`morph`] — shape-`#morph` rendering helpers: ring localization, SVG
 //!   color → Typst conversion, and `polygon(...)` source generation.
-//! * [`pages`] — cross-page scene playback: the per-scene page schedule that
-//!   maps global time to the active page (sequential page playback with frozen
-//!   timelines for the not-yet-active pages).
 //! * [`transform`] — per-glyph `#transform` plan types and the body placement
 //!   source builder.
 //!
@@ -51,7 +48,6 @@ pub(crate) mod composite;
 pub(crate) mod content;
 pub(crate) mod lru;
 pub(crate) mod morph;
-pub(crate) mod pages;
 pub(crate) mod svg;
 pub(crate) mod transform;
 pub(crate) mod world;
@@ -69,7 +65,6 @@ pub(crate) use self::composite::*;
 pub(crate) use self::content::*;
 pub(crate) use self::lru::LruCache;
 pub(crate) use self::morph::*;
-pub(crate) use self::pages::*;
 pub(crate) use self::svg::*;
 pub(crate) use self::transform::*;
 pub(crate) use self::world::*;
@@ -145,10 +140,11 @@ pub struct Renderer {
     scene_pages: HashMap<usize, (f64, f64)>,
     /// label -> owning scene id (for parent auto-hide).
     label_scene: HashMap<Label, usize>,
-    /// Cross-page scene playback scheduler: maps global time to the active page
-    /// per scene and records which page each mobject's flow layout landed on.
-    /// See [`pages`].
-    pages: PageScheduler,
+    /// Per-label page assignment: `0` is the single viewport page; `>0` marks
+    /// content that overflowed the viewport and is dropped from the output.
+    /// Used by `assemble_page_doc` / `build_frame_inputs` to filter to the
+    /// viewport interior.
+    label_page: HashMap<Label, usize>,
     /// Precomputed outline interpolators for `#morph` pairs, keyed by
     /// `(from, to)`. Built once in `ensure_flow` (the expensive part:
     /// render both bodies to SVG, extract + align their outline rings). Each
@@ -228,7 +224,7 @@ pub struct Renderer {
     /// This replaces the old whole-document render path: each frame compiles
     /// exactly one of these documents (the active scene's active page) instead
     /// of recompiling the entire document and extracting a page.
-    param_sources: HashMap<(usize, usize), String>,
+    param_sources: HashMap<usize, String>,
     /// Absolute path of the original `.tyx` source file, if known (empty for
     /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
     /// source a real `FileId` so an `E005` points the user at the actual file
@@ -273,7 +269,7 @@ impl Renderer {
             flow_computed: false,
             scene_pages: HashMap::new(),
             label_scene: HashMap::new(),
-            pages: PageScheduler::empty(),
+            label_page: HashMap::new(),
             morph_cache: HashMap::new(),
             transform_fragments: Vec::new(),
             cam_start: None,
@@ -375,16 +371,20 @@ impl Renderer {
     /// typeset — replacing the old whole-document recompile-and-extract-page
     /// approach. Falls back to page 0 of the same scene, then to the
     /// whole-document `param_source`, if a specific page document is missing.
+    /// End of the single-page content timeline in milliseconds (`scene.total_ms`).
+    /// Used as the global end when clamping overshoot sample times.
+    pub(crate) fn global_end_ms(&self) -> u32 {
+        self.scene.total_ms()
+    }
+
     fn compile_page_source(
         &self,
         sid: usize,
-        page: usize,
         inputs: &Dict,
     ) -> Result<Arc<PagedDocument>, CandyError> {
         let src = self
             .param_sources
-            .get(&(sid, page))
-            .or_else(|| self.param_sources.get(&(sid, 0)))
+            .get(&sid)
             .cloned()
             .unwrap_or_else(|| self.param_source.clone());
         self.compile_cached(&src, inputs)
@@ -757,154 +757,6 @@ fn content_timeline_swaps_rendered_body() {
         "content timeline did not change rendered body"
     );
     std::fs::remove_file(&tmp).ok();
-}
-
-/// A cross-page scene whose flow layout overflows onto extra pages must keep
-/// its silent overflow pages *reachable* on the global timeline. The page
-/// scheduler appends a default-dwell window per silent overflow page *after*
-/// the last keyframe, so `max_end_ms` reports a schedule end past the keyframe
-/// timeline and `active_page_of` actually advances onto the overflow page
-/// during that window. This is the scheduling premise behind the render-loop
-/// fix that extends `sample_times` to the schedule end: without it the overflow
-/// pages were timed (a window existed) but never *sampled*, so their content
-/// was never drawn. Regression test for "content after page 1 is only timed
-/// but never displayed".
-///
-/// Driven directly through [`PageScheduler`] (the component that owns the
-/// mapping from global time to active page) so it does not depend on the
-/// Typst flow-layout measurement that decides *how many* pages a scene spilled
-/// onto — only on the scheduler behaviour the fix relies on.
-#[test]
-fn overflow_pages_scheduled_past_timeline() {
-    use crate::core::ast::{Label, Scene, Slide};
-    use crate::renderer::typst::pages::PageScheduler;
-    use std::collections::HashMap;
-
-    // One 300ms slide on the only animated page (page 0); the scene actually
-    // spilled onto 2 pages, with page 1 silent (no animation of its own).
-    let scene = Scene {
-        slides: vec![Slide {
-            start_ms: 0,
-            duration_ms: 300,
-            actions: vec![],
-            loc: None,
-        }],
-        ..Default::default()
-    };
-    // No flow positions: every slide defaults to page 0, so only `page_counts`
-    // carries the "2 pages" fact.
-    let page_of: HashMap<Label, usize> = HashMap::new();
-    let mut page_counts: HashMap<usize, usize> = HashMap::new();
-    page_counts.insert(0, 2);
-
-    let sched = PageScheduler::build(&scene, page_of, &page_counts);
-    let total = scene.total_ms();
-    // The schedule must extend past the keyframe timeline to cover the silent
-    // overflow page's default dwell window.
-    assert!(
-        sched.max_end_ms() > total,
-        "page schedule end {}ms must extend past the keyframe timeline ({}ms) \
-         to cover the overflow page",
-        sched.max_end_ms(),
-        total
-    );
-    // Page 0 plays during the keyframe window; the overflow page is reached
-    // afterwards — proving the renderer can advance onto it and sample it.
-    assert_eq!(sched.active_page_of(0, 0), 0, "page 0 active at t=0");
-    let overflow_mid = total + (sched.max_end_ms() - total) / 2;
-    assert_eq!(
-        sched.active_page_of(0, overflow_mid),
-        1,
-        "overflow page active during its dwell window"
-    );
-}
-
-/// When *two* scenes both overflow, their silent overflow-page dwell windows
-/// must be **disjoint** (allocated sequentially from one shared cursor) and
-/// carry each scene's own content end as the presentation anchor. With a
-/// per-scene cursor both windows started at the same global time, so
-/// `active_scene_at` could only resolve one of them there — the other scene's
-/// overflow page was shadowed and its content silently dropped. Regression
-/// test for "cross-page overflow content must play in sequence, not be
-/// dropped".
-#[test]
-fn double_overflow_dwell_windows_are_disjoint_and_anchored() {
-    use crate::core::ast::{Label, Scene, SceneInfo, Slide};
-    use crate::renderer::typst::pages::PageScheduler;
-    use std::collections::HashMap;
-
-    // Scene A [0,400] then scene B [400,800]; each has one 400ms slide and
-    // spilled onto 2 pages (page 1 silent for both).
-    let mk_scene = |id: usize, name: &str, start: u32, end: u32, label: &str| SceneInfo {
-        id,
-        name: Some(name.to_string()),
-        parent: Some(0),
-        scope: 0,
-        page_size: None,
-        bg: None,
-        start_ms: start,
-        end_ms: end,
-        owns_labels: vec![Label(label.to_string())],
-    };
-    let scene = Scene {
-        scenes: vec![
-            SceneInfo {
-                id: 0,
-                name: Some("root".to_string()),
-                parent: None,
-                scope: 0,
-                page_size: None,
-                bg: None,
-                start_ms: 0,
-                end_ms: 800,
-                owns_labels: Vec::new(),
-            },
-            mk_scene(1, "a", 0, 400, "a1"),
-            mk_scene(2, "b", 400, 800, "b1"),
-        ],
-        slides: vec![
-            Slide {
-                start_ms: 0,
-                duration_ms: 400,
-                actions: vec![],
-                loc: None,
-            },
-            Slide {
-                start_ms: 400,
-                duration_ms: 400,
-                actions: vec![],
-                loc: None,
-            },
-        ],
-        ..Default::default()
-    };
-    let page_of: HashMap<Label, usize> = HashMap::new();
-    let mut page_counts: HashMap<usize, usize> = HashMap::new();
-    page_counts.insert(1, 2);
-    page_counts.insert(2, 2);
-
-    let sched = PageScheduler::build(&scene, page_of, &page_counts);
-    let wins = sched.dwell_windows();
-    assert_eq!(wins.len(), 2, "one dwell window per overflowing scene");
-    // Disjoint and past the 800ms keyframe timeline.
-    for w in wins {
-        assert!(w.start_ms >= 800, "dwell windows live past the timeline");
-    }
-    for pair in wins.windows(2) {
-        assert!(
-            pair[0].end_ms <= pair[1].start_ms || pair[1].end_ms <= pair[0].start_ms,
-            "dwell windows must not overlap: {pair:?}"
-        );
-    }
-    // Each window anchors at its own scene's content end so the render loop
-    // can put the overflow page right after that scene's content.
-    let wa = wins.iter().find(|w| w.sid == 1).expect("scene a window");
-    let wb = wins.iter().find(|w| w.sid == 2).expect("scene b window");
-    assert_eq!(wa.anchor_ms, 400, "scene a's overflow plays after t=400");
-    assert_eq!(wb.anchor_ms, 800, "scene b's overflow plays after t=800");
-    // The pure-container root (no labels, no slides of its own) must NOT get a
-    // phantom dwell window.
-    assert!(wins.iter().all(|w| w.sid != 0), "root gets no dwell window");
 }
 
 /// The content-overflow condition must be surfaced as a registered,
@@ -2324,115 +2176,6 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
     }
 }
 
-/// Regression: a scene whose content overflows its page becomes a **cross-page
-/// scene** — the mobjects stay in ONE scene (data shared: same ownership, same
-/// timeline) but are laid out across the overflow pages, and the renderer plays
-/// the pages **in sequence** on a single-page canvas (it does NOT grow the
-/// canvas). The rendered SVG must therefore be exactly one page tall (not
-/// stacked), and only the current page's mobjects are drawn — so the first
-/// frame shows fewer than all of them; the rest play on later pages.
-#[test]
-fn overflowing_scene_plays_pages_in_sequence() {
-    // A short (2cm-tall) page with six 1cm-tall blocks overflows onto several
-    // pages.
-    let src = "#import \"candy\": *\n\
-               #scene(width: 10cm, height: 2cm)[\n\
-               #mobject(\"a\", rect(width: 5cm, height: 1cm))\n\
-               #mobject(\"b\", rect(width: 5cm, height: 1cm))\n\
-               #mobject(\"c\", rect(width: 5cm, height: 1cm))\n\
-               #mobject(\"d\", rect(width: 5cm, height: 1cm))\n\
-               #mobject(\"e\", rect(width: 5cm, height: 1cm))\n\
-               #mobject(\"f\", rect(width: 5cm, height: 1cm))\n\
-               ]\n";
-    let tmp = std::env::temp_dir().join("candy_test_xpage.tyx");
-    std::fs::write(&tmp, src).unwrap();
-    let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
-    let frames = crate::core::scheduler::schedule(&scene).unwrap();
-    eprintln!(
-        "DBG scenes={:?} items={:?} label_scene={:?}",
-        scene
-            .scenes
-            .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
-            .collect::<Vec<_>>(),
-        scene.items.keys().collect::<Vec<_>>(),
-        scene.label_scene_map(),
-    );
-    eprintln!(
-        "DBG scene_call={:?} artifacts_has={}",
-        scene.artifacts.scene_call,
-        scene.artifacts.source.len()
-    );
-    eprintln!(
-        "DBG active@0={} frames_len={}",
-        scene.active_scene_at(0),
-        frames.len()
-    );
-    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_flow_public().unwrap();
-    let svg = r.render_frame_at(0, &frames).unwrap();
-    eprintln!(
-        "DBG svg_len={} <g>={} <rect={} <path={}",
-        svg.len(),
-        svg.matches("<g").count(),
-        svg.matches("<rect").count(),
-        svg.matches("<path").count(),
-    );
-    eprintln!(
-        "DBG svg_len={} <g>={} <rect={} <path={}",
-        svg.len(),
-        svg.matches("<g").count(),
-        svg.matches("<rect").count(),
-        svg.matches("<path").count(),
-    );
-    eprintln!(
-        "DBG svg_len={} <g>={} <rect={} <path={} contains_candy_n_input_check",
-        svg.len(),
-        svg.matches("<g").count(),
-        svg.matches("<rect").count(),
-        svg.matches("<path").count(),
-    );
-    // Single-page height in pt: 2cm * PT_PER_CM. Native Typst SVG emits the
-    // `height` attribute with a `pt` unit suffix, so strip it before parsing.
-    let page_h_pt = 2.0 * crate::renderer::typst::PT_PER_CM;
-    let h_attr = svg
-        .lines()
-        .find(|l| l.contains("<svg"))
-        .and_then(|l| {
-            let s = l.find("height=\"").unwrap();
-            let start = s + "height=\"".len();
-            let end = l[start..].find('"').unwrap();
-            let raw = &l[start..start + end];
-            raw.strip_suffix("pt").unwrap_or(raw).parse::<f64>().ok()
-        })
-        .expect("svg height attribute");
-    // The canvas must stay exactly ONE page tall — not stacked, not grown.
-    assert!(
-        (h_attr - page_h_pt).abs() < 1.0,
-        "cross-page scene canvas must stay a single page (height {h_attr} ≈ {page_h_pt}), not stacked"
-    );
-    // And the first frame must draw only the current page's mobjects (fewer than
-    // all six), proving sequential page playback rather than one giant canvas.
-    // In Typst 0.15 the mobjects render as `<path>` elements (the unfilled rects
-    // come out as `fill="none"` strokes); the page background is a separate
-    // `fill="#ffffff"` path, so count the stroked mobject paths.
-    let drawn = svg.matches("fill=\"none\"").count();
-    assert!(
-        drawn > 0 && drawn < 6,
-        "first frame should show only the current page's mobjects (drew {drawn} of 6)"
-    );
-    // Sequential playback: a frame deep into the playback (well past the first
-    // page) must also show only the current page's mobjects — never all six
-    // stacked on one canvas, and never blank.
-    let svg_later = r.render_frame_at(4500, &frames).unwrap();
-    let drawn_later = svg_later.matches("fill=\"none\"").count();
-    assert!(
-        drawn_later > 0 && drawn_later < 6,
-        "later frame should still show only one page's mobjects (drew {drawn_later} of 6)"
-    );
-    std::fs::remove_file(&tmp).ok();
-}
-
 /// Regression: a `#play` block that is not yet playing (opacity 0) must be
 /// wrapped in `#hide[…]` so it reserves its flow slot and does NOT flash at
 /// full opacity before its FadeIn window. This must hold on the plain SVG
@@ -2459,12 +2202,10 @@ fn play_block_hidden_when_not_rendered() {
     let active0 = scene.active_scene_at(0);
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
     r.ensure_flow_public().unwrap();
-    // Single-page scene: the play block lives on page 0.
-    let page0 = 0usize;
     let (states0, _) = r.prepare_states(&frames, 0);
     // Draft path (hide_fading = false): the not-yet-playing play block must be
     // flagged `hide` so `wrap_mobject_inputs` reserves its slot.
-    let inputs0 = r.build_frame_inputs(&states0, active0, page0, false, 0);
+    let inputs0 = r.build_frame_inputs(&states0, active0, false, 0);
     assert!(
         matches!(
             inputs0.get(&format!("candy:{}:hide", block.0)).ok(),

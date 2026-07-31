@@ -219,7 +219,7 @@ impl Renderer {
         // overflows its single page becomes a *cross-page scene*: its mobjects
         // stay in ONE scene (data shared) but are laid out across several pages,
         // and the renderer plays the pages in sequence (see [`pages`]).
-        let mut scene_page_counts: HashMap<usize, usize> = HashMap::new();
+
         // The *actual* (measured) canvas size per scene, read back from the
         // compiled measurement document — the authoritative size, since the
         // Typst-side `scene()` default (16cm × 9cm) can differ from the
@@ -251,8 +251,7 @@ impl Renderer {
                 inputs.insert("candy:active_scene".into(), Value::Int(sid as i64));
             }
             let doc = self.compile(&self.param_source, &inputs)?;
-            let page_count = doc.pages().len().max(1);
-            scene_page_counts.insert(sid, page_count);
+
             // Page height (pt) of this scene's canvas — used to convert the
             // continuous-flow introspector position into a *per-page* (in-page)
             // flow position, since each page is laid out independently from the
@@ -405,7 +404,6 @@ impl Renderer {
                 .max()
                 .map(|p| p + 1)
                 .unwrap_or(1);
-            scene_page_counts.insert(sid, 1);
             if true_pages > 1 {
                 let name = self
                     .scene
@@ -482,8 +480,8 @@ impl Renderer {
                 // from the Rust-side declared/inherited size. Scenes whose size
                 // could not be measured (e.g. an empty root while explicit
                 // scenes exist) fall back to the declared/inherited size.
-                // Overflow pages play in sequence on this single-page canvas;
-                // they do NOT stack vertically (see [`pages`]).
+                // Overflow content is dropped; only the single viewport page is
+                // rendered, so pages do not stack vertically.
                 let (pw, ph) = measured_pages
                     .get(&s.id)
                     .copied()
@@ -524,54 +522,28 @@ impl Renderer {
                 )));
             }
         }
-        // Build the cross-page scene playback scheduler. This partitions each
-        // scene's timeline into page-segments (see [`pages`]): each page has its
-        // own independent timeline, and the renderer auto-advances from one page
-        // to the next once the current page's content has finished playing.
-        self.pages = PageScheduler::build(&self.scene, page_of, &scene_page_counts);
+        // Record the per-label page assignment so the renderer filters to the
+        // viewport interior (page 0); overflow pages are dropped (only viewport
+        // content is rendered).
+        self.label_page = page_of;
         // Assemble the per-page render documents: one standalone Typst document
         // per (scene, page), each containing only that page's mobjects laid out
         // from the top in raw flow ("裸排"), with the scene's runtime context
         // injected via its preamble. This replaces the old whole-document
         // recompile-and-extract-page render path.
-        let mut param_sources: HashMap<(usize, usize), String> = HashMap::new();
+        let mut param_sources: HashMap<usize, String> = HashMap::new();
         let assembly_ids: Vec<usize> = if self.scene.scenes.is_empty() {
             vec![0]
         } else {
             self.scene.scenes.iter().map(|s| s.id).collect()
         };
         for sid in &assembly_ids {
-            let page_count = scene_page_counts.get(sid).copied().unwrap_or(1).max(1);
-            for page in 0..page_count {
-                let doc = self.assemble_page_doc(*sid, page);
-                param_sources.insert((*sid, page), doc);
-            }
+            let doc = self.assemble_page_doc(*sid);
+            param_sources.insert(*sid, doc);
         }
         self.param_sources = param_sources;
-        // A cross-page scene's mobjects play out across its overflow pages, so
-        // its content is "on stage" for the *entire* page-playback schedule —
-        // not just its (often zero-duration) content interval. Extend each
-        // scene's `end_ms` to cover its schedule so `active_scene_at` keeps the
-        // scene active while the pages play in sequence; otherwise the scene's
-        // interval would close immediately and `active_scene_at` would fall back
-        // to the empty root scene, leaving every page after the first blank.
-        if !self.scene.scenes.is_empty() {
-            for s in self.scene.scenes.iter_mut() {
-                // Skip pure-container scenes (e.g. a `#scene`-wrapping root that
-                // owns no mobjects): their schedule can carry a trailing pause
-                // slide with no renderable content, and stretching such a scene's
-                // `end_ms` would only widen the window in which the empty
-                // container is the sole "active" scene (blank frames).
-                if s.owns_labels.is_empty() {
-                    continue;
-                }
-                if let Some(end) = self.pages.schedule_end_ms(s.id) {
-                    if end > s.end_ms {
-                        s.end_ms = end;
-                    }
-                }
-            }
-        }
+        // Single-page rendering: content never spills onto extra pages, so no
+        // scene `end_ms` extension is needed.
         // Precompute morph plans (the expensive part) exactly once. For each
         // `#morph(from, to)` pair we render both bodies to SVG, extract their
         // outline rings, normalize each ring to its own local origin, and build

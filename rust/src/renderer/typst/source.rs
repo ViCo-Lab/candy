@@ -571,7 +571,7 @@ impl Renderer {
     /// Typst flow ("裸排"), in declaration order. Mobjects with no recorded page
     /// (absent from the flow layout) are emitted on every page so they keep
     /// rendering exactly as they did under the whole-document path.
-    pub(crate) fn assemble_page_doc(&self, sid: usize, page: usize) -> String {
+    pub(crate) fn assemble_page_doc(&self, sid: usize) -> String {
         let mut doc = self.scene_context_preamble(sid);
         let label_scene = self.scene.label_scene_map();
         let owns: Vec<Label> = if self.scene.scenes.is_empty() {
@@ -595,9 +595,10 @@ impl Renderer {
             if label.0.starts_with("__block_") {
                 continue;
             }
-            // Page filter: skip mobjects that landed on a different page.
-            if let Some(p) = self.pages.page_of(label) {
-                if p != page {
+            // Page filter: skip mobjects that overflowed the viewport (page > 0).
+            // Only the viewport interior (page 0) is rendered; overflow is dropped.
+            if let Some(&p) = self.label_page.get(label) {
+                if p != 0 {
                     continue;
                 }
             }
@@ -1008,7 +1009,6 @@ impl Renderer {
         &self,
         states: &HashMap<Label, FrameData>,
         active: usize,
-        active_page: usize,
         hide_fading: bool,
         time_ms: u32,
     ) -> Dict {
@@ -1036,11 +1036,11 @@ impl Renderer {
                 );
                 continue;
             }
-            // Cross-page scenes: only draw mobjects that landed on the page
-            // currently playing. Mobjects without a recorded `page_of` (e.g.
-            // those absent from the flow layout) are drawn on every page.
-            if let Some(p) = self.pages.page_of(label) {
-                if p != active_page {
+            // Only draw mobjects that landed in the viewport (page 0). Mobjects
+            // without a recorded `page_of` (e.g. absent from the flow layout) are
+            // drawn in the viewport too; overflow (page > 0) is dropped.
+            if let Some(&p) = self.label_page.get(label) {
+                if p != 0 {
                     continue;
                 }
             }
@@ -1146,8 +1146,8 @@ impl Renderer {
             if owner != active {
                 continue;
             }
-            if let Some(p) = self.pages.page_of(label) {
-                if p != active_page {
+            if let Some(&p) = self.label_page.get(label) {
+                if p != 0 {
                     continue;
                 }
             }

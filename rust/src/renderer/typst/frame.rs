@@ -57,7 +57,6 @@ impl Renderer {
         transparent_bg: bool,
     ) -> Result<String, CandyError> {
         let active = self.active_scene_for_render(time_ms);
-        let active_page = self.pages.active_page_of(active, time_ms);
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)
         } else {
@@ -66,11 +65,11 @@ impl Renderer {
                 .copied()
                 .unwrap_or((self.page_w, self.page_h))
         };
-        let inputs = self.build_frame_inputs(states, active, active_page, hide_fading, time_ms);
-        // Compile only the active scene's active page as a standalone document
-        // (the per-page render path). Each page is laid out from the top in raw
-        // flow, so the document is single-page; take its first (only) page.
-        let doc = self.compile_page_source(active, active_page, &inputs)?;
+        let inputs = self.build_frame_inputs(states, active, hide_fading, time_ms);
+        // Compile only the active scene's viewport as a standalone document (the
+        // single-page render path). The document is single-page; take its first
+        // (only) page.
+        let doc = self.compile_page_source(active, &inputs)?;
         let page = doc
             .pages()
             .first()
@@ -222,83 +221,12 @@ impl Renderer {
     pub fn ensure_flow_public(&mut self) -> Result<(), CandyError> {
         self.ensure_flow()
     }
-    /// Global end (ms) of the cross-page playback schedule across every scene.
-    ///
-    /// When a scene's content overflows onto extra pages, the page scheduler
-    /// appends playback windows for those pages *after* the last keyframe
-    /// (a default dwell per silent page). The build loop extends its sampled
-    /// timeline to this end so those pages are actually rendered — otherwise
-    /// they would be timed but never displayed. `0` before `ensure_flow` /
-    /// when there is no page schedule.
-    pub fn page_schedule_end_ms(&self) -> u32 {
-        // Ignore pure-container scenes (e.g. a `#scene`-wrapping root that owns no
-        // mobjects of its own): their page schedule can extend past the content
-        // scenes' timelines (a trailing pause slide with no renderable content),
-        // and including them would stretch the sampled timeline into a blank tail
-        // where the empty container is the only "active" scene. Only scenes that
-        // actually own mobjects contribute to the global end of the cross-page
-        // playback schedule.
-        self.pages
-            .scheduled_sids()
-            .into_iter()
-            .filter(|sid| {
-                self.scene
-                    .scenes
-                    .iter()
-                    .find(|s| s.id == *sid)
-                    .is_some_and(|s| !s.owns_labels.is_empty())
-            })
-            .filter_map(|sid| self.pages.schedule_end_ms(sid))
-            .max()
-            .unwrap_or(0)
-    }
-    /// Reorder sampled frame times into **presentation order**.
-    ///
-    /// Silent overflow-page dwell windows live *past* the keyframe timeline
-    /// (they are carved out of a shared cursor after every scene's content —
-    /// see `PageScheduler::build`), but they must *play* right after their own
-    /// scene's content: `A page 1 → A page 2 → B`, not `A page 1 → B → A
-    /// page 2`. Each frame is a pure function of its sample time and the
-    /// streaming pipeline encodes frames strictly in `sample_times` index
-    /// order, so reordering this list is sufficient (and the only place the
-    /// presentation order is decided).
-    ///
-    /// A time inside a dwell window is only relocated when the window's scene
-    /// actually resolves as the active scene there (`active_scene_at`) — a
-    /// boundary sample owned by the next scene stays in place.
-    pub fn presentation_order(&self, mut times: Vec<u32>) -> Vec<u32> {
-        let windows = self.pages.dwell_windows();
-        if windows.is_empty() {
-            return times;
-        }
-        times.sort_by_key(|&t| {
-            for w in windows {
-                if t >= w.start_ms && t < w.end_ms {
-                    // Dwell frames sort at their scene's content end, *before*
-                    // any normal frame at that same time (`0 < 1`), keeping
-                    // their internal chronology via the final `t`.
-                    return (w.anchor_ms, 0u8, t);
-                }
-            }
-            (t, 1u8, t)
-        });
-        times
-    }
     /// The scene to draw at `time_ms`.
     ///
-    /// A silent overflow-page dwell window is authoritative: the windows are
-    /// globally disjoint (carved from one shared cursor past the keyframe
-    /// timeline), whereas `active_scene_at` cannot resolve them — every
-    /// overflowing scene's `end_ms` is extended over the *whole* dwell region,
-    /// so sibling intervals overlap there and the deepest/last scene would
-    /// shadow the others (their overflow pages would render the wrong scene).
-    /// Outside any dwell window this defers to `active_scene_at` as before.
+    /// Single-page rendering: only one page is ever on stage, so the active
+    /// scene is simply the one whose timeline interval contains `time_ms`
+    /// (or `0` when there are no scenes).
     pub(crate) fn active_scene_for_render(&self, time_ms: u32) -> usize {
-        for w in self.pages.dwell_windows() {
-            if time_ms >= w.start_ms && time_ms < w.end_ms {
-                return w.sid;
-            }
-        }
         if self.scene.scenes.is_empty() {
             0
         } else {
@@ -385,7 +313,6 @@ impl Renderer {
     ) -> Result<RenderedFrame, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
         let active = self.active_scene_for_render(time_ms);
-        let active_page = self.pages.active_page_of(active, time_ms);
         // Base: every *non-fading* object at full opacity. Fading objects
         // are excluded from the base and re-composited on top at their
         // opacity, so they never show at full opacity in the base.
@@ -395,7 +322,7 @@ impl Renderer {
             .filter(|(l, s)| {
                 let owner = self.label_scene.get(*l).copied().unwrap_or(active);
                 owner == active
-                    && self.pages.page_of(l).is_none_or(|p| p == active_page)
+                    && self.label_page.get(*l).is_none_or(|&p| p == 0)
                     && !self.transform_hidden(l, time_ms)
                     && s.opacity > 1e-4
                     && s.opacity < 1.0 - 1e-4

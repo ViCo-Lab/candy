@@ -314,14 +314,9 @@ pub fn build_scene_with_gpu(
     sample_times.sort();
     sample_times.dedup();
 
-    // Cross-page scenes: the page scheduler may append playback windows for
-    // overflow pages *after* the last keyframe (a default dwell per page that
-    // received no animation of its own). Extend the sampled timeline to cover
-    // the whole schedule — otherwise those pages are timed by the scheduler
-    // but never rendered (the output ends before their window starts, so
-    // everything past page 1 would be invisible).
     renderer.ensure_flow_public()?;
-    extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
+    let global_end = renderer.global_end_ms();
+    extend_sample_times_to(&mut sample_times, global_end, fps);
 
     // The interpolator deliberately overshoots the sampled timeline by one frame
     // (see `interpolator::interpolate_with`: `n_frames = ceil(...) + 1`) so the
@@ -330,7 +325,6 @@ pub fn build_scene_with_gpu(
     // via `active_scene_at`, producing a blank tail frame. Clamp every sample to
     // the global content end so the overshoot frame instead renders at the valid
     // boundary — i.e. the final, settled state — rather than a blank frame.
-    let global_end = renderer.page_schedule_end_ms();
     for t in sample_times.iter_mut() {
         if *t > global_end {
             *t = global_end;
@@ -338,14 +332,6 @@ pub fn build_scene_with_gpu(
     }
     sample_times.sort();
     sample_times.dedup();
-
-    // Cross-page scenes: relocate each scene's silent overflow-page dwell
-    // frames (scheduled past the keyframe timeline) to right after that
-    // scene's own content, so pages play in sequence *within* their scene
-    // (`A p1 → A p2 → B`) instead of at the tail of the whole video. Frames
-    // are pure functions of their sample time and the pipeline encodes in
-    // index order, so reordering the list is all that's needed.
-    let mut sample_times = renderer.presentation_order(sample_times);
 
     // SVG draft path: write to `.candy/` only (never `dist/`).
     if format == OutputFormat::Svg {
@@ -639,15 +625,10 @@ pub fn check_input(input: Input, ignore_version: bool, fps: u32) -> Result<(), C
     sample_times.sort();
     sample_times.dedup();
 
-    // Extend the sampled timeline over the cross-page playback schedule so
-    // overflow pages are compiled/checked too (mirrors the build).
+    // Extend the sampled timeline over the content (mirrors the build path).
     renderer.ensure_flow_public()?;
-    extend_sample_times_to(&mut sample_times, renderer.page_schedule_end_ms(), fps);
-
-    // Clamp overshoot samples to the global content end (see the build path for
-    // the rationale) so the final check frame is the settled state, not a blank
-    // root frame.
-    let global_end = renderer.page_schedule_end_ms();
+    let global_end = renderer.global_end_ms();
+    extend_sample_times_to(&mut sample_times, global_end, fps);
     for t in sample_times.iter_mut() {
         if *t > global_end {
             *t = global_end;
