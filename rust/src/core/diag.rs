@@ -3,7 +3,7 @@
 //!
 //! | Level  | Stream  | Code | Behavior                                            |
 //! |--------|---------|------|-----------------------------------------------------|
-//! | Error  | stderr  | `E`  | print, then terminate (exit code `64`–`72`, e.g. `E001` → `64`) |
+//! | Error  | stderr  | `E`  | print, then terminate (exit code `64`–`74`, e.g. `E001` → `64`, `E011` → `74`) |
 //! | Error  | stderr  | `EYEE` | batch partial failure → terminate with exit code `111` (NOT the `64` rule) |
 //! | Warn   | stderr  | `W`  | print, continue (non-fatal)                        |
 //! | Debug  | stdout  | —    | print (developer diagnostics)                      |
@@ -296,8 +296,12 @@ pub enum CandyError {
     /// `#scene` argument mistakes — `width` / `height` / `bg` (and any other
     /// unknown argument) are reported here as "not a valid argument for
     /// #scene", and a non-string `name` is reported as a type error — so all
-    /// argument-format problems across the candy API share one code. Carries
-    /// the offending source location when the failure can be tied to a span.
+    /// argument-format problems across the candy API share one code.
+    /// NOTE: a key argument that *is* a string but is **not a valid Typst
+    /// identifier** (e.g. it contains a space, or starts with a digit) is
+    /// reported by `E007 InvalidKey` instead, not here — E002 only covers
+    /// non-string/wrong-typed arguments and unknown names. Carries the
+    /// offending source location when the failure can be tied to a span.
     Parse(String, Option<SourceLoc>),
     /// E003 — `candy-json` missing/invalid (SVG extraction).
     Svg(String),
@@ -318,9 +322,25 @@ pub enum CandyError {
     /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
     /// key name.
     UnknownKey(String, String, Option<SourceLoc>),
-    /// E007 — A key parameter evaluated to a non-string type (e.g., number,
-    /// boolean, array). Keys must always resolve to strings.
-    InvalidKey(String, Option<SourceLoc>),
+    /// E007 — A key (label/name) used to identify a mobject, scene, easing
+    /// counter, or keyframe counter failed validation. Two distinct failures
+    /// are covered, each with its own message:
+    ///   - `not_ident == false`: the argument did **not** resolve to a string
+    ///     literal (e.g. a number, boolean, or array was passed), so it can't
+    ///     serve as a key at all;
+    ///   - `not_ident == true`: the argument *was* a string, but it is not a
+    ///     valid Typst identifier (e.g. it contains a space or starts with a
+    ///     digit / `-`), which candy's renderer cannot look up.
+    ///
+    /// The `what` field names the role (e.g. "mobject label", "scene name",
+    /// "easing-counter name") and `value` is the offending value (or its type
+    /// description) exactly as written.
+    InvalidKey {
+        what: String,
+        value: String,
+        not_ident: bool,
+        loc: Option<SourceLoc>,
+    },
     /// E008 — The `.tyx` does not import the candy package (or imports it
     /// with a version incompatible with the installed candy CLI), so its
     /// static content has no scene to own it. Candy can only render documents
@@ -352,20 +372,21 @@ pub enum CandyError {
     ///   (b) the document mixes explicit `#scene(...)` calls with content at
     ///       the **document root** — it must be either parallel scenes with an
     ///       empty root, or root content with no scene call at all.
-    /// Argument-format mistakes (unknown argument, wrong-typed `name`) go to
-    /// `E002` instead.
+    /// Argument-format mistakes go to other codes: an unknown argument or a
+    /// non-string `name` is `E002 Parse`, while a `name` that *is* a string but
+    /// not a valid Typst identifier is `E007 InvalidKey`.
     Scene(String, Option<SourceLoc>),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
-    /// n - 1` scheme used by E001–E009 — its process exit code is the dedicated
+    /// n - 1` scheme used by E001–E011 — its process exit code is the dedicated
     /// [`BATCH_ERROR_EXIT`] (111) instead, so a CI pipeline / shell script can
     /// detect "some inputs failed" without aborting the remaining inputs.
     Yee(String),
 }
 
 impl CandyError {
-    /// Mandatory error code (E001–E010).
+    /// Mandatory error code (E001–E011, with `EYEE` as the non-numeric batch marker).
     pub fn code(&self) -> &'static str {
         match self {
             CandyError::Yee(_) => "EYEE",
@@ -379,12 +400,12 @@ impl CandyError {
             CandyError::Scene(_, _) => "E011",
             CandyError::CandyDumpedYou(_, _) => "E008",
             CandyError::UnknownKey(_, _, _) => "E006",
-            CandyError::InvalidKey(_, _) => "E007",
+            CandyError::InvalidKey { .. } => "E007",
         }
     }
 
     /// Numeric part of the code (1–11), used to build the process exit code for
-    /// the E001–E009 family. `EYEE` is excluded here on purpose — it carries no
+    /// the E001–E011 family. `EYEE` is excluded here on purpose — it carries no
     /// `64`-based number (see [`CandyError::exit_code`]).
     pub fn number(&self) -> u8 {
         match self {
@@ -399,14 +420,14 @@ impl CandyError {
             CandyError::Scene(_, _) => 11,
             CandyError::CandyDumpedYou(_, _) => 8,
             CandyError::UnknownKey(_, _, _) => 6,
-            CandyError::InvalidKey(_, _) => 7,
+            CandyError::InvalidKey { .. } => 7,
         }
     }
 
     /// Process exit code for this error.
     ///
-    /// The E001–E009 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
-    /// `E009` → `72`). `EYEE` is the **one exception**: it bypasses that scheme
+    /// The E001–E011 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
+    /// `E011` → `74`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
     /// partial-failure marker ("yee~ Batch failed") must not be re-encoded into
     /// the `64` range.
@@ -438,8 +459,21 @@ impl CandyError {
                     "parse: {kind} \"{key}\" does not exist (never declared or already destroyed)"
                 )
             }
-            CandyError::InvalidKey(val_type, _) => {
-                format!("parse: key must be a string, got {val_type}")
+            CandyError::InvalidKey {
+                what,
+                value,
+                not_ident,
+                ..
+            } => {
+                if *not_ident {
+                    format!(
+                        "parse: {what} \"{value}\" is not a valid Typst identifier; \
+                         it must start with a letter or `_` and contain only letters, \
+                         digits, `_`, or `-` (no spaces, no leading digit or `-`)"
+                    )
+                } else {
+                    format!("parse: {what} must be a string literal, got {value}")
+                }
             }
             CandyError::Yee(e) => e.to_string(),
         }
@@ -466,9 +500,16 @@ impl CandyError {
             CandyError::UnknownKey(_, _, _) => {
                 Some("declare the key with #mobject / #ecnew, or check the name for a typo")
             }
-            CandyError::InvalidKey(_, _) => Some(
-                "keys must resolve to strings; wrap the value in quotes or use a string literal",
-            ),
+            CandyError::InvalidKey { not_ident, .. } => {
+                if *not_ident {
+                    Some(
+                        "use a valid Typst identifier: start with a letter or `_`, and only \
+                         letters, digits, `_`, or `-` (no spaces, no leading digit or `-`)",
+                    )
+                } else {
+                    Some("wrap the value in quotes or use a string literal")
+                }
+            }
             CandyError::Scene(_, _) => Some(
                 "a scene takes only `name:`; set the canvas via `#show: candy` and the background via `#set page(fill: ...)` inside the scene body",
             ),
@@ -501,7 +542,7 @@ impl CandyError {
             CandyError::Scene(_, l) => l.as_ref(),
             CandyError::CandyDumpedYou(_, l) => l.as_ref(),
             CandyError::UnknownKey(_, _, l) => l.as_ref(),
-            CandyError::InvalidKey(_, l) => l.as_ref(),
+            CandyError::InvalidKey { loc: l, .. } => l.as_ref(),
             CandyError::Typst(_, l) => l.as_ref(),
             _ => None,
         }
@@ -1105,8 +1146,9 @@ pub fn report_error(e: &CandyError) {
 /// Fatal error — the "panic" path. Prints `error[Exxx]: <message>` to
 /// **stderr** in the cargo/rustc style (the `error[Exxx]:` head is red + bold on
 /// a TTY) and terminates the process with the error's exit code
-/// ([`CandyError::exit_code`]: `E001` → `64` … `E008` → `71`, and the special
-/// `EYEE` → `111`). Invoked exactly once at the process boundary (see `main`).
+/// ([`CandyError::exit_code`]: `E001` → `64` … `E011` → `74`, with `E008` → `71`
+/// as the fixed easter-egg slot, and the special `EYEE` → `111`). Invoked
+/// exactly once at the process boundary (see `main`).
 #[macro_export]
 macro_rules! error {
     ($err:expr $(,)?) => {{

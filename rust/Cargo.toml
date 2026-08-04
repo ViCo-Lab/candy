@@ -223,6 +223,13 @@
     # gate). A real TOML parser instead of line-scanning keeps the extraction
     # robust against formatting/nesting changes.
     toml = "1"
+    # Build-time UTC clock for the `Built:` line in `candy version`
+    # (ISO 8601, second precision). Pure Rust, no native deps — cross-compiles
+    # like the rest of candy's build script.
+    chrono = "0.4"
+    # Cross-platform build-hostname retrieval for the `Host:` line in
+    # `candy version`. Pure Rust, no native deps.
+    hostname = "0.4"
     # Build-time validation: every `compatible_versions` entry must parse as a
     # `semver::VersionReq`, so a typo fails the build instead of silently
     # rejecting every `.tyx` at runtime.

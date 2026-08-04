@@ -222,6 +222,26 @@ pub(crate) fn is_valid_typst_ident(name: &str) -> bool {
     typst_syntax::is_ident(name)
 }
 
+/// A short, human-readable description of an expression's *type*, used to build
+/// precise `E007 InvalidKey` messages when a key argument is not a string
+/// (e.g. `3` → `"number"`, `true` → `"boolean"`, `("a", "b")` → `"array"`).
+/// For strings/identifiers we return the actual value (quoted) so the message
+/// can echo what the user wrote.
+pub(crate) fn expr_key_desc(e: &Expr) -> String {
+    match e {
+        Expr::Str(s) => format!("\"{}\"", s.get()),
+        Expr::Bool(_) => "boolean".into(),
+        Expr::Int(_) => "integer".into(),
+        Expr::Float(_) => "float".into(),
+        Expr::Numeric(_) => "length".into(),
+        Expr::Array(_) => "array".into(),
+        Expr::Dict(_) => "dictionary".into(),
+        Expr::Ident(_) => "identifier".into(),
+        Expr::None(_) => "none".into(),
+        _ => "non-string value".into(),
+    }
+}
+
 /// Try to evaluate an expression as a length in cm. Handles `4cm`, `3in`,
 /// `5pt`, bare numbers (treated as cm), and **signed** lengths like `-4cm`
 /// (which Typst parses as `Expr::Unary`, not `Expr::Numeric`).

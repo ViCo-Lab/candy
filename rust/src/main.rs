@@ -305,10 +305,14 @@ fn run() -> Result<(), CandyError> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Version => {
-            // Colored equivalent of clap's `--version`:
-            //   version body → green, hash → blue (dim if "unknown",
-            //   red if dirty `*`), codename → yellow; `@`/parens keep default.
-            // All ANSI is stripped when piped / NO_COLOR by `print_styled!`.
+            // Colored, multi-line build provenance report. ANSI is stripped when
+            // piped / NO_COLOR by `print_styled!`. Layout:
+            //   candy v<ver>@<hash>(<codename>)   ← header (as before)
+            //   Features:  <comma-list>            ← yellow
+            //   Arch:      <target arch>           ← blue
+            //   ISA:       <fine-grained level>    ← blue
+            //   Built:     <ISO 8601, second>      ← dim
+            //   Host:      <build hostname>        ← dim
             let hash = env!("CANDY_GIT_HASH");
             let colored_hash = if hash == "unknown" {
                 dim!("{}", hash)
@@ -326,6 +330,55 @@ fn run() -> Result<(), CandyError> {
                 "(",
                 yellow!("{}", env!("CANDY_CODENAME")),
                 ")"
+            );
+
+            // Enabled cargo features (compiled in via `cfg!`). Listed explicitly
+            // so the build's capability set is visible at a glance.
+            let mut features: Vec<&str> = Vec::new();
+            if cfg!(feature = "video") {
+                features.push("video");
+            }
+            if cfg!(feature = "system-downloader") {
+                features.push("system-downloader");
+            }
+            if cfg!(feature = "gpu") {
+                features.push("gpu");
+            }
+            if cfg!(feature = "zero-copy-audio") {
+                features.push("zero-copy-audio");
+            }
+            let features_str = if features.is_empty() {
+                "none".to_string()
+            } else {
+                features.join(", ")
+            };
+
+            // Labels (bold) are left-aligned to a fixed width so the colons line
+            // up; the colon itself stays in the regular (default) font.
+            print_styled!(
+                "{}:  {}",
+                bold!("{:<8}", "Features"),
+                yellow!("{}", features_str)
+            );
+            print_styled!(
+                "{}:  {}",
+                bold!("{:<8}", "Arch"),
+                blue!("{}", std::env::consts::ARCH)
+            );
+            print_styled!(
+                "{}:  {}",
+                bold!("{:<8}", "ISA"),
+                blue!("{}", env!("CANDY_ISA_LEVEL"))
+            );
+            print_styled!(
+                "{}:  {}",
+                bold!("{:<8}", "Built"),
+                dim!("{}", env!("CANDY_BUILD_TIME"))
+            );
+            print_styled!(
+                "{}:  {}",
+                bold!("{:<8}", "Host"),
+                dim!("{}", env!("CANDY_BUILD_HOST"))
             );
         }
         Commands::Completions { shell } => {

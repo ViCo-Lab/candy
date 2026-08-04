@@ -22,9 +22,9 @@ use crate::warn;
 
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
-    call_symbol, current_scope, expr_src, expr_to_angle, expr_to_bool, expr_to_f64, expr_to_i64,
-    expr_to_key, expr_to_ratio, is_valid_typst_ident, parse_sub_pos, range_of, resolve_easing,
-    strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
+    call_symbol, current_scope, expr_key_desc, expr_src, expr_to_angle, expr_to_bool, expr_to_f64,
+    expr_to_i64, expr_to_key, expr_to_ratio, is_valid_typst_ident, parse_sub_pos, range_of,
+    resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
 };
 
 /// Parse the `timing` named argument. Returns `None` when absent (the caller
@@ -271,20 +271,24 @@ fn process_mobject(
     let label_expr = pos.first().or_else(|| named.get("label"));
     let Some(label_str) = label_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = label_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "mobject".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "mobject label".into(),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     };
     if !is_valid_typst_ident(&label_str) {
         // `label_expr` is `Some` here (we just extracted `label_str` from it).
         if let Some(e) = label_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "mobject".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "mobject label".into(),
+                value: label_str.clone(),
+                not_ident: true,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     }
@@ -1693,19 +1697,23 @@ fn process_ecnew(
     let name_expr = pos.first().or_else(|| named.get("name"));
     let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "ecnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "easing-counter name".into(),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     };
     if !is_valid_typst_ident(&name) {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "ecnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "easing-counter name".into(),
+                value: name.clone(),
+                not_ident: true,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     }
@@ -1780,21 +1788,30 @@ fn process_counter_event(
     kc: bool,
 ) {
     let name_expr = pos.first().or_else(|| named.get("name"));
+    let key_what = if kc {
+        "keyframe-counter name"
+    } else {
+        "easing-counter name"
+    };
     let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "ecnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: key_what.into(),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     };
     if !is_valid_typst_ident(&name) {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                if kc { "kcnew" } else { "ecnew" }.into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: key_what.into(),
+                value: name.clone(),
+                not_ident: true,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     }
@@ -1834,19 +1851,23 @@ fn process_kcnew(
     let name_expr = pos.first().or_else(|| named.get("name"));
     let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "kcnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "keyframe-counter name".into(),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     };
     if !is_valid_typst_ident(&name) {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "kcnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "keyframe-counter name".into(),
+                value: name.clone(),
+                not_ident: true,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     }
@@ -1908,10 +1929,12 @@ fn process_kcpush(
     let name_expr = pos.first().or_else(|| named.get("name"));
     let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = name_expr {
-            ctx.pending_error = Some(CandyError::InvalidKey(
-                "kcnew".into(),
-                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
-            ));
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: "keyframe-counter name".into(),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            });
         }
         return;
     };

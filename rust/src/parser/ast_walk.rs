@@ -928,10 +928,12 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                             if let Expr::Str(s) = n.expr() {
                                 let name = s.get().to_string();
                                 if !is_valid_typst_ident(&name) {
-                                    ctx.pending_error = Some(CandyError::InvalidKey(
-                                        "scene".into(),
-                                        Some(ctx.loc(node.range())),
-                                    ));
+                                    ctx.pending_error = Some(CandyError::InvalidKey {
+                                        what: "scene name".into(),
+                                        value: name.clone(),
+                                        not_ident: true,
+                                        loc: Some(ctx.loc(node.range())),
+                                    });
                                     return;
                                 }
                                 scene_name = Some(name);
