@@ -2,13 +2,15 @@
 #show: candy
 
 // Feature: #scene — docs/tutorial/scenes-camera-groups.md
-// Define a sized, backgrounded canvas. Multiple scenes are mutually exclusive
-// slides; only the active one is drawn.
-#scene(width: 16cm, height: 9cm, bg: white)[
+// Scenes are flat, mutually exclusive slides; only the active one is drawn.
+// The canvas comes from `#show: candy`; the background is painted by the
+// page under the scene via `#set page(fill: ...)`.
+#scene(name: "light")[
   #mobject("dot", circle(radius: 1cm, fill: blue))
   #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 ]
-#scene(width: 16cm, height: 9cm, bg: black)[
+#scene(name: "dark")[
+  #set page(fill: black)
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
   #animate("box", rotate: 45deg, duration: 800, easing: "smooth")
 ]

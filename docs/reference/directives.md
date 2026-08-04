@@ -26,7 +26,7 @@ mask (`subtitle`) do **not** accept `timing` / `delay`.
 
 These are scene animations: no `timing` / `delay`.
 
-### `#scene(name: none, width: 16cm, height: 9cm, bg: white, body)`
+### `#scene(name: none, body)`
 
 Define a scene (a "slide"). See the Tutorial for full semantics. Under standard Typst
 this sets the page and renders `body`.

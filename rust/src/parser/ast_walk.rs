@@ -358,23 +358,25 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     ctx.scope_stack.push(0);
     ctx.scope_starts.insert(0, 0);
     ctx.next_scope_id = 1;
-    // The whole document is also the implicit root *scene* (id 0). Every
-    // mobject / action not declared inside an explicit `#scene(...)` belongs
-    // to it. This is the "no root scene → whole document is one scene" rule.
+    // The whole document is also the implicit whole-document *scene* (id 0).
+    // Every mobject / action not declared inside an explicit `#scene(...)`
+    // belongs to it. This is the "no scene defined → whole document is one
+    // scene" rule. If the document later defines explicit `#scene(...)` calls,
+    // this implicit scene is *not* used for rendering; the parser validates
+    // that the document is then either (multiple parallel scenes, no root
+    // content) or (root content → whole doc is one scene).
     ctx.scenes.push(SceneInfo {
         id: 0,
         name: Some("root".to_string()),
-        parent: None,
         scope: 0,
         page_size: if ctx.candy_show_rule_seen {
             // The global `candy` show rule owns the canvas; its config sizes
-            // the root scene (scene-level width/height are deprecated).
+            // the implicit scene.
             Some((ctx.config.width_pt, ctx.config.height_pt))
         } else {
             ctx.page_size_cm
                 .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM))
         },
-        bg: None,
         start_ms: 0,
         end_ms: 0,
         owns_labels: Vec::new(),
@@ -488,14 +490,46 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         });
     }
 
-    // The root `SceneInfo` (id 0) was pushed *before* the AST walk, so its
-    // `page_size` could not yet reflect a `#show: candy` config discovered
-    // during the walk. Backfill it now so every scene (including the root, via
-    // `effective_page_pt`) shares the single global canvas.
+    // The implicit whole-document `SceneInfo` (id 0) was pushed *before* the
+    // AST walk, so its `page_size` could not yet reflect a `#show: candy`
+    // config discovered during the walk. Backfill it now so the implicit scene
+    // (when it is the only scene) shares the single global canvas.
     if ctx.candy_show_rule_seen {
         if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
             root.page_size = Some((ctx.config.width_pt, ctx.config.height_pt));
         }
+    }
+
+    // Document-structure rule (flat scenes, no nesting, no "root scene" split):
+    // a document is valid if it is EITHER
+    //   (a) a single implicit scene — no explicit `#scene` call at all; or
+    //   (b) one or more explicit `#scene(...)` calls at the root, and the root
+    //       has NO content of its own (every mobject / directive is inside a
+    //       scene).
+    // If explicit scenes exist but the implicit scene (id 0) owns any labels,
+    // the document mixes root content with scenes, which is a hard parse error.
+    let has_explicit_scenes = ctx.scenes.iter().any(|s| s.id != 0);
+    if has_explicit_scenes {
+        let root_owns = ctx
+            .scenes
+            .iter()
+            .find(|s| s.id == 0)
+            .map(|s| s.owns_labels.len())
+            .unwrap_or(0);
+        if root_owns > 0 {
+            return Err(CandyError::CandyDumpedYou(
+                "a document that defines explicit `#scene(...)` calls must not \
+                 also contain content at the document root; either put all \
+                 content inside scenes (parallel scenes, no root content) or \
+                 keep root content and let the whole document be a single scene \
+                 (no explicit `#scene` call)"
+                    .into(),
+                None,
+            ));
+        }
+        // Drop the implicit scene (id 0): with explicit scenes present, only the
+        // explicit scenes are rendered, each on its own page.
+        ctx.scenes.retain(|s| s.id != 0);
     }
 
     // Assign UUID-like names to anonymous scenes so they can be referenced
@@ -534,7 +568,6 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         kc_events: ctx.kc_events,
         scopes: ctx.scopes,
         scenes: ctx.scenes,
-        root_scene: Some(0),
         groups: ctx.groups.clone(),
         artifacts: ParseArtifacts {
             source: raw,
@@ -726,8 +759,8 @@ pub(crate) struct ParseCtx {
     /// is seen. Replaces the per-scene `width` / `height` / `bg` mechanism.
     pub(crate) config: crate::core::ast::GlobalConfig,
     /// Whether a `#show: candy` show rule has already been seen. The candy config
-    /// is global and singular; a second `candy` show rule triggers W020
-    /// (ConfigConflict) rather than overwriting the first.
+    /// is global and singular; a second `candy` show rule triggers a conflict
+    /// warning rather than overwriting the first.
     pub(crate) candy_show_rule_seen: bool,
 }
 
@@ -846,127 +879,102 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         }
     }
 
-    // Scene scoping: a `scene` call opens a *nested scene* around its body.
+    // Scene scoping: a `scene` call opens a *flat* scene around its body.
+    // Scenes may only appear at the document root — a `#scene` nested inside
+    // another `#scene` is a hard parse error, and `#scene` no longer accepts
+    // `width` / `height` / `bg` (the canvas, including its size and background,
+    // is owned by the page via `#set page(...)` or the global `#show: candy`).
     if let Some(call) = node.get().cast::<ast::FuncCall>() {
         if call_symbol(&call, ctx).as_deref() == Some("scene") {
+            // Nesting is forbidden. We are already inside a scene if the stack
+            // is non-empty (the implicit whole-document scene id 0 is *not*
+            // pushed onto the stack, so this only triggers for explicit nested
+            // scenes).
+            if !ctx.scene_stack.is_empty() {
+                ctx.pending_error = Some(CandyError::CandyDumpedYou(
+                    "nested #scene is not allowed; a scene may only be defined at \
+                     the document root. Use `#switch(target: \"name\")` to move \
+                     between scenes instead of nesting them."
+                        .to_string(),
+                    Some(ctx.loc(node.range())),
+                ));
+                return;
+            }
             let id = ctx.next_scene_id;
             ctx.next_scene_id += 1;
-            let parent = ctx.current_scene;
             let scope = ctx.next_scope_id;
             ctx.next_scope_id += 1;
-            // Read the scene's own width/height (non-recursive: only the call's
-            // direct named args, so a nested scene's size doesn't leak up).
-            let mut w_cm: Option<f64> = None;
-            let mut h_cm: Option<f64> = None;
-            // Raw source of the `bg` argument expression (e.g. `rgb("#05060f")`),
-            // if present. Captured as source text because the background is
-            // resolved later (by the renderer, against the real Typst library).
-            let mut bg_src: Option<String> = None;
-            // Optional human-readable name for scene switching.
+            // Validate `#scene` arguments against its signature. Only `name` is
+            // supported; `width` / `height` / `bg` are gone (the page owns the
+            // canvas), and any other argument is a hard parse error — unknown
+            // candy arguments are never silently ignored.
             let mut scene_name: Option<String> = None;
             for a in call.args().items() {
                 if let ast::Arg::Named(n) = a {
                     let name = n.name().as_str();
-                    // Extract `name:` argument for scene switching.
-                    if name == "name" {
-                        if let Expr::Str(s) = n.expr() {
-                            scene_name = Some(s.get().to_string());
-                        } else {
-                            // Scene name is not a string — warn (W014).
-                            let cr = node.range();
-                            let loc = ctx.loc(cr);
-                            crate::warn!(crate::core::diag::CandyWarn::DuplicateName(
-                                "scene".into(),
-                                "<non-string>".into(),
-                                loc
+                    match name {
+                        "name" => {
+                            if let Expr::Str(s) = n.expr() {
+                                scene_name = Some(s.get().to_string());
+                            } else {
+                                let cr = node.range();
+                                let loc = ctx.loc(cr);
+                                crate::warn!(crate::core::diag::CandyWarn::DuplicateName(
+                                    "scene".into(),
+                                    "<non-string>".into(),
+                                    loc
+                                ));
+                            }
+                        }
+                        "width" | "height" | "bg" => {
+                            ctx.pending_error = Some(CandyError::CandyDumpedYou(
+                                format!(
+                                    "the #scene `{name}` argument is no longer supported; \
+                                     the canvas (its size and background) is owned by the \
+                                     page via `#set page(...)` or the global `#show: candy` \
+                                     rule, not by #scene"
+                                ),
+                                Some(ctx.loc(node.range())),
                             ));
+                            return;
                         }
-                    } else if let Some(cm) = collect_named_lengths_here(n.expr()) {
-                        match name {
-                            "width" => w_cm = Some(cm),
-                            "height" => h_cm = Some(cm),
-                            _ => {}
-                        }
-                    } else if name == "bg" {
-                        // Recover the expression's source text from the
-                        // FuncCall's LinkedNode children (the AST `Named` node
-                        // only exposes the `Expr`, not its source range).
-                        if let Some(args_node) = node
-                            .children()
-                            .find_map(|c| c.get().cast::<ast::Args>().map(|_| c))
-                        {
-                            bg_src = args_node.children().find_map(|arg| {
-                                arg.get().cast::<ast::Named>().and_then(|nn| {
-                                    if nn.name().as_str() == "bg" {
-                                        let name = nn.name().as_str();
-                                        // Take the value expression, not the
-                                        // `bg` name itself (an `Ident` also
-                                        // casts to `Expr`, so skip the child
-                                        // whose source text equals the name).
-                                        arg.children()
-                                            .filter_map(|c| c.get().cast::<Expr>().map(|_| c))
-                                            .find(|c| raw[c.range()].trim() != name)
-                                            .map(|c| raw[c.range()].to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
+                        other => {
+                            ctx.pending_error = Some(CandyError::CandyDumpedYou(
+                                format!(
+                                    "`{other}` is not a valid argument for #scene; valid \
+                                     arguments are: name"
+                                ),
+                                Some(ctx.loc(node.range())),
+                            ));
+                            return;
                         }
                     }
                 }
             }
-            // The per-scene `width` / `height` / `bg` parameters are deprecated:
-            // the canvas (and therefore every scene's size and background) is now
-            // owned globally by the `#show: candy` config. Carrying them on a
-            // `#scene` call still works but emits W021 (SceneDeprecatedSize).
-            if w_cm.is_some() || h_cm.is_some() || bg_src.is_some() {
-                let mut detail = Vec::new();
-                if w_cm.is_some() {
-                    detail.push("width");
-                }
-                if h_cm.is_some() {
-                    detail.push("height");
-                }
-                if bg_src.is_some() {
-                    detail.push("bg");
-                }
-                let cr = node.range();
-                let loc = ctx.loc(cr);
-                crate::warn!(crate::core::diag::CandyWarn::SceneDeprecatedSize(
-                    detail.join(", "),
-                    loc
-                ));
-            }
+            // When the global `candy` show rule is present it owns the canvas,
+            // so every scene shares that single uniform page; otherwise the
+            // size is measured from `#set page(...)` (see `page_size_cm`).
             let page_size = if ctx.candy_show_rule_seen {
-                // The global `candy` show rule owns the canvas; every scene
-                // (including nested ones) shares this single uniform page, so
-                // deprecated per-scene width/height are ignored for sizing and
-                // only trigger W021 above.
                 Some((ctx.config.width_pt, ctx.config.height_pt))
             } else {
-                match (w_cm, h_cm) {
-                    (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
-                    _ => None,
-                }
+                ctx.page_size_cm
+                    .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM))
             };
-            // Capture the *entire* `#scene(...)` call span for Phase 2: the
-            // whole-document recompiler gates each scene with
-            // `sys.inputs.at("candy:active_scene")` so only the active scene
-            // emits a page (keeping every Typst invocation to a single page).
-            // Gating the whole call (rather than just its body) is required
-            // because `#scene(…)` expands to `page(…)`, which would still emit
-            // an (empty) page if only its body were blanked.
+            // Capture the *entire* `#scene(...)` call span: the whole-document
+            // recompiler gates each scene with `sys.inputs.at("candy:active_scene")`
+            // so only the active scene emits a page (keeping every Typst
+            // invocation to a single page). Gating the whole call (rather than
+            // just its body) is required because `#scene(…)` expands to
+            // `page(…)`, which would still emit an (empty) page if only its body
+            // were blanked.
             let cr = node.range();
             ctx.scene_call_ranges.insert(id, (cr.start, cr.end));
             let start = ctx.cursor;
             ctx.scenes.push(SceneInfo {
                 id,
                 name: scene_name,
-                parent: Some(parent),
                 scope,
                 page_size,
-                bg: bg_src,
                 start_ms: start,
                 end_ms: start,
                 owns_labels: Vec::new(),
@@ -980,7 +988,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                 s.end_ms = ctx.cursor;
             }
             ctx.scene_stack.pop();
-            ctx.current_scene = parent;
+            ctx.current_scene = 0;
             return;
         }
     }
@@ -1168,9 +1176,9 @@ fn collect_named_lengths_here(e: Expr) -> Option<f64> {
 /// ppi:.., fps:..)` global-config show rule.
 ///
 /// The candy canvas config is *global and singular*. The first such show rule
-/// seeds [`ParseCtx::config`]; any further `candy` show rule triggers
-/// [`CandyWarn::ConfigConflict`] (W020) and is otherwise ignored (the first
-/// config wins). Detection recognizes both the canonical `#import "candy": *`
+/// seeds [`ParseCtx::config`]; any further `candy` show rule is silently
+/// ignored (the first config wins). Detection recognizes both the canonical
+/// `#import "candy": *`
 /// form (so `candy` resolves through `symbol_map`) and the `#import "candy" as
 /// X` alias form (so `X` resolves through `candy_aliases`), plus the
 /// `candy.with(..)` field-access invocation.
@@ -1242,16 +1250,8 @@ fn detect_candy_show_rule(node: &LinkedNode, ctx: &mut ParseCtx) {
         }
         ctx.config = cfg;
     } else {
-        // Second (or later) `candy` show rule — conflicts with the first.
-        let mut desc = String::from("multiple `show: candy` global-config rules found");
-        if let (Some(w), Some(h)) = (width_pt, height_pt) {
-            desc.push_str(&format!(
-                "; the duplicate declares {:.2}in × {:.2}in",
-                w / crate::core::ast::PT_PER_CM / 2.54,
-                h / crate::core::ast::PT_PER_CM / 2.54
-            ));
-        }
-        crate::warn!(crate::core::diag::CandyWarn::ConfigConflict(desc));
+        // A second (or later) `candy` show rule is silently ignored — the
+        // global canvas is owned by the first show rule only.
     }
 }
 
@@ -1332,32 +1332,19 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
         }
     }
 
-    let root = ctx.scenes.iter().find(|s| s.parent.is_none()).map(|s| s.id);
-
     // `active_at(t)` mirrors `Scene::active_scene_at` but over `ctx.scenes`
-    // (the intervals as they stand when this runs).
+    // (the intervals as they stand when this runs). Scenes are flat, so the
+    // active scene is simply the one whose interval contains `t`.
     let active_at = |t: u32| -> usize {
         let mut best: Option<usize> = None;
-        let mut best_depth = 0usize;
         for s in &ctx.scenes {
             if t >= s.start_ms && t <= s.end_ms {
-                let mut depth = 0usize;
-                let mut cur = s.parent;
-                while let Some(pid) = cur {
-                    depth += 1;
-                    cur = ctx
-                        .scenes
-                        .iter()
-                        .find(|x| x.id == pid)
-                        .and_then(|x| x.parent);
-                }
-                if best.is_none() || depth > best_depth {
-                    best = Some(s.id);
-                    best_depth = depth;
-                }
+                best = Some(s.id);
             }
         }
-        best.or(root).unwrap_or(0)
+        // Fall back to the implicit whole-document scene (id 0) if it still
+        // exists, otherwise the first declared scene.
+        best.unwrap_or(0)
     };
 
     let resolve = |target: &str| -> Option<usize> {
@@ -2004,48 +1991,61 @@ mod tests {
         );
     }
 
-    /// Verify nested `#scene` calls build a scene tree.
+    /// Verify that a `#scene` nested inside another `#scene` is a hard parse
+    /// error (scenes are now flat — nesting is forbidden; use `#switch` to move
+    /// between scenes instead).
     #[test]
-    fn parses_nested_scenes() {
+    fn nested_scene_is_a_parse_error() {
         let src = with_auto_version(
             r#"
 #import "candy": *
-#scene(width: 16cm, height: 9cm)[
+#scene(name: "outer")[
   #mobject("a", circle(radius: 1cm))
-  #animate("a", to: (4cm, 0pt), duration: 30)
-  #scene(width: 10cm, height: 6cm)[
+  #scene(name: "inner")[
     #mobject("b", rect(width: 1cm))
-    #animate("b", to: (2cm, 0pt), duration: 20)
   ]
 ]
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_nested_scene.tyx");
         std::fs::write(&tmp, src).unwrap();
-        let scene = parse_tyx(&tmp, true).unwrap();
-
-        assert_eq!(scene.scenes.len(), 3, "scenes: {:?}", scene.scenes);
-        assert_eq!(scene.root_scene, Some(0));
-
-        let owner = scene.label_scene_map();
-        assert_eq!(owner[&Label("a".into())], 1, "a → outer scene");
-        assert_eq!(owner[&Label("b".into())], 2, "b → inner scene");
-
-        let inner = scene.scenes.iter().find(|s| s.id == 2).unwrap();
-        assert_eq!((inner.start_ms, inner.end_ms), (30, 50));
-        let outer = scene.scenes.iter().find(|s| s.id == 1).unwrap();
-        assert_eq!((outer.start_ms, outer.end_ms), (0, 50));
-        // Per-scene `width` / `height` are DEPRECATED (W021): the global
-        // `#show: candy` config owns the single canvas, so every scene —
-        // including the inner one declared `10cm × 6cm` — reports the global
-        // size, not its own.
-        let cfg = crate::core::ast::GlobalConfig::DEFAULT;
-        assert_eq!(inner.page_size, Some((cfg.width_pt, cfg.height_pt)));
-        assert_eq!(outer.page_size, inner.page_size, "uniform global canvas");
-
-        assert_eq!(scene.active_scene_at(10), 1);
-        assert_eq!(scene.active_scene_at(40), 2);
+        let res = parse_tyx(&tmp, true);
+        assert!(
+            res.is_err(),
+            "nested #scene must be rejected, got: {:?}",
+            res.ok()
+        );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    /// A `#scene` that carries the removed `width` / `height` / `bg` arguments
+    /// (or any unknown argument) is a hard parse error, not a silent ignore.
+    #[test]
+    fn scene_with_removed_args_is_a_parse_error() {
+        for (label, args) in [
+            ("width", "width: 16cm"),
+            ("height", "height: 9cm"),
+            ("bg", "bg: white"),
+            ("unknown", "frobnicate: 42"),
+        ] {
+            let src = with_auto_version(&format!(
+                r#"
+#import "candy": *
+#scene({args})[
+  #mobject("a", circle(radius: 1cm))
+]
+"#
+            ));
+            let tmp = std::env::temp_dir().join(format!("candy_test_scene_{label}.tyx"));
+            std::fs::write(&tmp, src).unwrap();
+            let res = parse_tyx(&tmp, true);
+            assert!(
+                res.is_err(),
+                "#scene({args}) must be rejected, got: {:?}",
+                res.ok()
+            );
+            std::fs::remove_file(&tmp).ok();
+        }
     }
 
     /// Regression: sibling `#scene` calls must be *sequential, mutually
@@ -2060,11 +2060,13 @@ mod tests {
         let src = with_auto_version(
             r#"
 #import "candy": *
-#scene(width: 16cm, height: 9cm)[
+#set page(width: 16cm, height: 9cm, margin: 0pt)
+#scene()[
   #mobject("a", circle(radius: 1cm))
   #pause(duration: 50)
 ]
-#scene(width: 16cm, height: 9cm)[
+#set page(width: 16cm, height: 9cm, margin: 0pt)
+#scene()[
   #mobject("b", rect(width: 1cm))
   #pause(duration: 50)
 ]
@@ -2074,10 +2076,13 @@ mod tests {
         std::fs::write(&tmp, src).unwrap();
         let scene = parse_tyx(&tmp, true).unwrap();
 
+        // Scenes are flat and the implicit whole-document scene is dropped as
+        // soon as explicit `#scene(...)` calls exist, so exactly the 2 siblings
+        // remain.
         assert_eq!(
             scene.scenes.len(),
-            3,
-            "root + 2 siblings: {:?}",
+            2,
+            "2 flat siblings, no implicit root: {:?}",
             scene.scenes
         );
         let owner = scene.label_scene_map();
@@ -2475,14 +2480,15 @@ This is plain Typst content with an equation $E = mc^2$.
         assert!(!scene.counters.is_empty());
     }
 
-    /// A document with explicit child scenes that own labels but no slides
-    /// should auto-insert pause.
+    /// A document with an explicit scene that owns labels but has no slides
+    /// should auto-insert a pause.
     #[test]
-    fn nested_scene_with_labels_no_slides_auto_inserts_pause() {
+    fn explicit_scene_with_labels_no_slides_auto_inserts_pause() {
         let src = with_auto_version(
             r#"
 #import "candy": *
-#scene(width: 16cm, height: 9cm)[
+#set page(width: 16cm, height: 9cm, margin: 0pt)
+#scene()[
   #mobject("a", circle(radius: 1cm))
 ]
 "#,
@@ -2492,10 +2498,14 @@ This is plain Typst content with an equation $E = mc^2$.
         let scene = parse_tyx(&tmp, true).unwrap();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(scene.slides.len(), 1, "expected auto-inserted pause slide");
-        assert_eq!(scene.scenes.len(), 2, "root + 1 child scene");
-        // The child scene should own label "a".
-        let child = scene.scenes.iter().find(|s| s.id == 1).unwrap();
-        assert!(!child.owns_labels.is_empty());
+        assert_eq!(
+            scene.scenes.len(),
+            1,
+            "one explicit scene, no implicit root"
+        );
+        // The explicit scene should own label "a".
+        let s = scene.scenes.iter().find(|s| s.id == 1).unwrap();
+        assert!(!s.owns_labels.is_empty());
     }
 
     /// A file included twice on the *same* include path (a → b → a) is a

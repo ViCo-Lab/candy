@@ -4,7 +4,7 @@
 // Feature: #save_state — docs/reference/directives.md
 // Snapshot a mobject's current transform (x / y / scale / rotation / opacity)
 // into a named slot. Inert under standard Typst.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("dot", circle(radius: 1cm, fill: blue))
   #save-state("dot", slot: "home")
   #animate("dot", to: (4cm, 2cm), duration: 800, easing: "smooth")

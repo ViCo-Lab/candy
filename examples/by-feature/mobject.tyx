@@ -4,6 +4,6 @@
 // Feature: #mobject — docs/reference/directives.md
 // Registers an animatable object. Under standard Typst it just renders `body`
 // at its natural position.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("dot", circle(radius: 1cm, fill: blue))
 ]

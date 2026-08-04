@@ -1,0 +1,9 @@
+// Expected to fail: E008 (CandyDumpedYou). `width` / `height` / `bg` were
+// removed from `#scene`. The canvas comes from `#show: candy` and the
+// background from `#set page(fill: ...)` inside the scene body.
+#import "@preview/candy:0.1.0": *
+#show: candy
+
+#scene(width: 16cm, height: 9cm, bg: rgb("#05060f"))[
+  #mobject("a", circle(radius: 1cm, fill: white))
+]

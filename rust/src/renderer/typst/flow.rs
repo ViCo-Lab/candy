@@ -228,12 +228,12 @@ impl Renderer {
         // (e.g. `paper: "a4"`). Filled below; scenes whose size could not be
         // measured fall back to `effective_page_pt`.
         let mut measured_pages: HashMap<usize, (f64, f64)> = HashMap::new();
-        // Whether the document declares explicit `#scene(...)` calls. Parsed
-        // documents always carry the implicit root scene (id 0), so "bare
-        // root" ⇔ the root is the only scene (or `scenes` is empty for
-        // hand-built test scenes).
-        let has_explicit_scenes = self.scene.scenes.len() > 1;
-        let root_id = self.scene.root_scene.unwrap_or(0);
+        // Whether the document declares explicit `#scene(...)` calls. A bare
+        // root (no scene call) keeps the implicit whole-document scene (id 0)
+        // and respects the document's own `#set page(...)`.
+        let has_explicit_scenes = !self.scene.artifacts.scene_call.is_empty();
+        // The implicit whole-document scene id, used only in the bare-root case.
+        let root_id = 0usize;
         // label -> the page (0-based) its flow layout landed on. Fed to the
         // page scheduler so it can partition each scene's timeline by page.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
@@ -503,38 +503,6 @@ impl Renderer {
             }
         }
         self.scene_pages = sp;
-        // W019: the scenes of one .tyx should share a single canvas size —
-        // every frame is composited onto the largest one, so smaller scenes
-        // render with blank margins. Compare the *actual* canvas sizes of the
-        // explicit scenes (plus the root only when it carries content of its
-        // own); a bare root never warns (it simply respects the page's own
-        // settings). Tolerance: half a Typst point.
-        if has_explicit_scenes {
-            let mut parts: Vec<(String, (f64, f64))> = Vec::new();
-            for s in &self.scene.scenes {
-                if s.id == root_id && s.owns_labels.is_empty() {
-                    continue;
-                }
-                let Some(&size) = self.scene_pages.get(&s.id) else {
-                    continue;
-                };
-                let name = s.name.clone().unwrap_or_else(|| format!("#{}", s.id));
-                parts.push((name, size));
-            }
-            let mismatch = parts
-                .windows(2)
-                .any(|w| (w[0].1.0 - w[1].1.0).abs() > 0.5 || (w[0].1.1 - w[1].1.1).abs() > 0.5);
-            if mismatch {
-                let list = parts
-                    .iter()
-                    .map(|(n, (w, h))| format!("'{n}' {}cm x {}cm", fmt_cm(*w), fmt_cm(*h)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                crate::warn!(CandyWarn::SceneSizeMismatch(format!(
-                    "scenes in this .tyx use inconsistent page sizes: {list}"
-                )));
-            }
-        }
         // `page_of` (and `flow_pos`) are now continuous; overflow content is
         // rendered and clipped by the fixed viewport `viewBox` at rasterization
         // rather than dropped, so no per-label page filter is recorded.
@@ -682,11 +650,4 @@ impl Renderer {
             None => FrameData::new(time_ms, label),
         }
     }
-}
-
-/// Format a Typst-point length as centimetres for warning messages, trimming
-/// trailing zeros (`16.00cm` → `16cm`, `9.50cm` → `9.5cm`).
-fn fmt_cm(pt: f64) -> String {
-    let s = format!("{:.2}", pt / PT_PER_CM);
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }

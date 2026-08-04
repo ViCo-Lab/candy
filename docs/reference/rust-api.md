@@ -55,7 +55,7 @@ rust/src/
 ├── core/              # pure data + scheduling / interpolation (no I/O, no render)
 │   ├── ast.rs         # Scene, FrameData, Action, Label — the shared data model
 │   ├── easing.rs      # Easing enum + resolve() (named curves + expr:/bezier:)
-│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W019) + macros
+│   ├── diag.rs        # CandyError (E001–E009) + CandyWarn (W001–W018) + macros
 │   ├── interpolator.rs# interpolate / interpolate_with (sampling frames)
 │   ├── meta.rs        # never touch this, may explode
 │   ├── morph.rs       # Flubber port: SVG → polygon rings → morph → path string
@@ -222,12 +222,11 @@ Types are immutable after creation (builder-time mutation is confined to the par
   `Flash`, `Wiggle`, `SetColor`, `Show` / `Hide` (instantaneous visibility toggles).
 - `FrameData` — a sampled transform state at a given `time_ms` for one target.
 - `Scene` — the parsed document: items, initial states, actions, subtitles, counters. It also
-  carries the **scene tree**: `scenes: Vec<SceneInfo>` (each with `id` / `parent` / `scope` /
-  `page_size` / `start_ms` / `end_ms` / `owns_labels`) and an optional `root_scene` index.
-  `active_scene_at(time_ms)` returns the deepest scene active at a given frame (the renderer
-  uses it to hide parent scenes); `effective_page_pt(id)` resolves a scene's canvas size
-  (inheriting from the nearest ancestor that declares one). When `scenes` is empty (no `scene`
-  call), the whole document is one implicit scene — preserving v0.1 behavior.
+  carries the **flat scene list**: `scenes: Vec<SceneInfo>` (each with `id` / `name` / `scope` /
+  `page_size` / `start_ms` / `end_ms` / `owns_labels`). Scenes never nest, so there is no
+  `parent` link and no root-scene index. `active_scene_at(time_ms)` returns the scene active at
+  a given frame (falling back to the first scene); `effective_page_pt(id)` resolves a scene's
+  canvas size. When no `#scene(...)` call exists, the whole document is one implicit scene.
 
 ### `core::scheduler`
 
@@ -350,31 +349,30 @@ cargo run -- build examples/box_anim.tyx --gpu
 
 ## Scene model (design notes)
 
-A `scene` is a special `page`. In standard Typst, `#scene(body)` wraps `body` in a `page()`
-call, so each scene renders as an independent page. The Rust renderer treats each scene as an
-independent animation segment. The scene tree is a parsed `Vec<SceneInfo>` on the `Scene` AST
-(with an optional `root_scene` index), built by `parser::parse_tyx` from nested `scene` calls.
-Semantics enforced by the pipeline:
+A scene is a **flat**, scope-bounded segment of the timeline. `#scene(name: none, body)` does
+not size the canvas and does not paint a background — it simply returns `body`, so the global
+`#show: candy` configuration (and any `#set page`) provides the viewport, and the page under
+the scene provides the background. The Rust renderer treats each scene as an independent
+animation segment. The scene list is a parsed `Vec<SceneInfo>` on the `Scene` AST, built by
+`parser::parse_tyx`. Semantics enforced by the pipeline:
 
-- **Nesting** — scenes may nest; a `scene` inside another scene's body becomes a child
-  `SceneInfo` (`parent` links form the tree).
-- **Parent auto-hide** — `Scene::active_scene_at(time_ms)` returns the *deepest* scene whose
-  `[start_ms, end_ms]` interval contains the frame time (falling back to the root scene). The
-  renderer filters mobjects by `label_scene[label] == active`, so a child scene automatically
-  hides its parent.
+- **Flat, never nested** — a `scene` call inside another scene's body is a **parse error**
+  (`E008`). `SceneInfo` has no `parent` link; there is only "switch scene".
+- **Document structure** — the document must be either a sequence of parallel `#scene(...)`
+  calls with no content at the document root, or root content with no `#scene(...)` call at
+  all. Mixing the two is a parse error. When explicit scenes exist, the implicit scene `0` is
+  dropped; otherwise it is kept and owns the whole document.
+- **Unknown arguments** — a named argument that is not in the Typst signature (including the
+  removed `width` / `height` / `bg`) is a parse error, not a silently ignored value.
+- **Scene selection** — `Scene::active_scene_at(time_ms)` returns the scene whose
+  `[start_ms, end_ms]` interval contains the frame time, falling back to the first scene. The
+  renderer filters mobjects by `label_scene[label] == active`, so scenes are mutually exclusive.
 - **Typst scope** — membership follows Typst's lexical scope: every mobject / `play` / transform
-  is attributed to `ctx.current_scene` (the innermost enclosing scene) via `ctx.label_scene`.
-- **Per-page canvas** — a scene's `page_size` defines the size of *each* page in that scene.
-  `Scene::effective_page_pt(scene_id)` inherits the size from the nearest ancestor that declares
-  one, then the 16cm × 9cm default.
-- **Cross-page scene** — content overflowing a scene's page spills onto subsequent pages. The
-  mobjects stay in **one** scene (data shared), but are laid out across the overflow pages and the
-  canvas is the vertical stack of those pages in page order, so nothing is clipped off a single
-  page and the scene is *not* split into separate sub-scenes. `ensure_flow()` reads every page
-  of the natural-layout pass and offsets each mobject's natural y by `k * page_h` (page index `k`).
-- **Implicit root** — when `scenes` is empty (no `scene` call), the whole document is one implicit
-  scene (id `0`) whose page is the root page size; this path is backward-compatible with v0.1.
-
-Backward compatibility: legacy `.tyx` files with no `scene` calls produce an empty `scenes`
-vector, and every renderer path falls back to treating the whole document as a single scene — so
-v0.1 behavior is preserved.
+  is attributed to `ctx.current_scene` (the enclosing scene) via `ctx.label_scene`.
+- **Canvas** — `Scene::effective_page_pt(scene_id)` resolves the scene's measured canvas size,
+  falling back to the 16cm × 9cm default. There is no per-scene size declaration and no
+  inheritance chain.
+- **One page per scene** — a scene occupies one viewport. Content that overflows is reported as
+  `W018` and clipped at rasterization by the fixed viewport `viewBox`.
+- **Implicit whole-document scene** — when no `#scene(...)` call exists, the whole document is
+  one implicit scene (id `0`) whose page is the root page size.

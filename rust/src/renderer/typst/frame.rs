@@ -75,15 +75,11 @@ impl Renderer {
             .first()
             .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
         let base = typst_svg::svg(page, &SvgOptions::default());
-        // Canvas background color: honors the active scene's `bg` (inheriting
-        // from a parent scene) and defaults to opaque white. Used as a fallback
-        // in `compose_frame_svg` when `typst_svg` emits no recognizable page-fill
-        // element, so the frame is never transparent.
-        let bg_hex = if self.scene.scenes.is_empty() {
-            "white".to_string()
-        } else {
-            self.scene_bg_hex(active)?
-        };
+        // Canvas background fallback: the page owns its own background fill (a
+        // user's `#set page(fill: …)` is honoured by Typst, defaulting to white).
+        // Used as a fallback in `compose_frame_svg` when `typst_svg` emits no
+        // recognizable page-fill element, so the frame is never transparent.
+        let bg_hex = "white".to_string();
         // Compose the full draft via `compose_frame_svg`. The camera `<g>`
         // group wrapping is applied *inside* that function only when
         // `camera.is_some()` (a per-frame decision, since the camera test

@@ -5,7 +5,7 @@
 // Move a target along a polyline through `path` (array of (x, y) points in cm,
 // absolute). The scheduler generates a keyframe at each point, distributed
 // across `duration`.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("ball", circle(radius: 0.6cm, fill: red))
   #move-along-path("ball", ((2, 2), (6, 5), (10, 2), (14, 4)), duration: 2000, easing: "smooth")
 ]

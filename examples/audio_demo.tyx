@@ -8,7 +8,7 @@
 // Run:  candy build examples/audio_demo.tyx --format mkv --codec av1
 //       (Opus/.ogg audio goes into WebM/MKV; use .aac + MP4 for AAC.)
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   // Non-blocking voice track at 90% volume; the timeline keeps animating.
   #audio("voice.opus", blocking: false, loop: false, volume: 0.9, slice: none)
 

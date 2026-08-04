@@ -16,7 +16,8 @@
   )
 }
 
-#scene(width: 16cm, height: 9cm, bg: rgb("#05060f"))[
+#scene()[
+  #set page(fill: rgb("#05060f"))
 
   #mobject("cap", text(20pt, weight: "bold", fill: white)[Ursa Minor])
   #spiral-in("cap", scale: 200%, rotate: 360deg, duration: 700, easing: "cubic-out")

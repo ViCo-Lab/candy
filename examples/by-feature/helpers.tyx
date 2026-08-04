@@ -5,7 +5,7 @@
 // Direction vectors (cm): dir-left/right/up/down/...; scale factors: grow (150%)
 // / shrink (50%) / original (100%); turns: quarter-turn (90) / half-turn (180)
 // / full-turn (360); opacity presets: visible/half-visible/invisible.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("dot", circle(radius: 1cm, fill: blue))
   #animate("dot", dx: dir-right.at(0) * 1cm, dy: dir-up.at(1) * 1cm, duration: 500)
   #animate("dot", scale-by: grow, duration: 500)

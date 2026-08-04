@@ -159,7 +159,7 @@ declaration site). This is stricter than `ec*`, which records orphan events; for
 ## Full example
 
 ```typst
-#scene(width: 16cm, height: 9cm)[
+#scene()[
   #let k = kcnew("k", seed: 0, easing: "linear")
   #mobject("box", rect(width: kcval("k") * 1pt + 1cm, height: 1cm, fill: blue))
   #kcpush("k", 100, easing: "linear")

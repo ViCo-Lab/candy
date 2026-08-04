@@ -5,7 +5,7 @@
 // Mark a slide transition ("cut" between scenes). Only "cut" is fully
 // implemented; "fade"/"slide" are recorded for future versions. Inert under
 // standard Typst.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("a", circle(radius: 1cm, fill: blue))
   #animate("a", to: (4cm, 2cm), duration: 600, easing: "smooth")
   #transition(kind: "cut", duration: 100)

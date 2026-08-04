@@ -3,7 +3,7 @@
 
 // Feature: #focus-on — docs/reference/directives.md
 // Zoom in (enlarge) onto the target to emphasize it.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
   #focus-on("box", factor: 125%, duration: 300, easing: "smooth")
 ]

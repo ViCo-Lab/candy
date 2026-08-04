@@ -8,7 +8,7 @@
 //
 // Run:  candy build examples/data_viz.tyx
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
 
   #mobject("title", text(20pt, weight: "bold", fill: blue)[Quarterly revenue])
   #spiral-in("title", scale: 160%, rotate: 360deg, duration: 600, easing: "cubic-out")

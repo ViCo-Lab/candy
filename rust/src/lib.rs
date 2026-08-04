@@ -32,7 +32,7 @@ pub mod renderer;
 
 /// Unified error type (E001–E009 → exit code 64–72; `EYEE` → exit code 111, a
 /// batch partial-failure marker that deliberately bypasses the `64` rule) and
-/// non-fatal warning type (W001–W019); see `core::diag::{CandyError, CandyWarn}`
+/// non-fatal warning type (W001–W018); see `core::diag::{CandyError, CandyWarn}`
 /// and the `core::diag::{error, warn, debug, info}` reporters.
 pub use crate::core::diag::{CandyError, CandyWarn};
 pub use crate::renderer::Codec;

@@ -16,7 +16,8 @@
 //   morph · transform · ecnew · ecval · ecpause · ecresume · ecdestroy
 #import "@preview/candy:0.1.0": *
 #show: candy
-#scene(name: "intro", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+#scene(name: "intro")[
+  #set page(fill: rgb("#0e1726"))
   // Title card: spiral in from a scaled / rotated / invisible state.
   #mobject("title", text(34pt, weight: "bold", fill: rgb("#7fe3ff"))[Candy — directive showcase])
   #spiral-in("title", scale: 220%, rotate: 360deg, duration: 900, easing: "cubic-out")
@@ -28,7 +29,8 @@
   #pause(duration: 600)
 ]
 
-#scene(name: "motion", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+#scene(name: "motion")[
+  #set page(fill: rgb("#0e1726"))
   #subtitle(
     [scene · motion — mobject · animate: to / dx·dy / scale·scale-by / rotate·rotate-by / opacity · easing · timing · delay],
     position: "bottom",
@@ -60,7 +62,8 @@
   #pause(duration: 700)
 ]
 
-#scene(name: "attention", width: 16cm, height: 9cm, bg: rgb("#102a2b"))[
+#scene(name: "attention")[
+  #set page(fill: rgb("#102a2b"))
   #subtitle([scene · attention — indicate · flash · wiggle · focus-on · blink], position: "bottom")
 
   #mobject("x", circle(radius: 1.4cm, fill: rgb("#06d6a0")))
@@ -87,7 +90,8 @@
   #pause(duration: 400)
 ]
 
-#scene(name: "state", width: 16cm, height: 9cm, bg: rgb("#1a1230"))[
+#scene(name: "state")[
+  #set page(fill: rgb("#1a1230"))
   #subtitle([scene · state — save-state · restore · transform · morph · fade-transform], position: "bottom")
 
   #mobject("box", rect(width: 1.8cm, height: 1.8cm, fill: rgb("#ffd166")))
@@ -122,7 +126,8 @@
   #pause(duration: 500)
 ]
 
-#scene(name: "camera", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+#scene(name: "camera")[
+  #set page(fill: rgb("#0e1726"))
   #subtitle([scene · camera — move-along-path · camera · zoom-to · track], position: "bottom")
 
   // A star that flies a bezier path, oriented to its travel direction.
@@ -175,7 +180,8 @@
   #pause(duration: 500)
 ]
 
-#scene(name: "text", width: 16cm, height: 9cm, bg: rgb("#102a2b"))[
+#scene(name: "text")[
+  #set page(fill: rgb("#102a2b"))
   #subtitle([scene · text — reveal · typewriter · play · group], position: "bottom")
 
   // A string mobject for progressive reveal.
@@ -205,7 +211,8 @@
   #pause(duration: 500)
 ]
 
-#scene(name: "counters", width: 16cm, height: 9cm, bg: rgb("#1a1230"))[
+#scene(name: "counters")[
+  #set page(fill: rgb("#1a1230"))
   #subtitle(
     [scene · counters — ecnew · ecval · ecpause · ecresume · ecdestroy · kcnew · kcpush · kcval · kcpause · kcresume · kcdestroy · appear · disappear · video · audio],
     position: "top",
@@ -274,7 +281,8 @@
   #pause(duration: 400)
 ]
 
-#scene(name: "finale", width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+#scene(name: "finale")[
+  #set page(fill: rgb("#0e1726"))
   #subtitle([scene · finale — set-color · scene-switch], position: "bottom")
 
   #mobject("end", text(30pt, weight: "bold", fill: white)[Candy — code-oriented animation])
@@ -289,7 +297,8 @@
   #scene-switch("credits", duration: 600, easing: "smooth")
 ]
 
-#scene(name: "credits", width: 16cm, height: 9cm, bg: black)[
+#scene(name: "credits")[
+  #set page(fill: black)
   #subtitle([credits — thanks for watching], position: "bottom")
   #mobject("cr", text(20pt, fill: rgb("#7fe3ff"))[Built with Candy · every directive, one reel])
   #spiral-in("cr", scale: 160%, rotate: 360deg, duration: 800, easing: "cubic-out")

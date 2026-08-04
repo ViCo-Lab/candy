@@ -2,12 +2,16 @@
 #show: candy
 
 // A cinematic "camera tour": a field of labelled markers is explored with the
-// global `#camera` (pan + zoom + rotate), then a nested scene presents a title
-// card via `#transition` + `#spiral-in`. Longer duration, multi-phase.
+// global `#camera` (pan + zoom + rotate), then a second, sibling scene presents
+// a title card via `#transition` + `#spiral-in`. Longer duration, multi-phase.
+//
+// Scenes are flat: the title card is a *sibling* of the survey scene, not a
+// child. Playback runs them in order, one after the other.
 //
 // Run:  candy build examples/camera_tour.tyx
 
-#scene(width: 16cm, height: 9cm, bg: rgb("#0e1726"))[
+#scene(name: "survey")[
+  #set page(fill: rgb("#0e1726"))
 
   #mobject("cap", text(18pt, weight: "bold", fill: white)[Field survey])
   #spiral-in("cap", scale: 160%, rotate: 360deg, duration: 600, easing: "cubic-out")
@@ -40,12 +44,14 @@
   #subtitle([Tilting the view.], position: "bottom")
   #pause(duration: 700)
 
-  // Title card: a nested scene replaces the field (parent auto-hidden).
   #transition(kind: "fade", duration: 400)
-  #scene(width: 16cm, height: 9cm, bg: black)[
-    #mobject("t", text(40pt, weight: "bold", fill: white)[Candy])
-    #spiral-in("t", scale: 250%, rotate: 360deg, duration: 1000, easing: "cubic-out")
-    #subtitle([a code-oriented animation engine for Typst], position: "bottom")
-    #pause(duration: 900)
-  ]
+]
+
+// Title card: a sibling scene that takes over once the survey ends.
+#scene(name: "title")[
+  #set page(fill: black)
+  #mobject("t", text(40pt, weight: "bold", fill: white)[Candy])
+  #spiral-in("t", scale: 250%, rotate: 360deg, duration: 1000, easing: "cubic-out")
+  #subtitle([a code-oriented animation engine for Typst], position: "bottom")
+  #pause(duration: 900)
 ]

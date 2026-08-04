@@ -11,50 +11,28 @@
 
 // Candy — scene definition.
 //
-// `scene` sets the canvas size / background for a group of content and is the
-// primary way to organize a `.tyx` into slides.
+// `scene` groups content into a flat, scope-bounded segment of the timeline —
+// the primary way to organize a `.tyx` into slides. Scenes never nest, never
+// size the canvas, and never paint a background.
+//
+// *Scene semantics*
+//
+// - *Flat, never nested.* A `scene` call inside another scene's `body` is a
+//   parse error. There is only "switch scene".
+// - *Document structure.* A document is either a sequence of parallel
+//   `#scene(...)` calls with no content at the document root, or root content
+//   with no `#scene(...)` call at all (the whole document is one scene).
+// - *Typst scope.* Scene membership follows Typst's lexical scope: a mobject /
+//   `play` / `subtitle` belongs to the `scene` whose `body` encloses it.
+// - *One page per scene.* A scene occupies one page (one viewport). Content
+//   that overflows is warned about (`W018`) and clipped at rasterization.
+// - *Canvas & background.* The viewport comes from the global `candy` show
+//   function (and any `#set page`); the background is painted by the page under
+//   the scene, never by `scene` itself.
+// - *Named scenes & switching.* Use `#scene(name: "foo")` and then
+//   `#scene-switch(target: "foo")` to jump the timeline cursor. Anonymous
+//   scenes get auto-assigned names like `"scene_a1b2c3d4"`.
 
-/// Define a scene (a "slide") with a specific page size and background.
-///
-/// In standard Typst, `scene` sets the page and renders the body. In candy's
-/// animation pipeline, `scene` is a semantic marker that groups content into
-/// a slide; the page size is also used by the renderer as the canvas size for
-/// every frame in this scene.
-///
-/// - `name`: optional human-readable name for scene switching (e.g., `"intro"`,
-///   `"demo"`). Named scenes can be targeted directly via `#scene-switch(target: "name")`.
-///   Anonymous scenes (without a `name:`) are auto-assigned UUID-like names
-///   (e.g., `"scene_00000000"`) so they can still be referenced by `#scene-switch`.
-/// - `width`: page width (default `16cm` — standard 16:9 slide width).
-/// - `height`: page height (default `9cm`).
-/// - `bg`: background fill (default `white`).
-/// - `body`: the scene's content.
-///
-/// *Scene semantics*
-///
-/// - *Nesting.* Scenes may be nested: a `scene` call *inside* another scene's
-///   `body` creates a child scene. Nesting is detected through the Typst AST,
-///   so the usual `#import` rules apply.
-/// - *Parent auto-hide.* When the timeline enters a child scene, its parent
-///   (and any ancestor) is automatically hidden for the duration of the child.
-///   The renderer shows only the **deepest** scene that is active at each frame
-///   time, so a child scene visually replaces its parent.
-/// - *Typst scope.* Scene membership follows Typst's lexical scope: a mobject /
-///   `play` / `subtitle` belongs to the innermost `scene` whose `body` encloses
-///   it. This is exactly the scope in which the call is evaluated.
-/// - *One page per scene.* A scene occupies **one page** (one canvas); its
-///   `width`/`height` set the frame size. Content that would overflow the page
-///   is warned about and should be split into additional scenes.
-/// - *Auto-split.* Content spanning multiple pages is automatically split into
-///   multiple scenes (one per page) when no explicit root `scene` wraps it.
-/// - *Implicit root.* If you never call `scene`, the whole document is treated
-///   as a single implicit root scene following the same one-page / split rules
-///   (default canvas 16cm × 9cm). A scene's page size is inherited from the
-///   nearest ancestor that declares one.
-/// - *Named scenes & switching.* Use `#scene(name: "foo", ...)` to give a scene
-///   a human-readable name. Then use `#scene-switch(target: "foo")` to jump the
-///   timeline cursor to that scene. Anonymous scenes get auto-assigned UUID
-///   names (e.g., `"scene_a1b2c3d4"`) which can also be targeted.
 /// Configure the global canvas / resolution / frame rate for the whole
 /// animation. Call it as a show rule at the top of your `.tyx`:
 ///
@@ -67,34 +45,42 @@
 /// - `ppi`: pixels per inch for rasterization (default `144`).
 /// - `fps`: output frame rate (default `30`).
 ///
-/// The page size is derived from this config; per-scene `width` / `height` /
-/// `bg` on `#scene` are deprecated and ignored. Under a plain `typst compile`
-/// this `set page` is what sizes the first-frame preview.
+/// The page size is derived from this config; `#scene` never sizes the canvas.
+/// Under a plain `typst compile` this `set page` is what sizes the first-frame
+/// preview.
 #let candy(width: 13.33in, height: 7.5in, ppi: 144, fps: 30, body) = {
   set page(width: width, height: height, margin: 0pt)
   body
 }
 
-/// Define a scene — a nestable, scope-bounded segment of the timeline.
+/// Define a scene — a flat, scope-bounded segment of the timeline.
 ///
-/// `#scene(width: 16cm, height: 9cm, bg: white, body)` is **deprecated**: the
-/// per-scene `width` / `height` / `bg` no longer size the canvas. Configure the
-/// whole animation globally via the `candy` show function instead:
+/// - `name`: optional human-readable name for scene switching. Anonymous
+///   scenes are auto-assigned UUID-like names (e.g. `"scene_00000000"`) so
+///   they can still be targeted by `#scene-switch`.
+/// - `body`: the scene's content.
+///
+/// Scenes are **flat**: a `#scene(...)` call inside another scene's body is a
+/// parse error. There is only "switch scene", never "enter a sub-scene". A
+/// document must be either a sequence of parallel `#scene(...)` calls with no
+/// content at the document root, or root content with no `#scene(...)` call at
+/// all — in which case the whole document is a single scene.
+///
+/// `scene` does not size the canvas and does not paint a background. The
+/// viewport comes from the global `candy` show function (and any `#set page`),
+/// and the background is whatever the page under the scene paints:
 ///
 /// ```typst
 /// #show: candy
 /// ```
 ///
-/// `scene` no longer sets the page; it relies on the global `candy` config (and
-/// any `#set page`) for the canvas. Under candy's renderer the active-scene
-/// gating is injected around this call by the Rust toolchain. Under a plain
-/// `typst compile` the body renders inside the `candy`-configured page.
-#let scene(name: none, width: 16cm, height: 9cm, bg: white, body) = {
+/// Under candy's renderer the active-scene gating is injected around this call
+/// by the Rust toolchain. Under a plain `typst compile` the body renders inside
+/// the `candy`-configured page.
+#let scene(name: none, body) = {
   if name != none and type(name) != str {
     panic("scene name must be a string")
   }
-  // DEPRECATED (2026-07): width/height/bg are ignored. The renderer emits W021
-  // when they are present; the global `candy` config drives the viewport.
   // `scene` returns its body so the surrounding `candy` show rule (and any
   // `#set page`) provides the page.
   body

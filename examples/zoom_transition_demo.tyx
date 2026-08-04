@@ -12,7 +12,7 @@
 //
 // Run:  candy build examples/zoom_transition_demo.tyx
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("a", circle(radius: 1cm, fill: blue))
   #mobject("b", rect(width: 1.5cm, height: 1.5cm, fill: red))
 

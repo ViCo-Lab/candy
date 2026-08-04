@@ -4,17 +4,20 @@
 // Feature: #subtitle with fixed style — white text, black stroke
 // Demonstrates maximum contrast subtitle on any background.
 
-#scene(width: 16cm, height: 9cm, bg: yellow)[
+#scene()[
+  #set page(fill: yellow)
   #subtitle([Fixed style: white text + black stroke], position: "bottom")
   #pause(duration: 500)
 ]
-#scene(width: 16cm, height: 9cm, bg: navy)[
+#scene()[
+  #set page(fill: navy)
 
   #subtitle([Fixed style works on dark backgrounds], position: "bottom")
   #pause(duration: 500)
 ]
 
-#scene(width: 16cm, height: 9cm, bg: gradient.linear(..color.map.turbo))[
+#scene()[
+  #set page(fill: gradient.linear(..color.map.turbo))
   #subtitle([Consistent style on colorful backgrounds], position: "bottom")
   #pause(duration: 500)
 ]

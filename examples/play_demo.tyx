@@ -7,7 +7,7 @@
 //
 // Run:  candy build examples/play_demo.tyx
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("title", text(28pt, weight: "bold", fill: blue)[Three Steps])
 
   // Step 1 visible for 60 frames, then Step 2, then Step 3.

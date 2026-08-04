@@ -6,7 +6,7 @@
 // removes the need for many sequential #animate calls). `keys` is an array of
 // (t, (x, y, scale, opacity, rotation)) tuples; t is the time offset (ms) from
 // the slide start, omitted properties carry their previous value forward.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("p", circle(radius: 0.8cm, fill: blue))
   #track("p",
     keys: (

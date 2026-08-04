@@ -10,7 +10,7 @@
 //
 // Run:  candy build examples/transform_demo.tyx
 
-#scene(width: 16cm, height: 9cm)[
+#scene()[
   // 1) Object transition: a blue square first slides, then smoothly morphs
   //    into a red circle. After the transform the "shape" label holds the
   //    circle, so the following fade-out animates the circle (not the square).

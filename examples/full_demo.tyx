@@ -1,7 +1,7 @@
 #import "@preview/candy:0.1.0": *
 #show: candy
 
-#scene(width: 16cm, height: 9cm)[
+#scene()[
 
   // A red circle that moves along a triangular path.
   #mobject("ball", circle(radius: 0.4cm, fill: red))

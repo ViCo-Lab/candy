@@ -843,7 +843,7 @@ fn root_page_pt(scene: &Scene) -> (f64, f64) {
     if scene.scenes.is_empty() {
         scene.page_size.unwrap_or(DEFAULT_PAGE_PT)
     } else {
-        scene.effective_page_pt(scene.root_scene.unwrap_or(0))
+        scene.effective_page_pt(scene.scenes.first().map(|s| s.id).unwrap_or(0))
     }
 }
 

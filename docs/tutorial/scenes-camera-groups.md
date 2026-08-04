@@ -6,44 +6,47 @@ Candy groups content into **scenes** (independent animation segments), supports 
 ## `#scene` — independent segments
 
 ```typst
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene(name: "intro")[
   // all mobjects & actions here
 ]
 ```
 
-`#scene` wraps the body in a `page()` call so each scene renders as an independent page.
-The renderer uses the scene's page size as the canvas for every frame in that scene.
-Without `#scene`, Candy defaults to 16 cm × 9 cm.
+`#scene` marks a segment of the timeline. It does **not** size the canvas and does **not**
+paint a background: the viewport comes from the global `#show: candy` configuration (and
+any `#set page`), and the background is whatever the page under the scene paints.
 
 **Scene semantics**
 
-- **Nesting** — a `scene` may appear inside another scene's body, forming a child scene.
-  Nesting is resolved through the Typst AST, so import style is irrelevant.
-- **Parent auto-hide** — entering a child scene automatically hides its parent (and any
-  ancestor) for the child's duration. The renderer always shows the *deepest* active
-  scene at each frame time, so the child visually replaces the parent.
-- **Typst scope** — a mobject / `play` / `subtitle` belongs to the innermost `scene`
-  whose body encloses it (the scope in which it is evaluated).
-- **Cross-page scene** — a scene's `width`/`height` set the size of *each* page. Content
-  overflowing the page spills onto subsequent pages; the mobjects stay in one scene
-  (shared data) but the renderer plays the pages **in sequence** on a single-page canvas
-  (the canvas does *not* grow). Each page has its own timeline; the other pages stay
-  frozen until the current page finishes and the renderer auto-advances.
-- **Auto-split** — content spanning multiple pages is automatically split into multiple
-  scenes (one per page) when no explicit root `scene` wraps it.
-- **Implicit root** — with no `scene` call, the entire document is one implicit root
-  scene that still follows the one-page / split rules (default 16 cm × 9 cm). A child
-  scene inherits its page size from the nearest ancestor that declares one.
+- **Flat, never nested** — a `#scene(...)` call inside another scene's body is a *parse
+  error*. There is only "switch scene", never "enter a sub-scene". Nesting is detected
+  through the Typst AST, so import style is irrelevant.
+- **Document structure** — a document must be either a sequence of parallel `#scene(...)`
+  calls with **no content at the document root**, or root content with **no** `#scene(...)`
+  call at all. Mixing the two is a parse error.
+- **Implicit whole-document scene** — with no `#scene` call, the entire document is a
+  single scene.
+- **Typst scope** — a mobject / `play` / `subtitle` belongs to the `scene` whose body
+  encloses it (the scope in which it is evaluated).
+- **One page per scene** — a scene occupies one viewport. Content that overflows is
+  reported as `W018` and clipped at rasterization; split it into more scenes instead.
+- **Background** — set it on the page under the scene, e.g. `#set page(fill: black)` as
+  the first line of the scene body.
+- **Named scenes & switching** — `#scene(name: "foo")` can be jumped to with
+  `#scene-switch(target: "foo")`. Anonymous scenes get auto-assigned names.
+
+Unknown named arguments (including the removed `width` / `height` / `bg`) are a parse
+error rather than being silently ignored.
 
 ```typst
-// nested scenes: "outer" shows first, "inner" replaces it (parent auto-hidden)
-#scene(width: 16cm, height: 9cm)[
+// flat, sibling scenes: "outer" plays first, then "inner" takes over
+#scene(name: "outer")[
   #mobject("a", circle(radius: 1cm, fill: blue))
   #animate("a", to: (4cm, 0pt), duration: 1000)
-  #scene(width: 10cm, height: 6cm)[
-    #mobject("b", square(size: 2cm, fill: red))
-    #animate("b", to: (3cm, 2cm), duration: 800)
-  ]
+]
+#scene(name: "inner")[
+  #set page(fill: black)
+  #mobject("b", square(size: 2cm, fill: red))
+  #animate("b", to: (3cm, 2cm), duration: 800)
 ]
 ```
 

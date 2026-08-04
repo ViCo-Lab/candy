@@ -50,7 +50,7 @@ argument unchanged when it is already a number, so bind the `ecnew` result
 resume / freeze a counter. All inert under standard Typst.
 
 ```typst
-#scene(width: 16cm, height: 9cm)[
+#scene()[
   #let r = ecnew("r", seed: 40, step: 1)
   #mobject("dot", circle(radius: ecval(r) * 1pt + 1cm, fill: blue))
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "bezier:0.25,0.1,0.25,1.0")

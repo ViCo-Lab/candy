@@ -6,7 +6,7 @@
 // time is the timeline cursor where #kcpush runs, plus an optional integer
 // `offset`); Candy interpolates the value between adjacent keyframes at render
 // time. Under standard Typst the counter shows its `seed` / `default`.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   // Register with seed 0. `easing` is the per-segment default used by the
   // first keyframe's `inherit`.
   #let k = kcnew("k", seed: 0, easing: "linear")

@@ -11,7 +11,7 @@
 //
 // Run:  candy build examples/video_placeholder_demo.tyx
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("clip", video("intro.mp4", width: 10cm, height: 6cm))
 
   // Fly the placeholder in and scale it up.

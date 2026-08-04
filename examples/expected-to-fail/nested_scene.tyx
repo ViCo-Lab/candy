@@ -1,0 +1,12 @@
+// Expected to fail: E008 (CandyDumpedYou). Scenes are flat — a `#scene(...)`
+// call inside another scene's body is a parse error. Use a sibling scene (and
+// `#switch(target: "name")`) instead of nesting.
+#import "@preview/candy:0.1.0": *
+#show: candy
+
+#scene(name: "outer")[
+  #mobject("a", circle(radius: 1cm, fill: blue))
+  #scene(name: "inner")[
+    #mobject("b", square(size: 2cm, fill: red))
+  ]
+]

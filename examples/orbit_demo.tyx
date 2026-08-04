@@ -7,7 +7,8 @@
 //
 // Run:  candy build examples/orbit_demo.tyx
 
-#scene(width: 16cm, height: 9cm, bg: rgb("#04060d"))[
+#scene()[
+  #set page(fill: rgb("#04060d"))
 
   // Central sun.
   #mobject("sun", circle(radius: 0.7cm, fill: rgb("#ffcf4d")))

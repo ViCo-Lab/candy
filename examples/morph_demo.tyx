@@ -12,7 +12,7 @@
 //
 // Run:  candy build examples/morph_demo.tyx
 
-#scene(width: 16cm, height: 9cm)[
+#scene()[
   // A blue circle morphs into a red square.
   #mobject("circ", circle(radius: 1.5cm, fill: blue))
   #mobject("sq", square(size: 3cm, fill: red))

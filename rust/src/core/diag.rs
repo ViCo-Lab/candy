@@ -628,41 +628,10 @@ pub enum CandyWarn {
     ///
     /// Field: a description like `scene 'intro' content overflows the viewport`.
     ContentOverflow(String),
-
-    /// W019 — The scenes of a single `.tyx` use inconsistent page sizes. Each
-    /// scene's size is the one **actually produced** by the Typst compile
-    /// (the measured canvas, not merely the declared arguments), so a scene
-    /// that omits `width`/`height` counts with the Typst-side default it
-    /// really rendered at. Every frame is composited onto the single largest
-    /// canvas, so smaller scenes render with blank margins — usually
-    /// unintentional, hence the warning. Documents without explicit
-    /// `#scene(...)` calls (a bare root) never warn: the root simply respects
-    /// the document's own `#set page(...)` settings.
-    ///
-    /// Field: a description listing each scene and its actual canvas size.
-    SceneSizeMismatch(String),
-
-    /// W020 — More than one `candy` global-config show rule was found in a single
-    /// `.tyx`, and their configurations disagree. Candy honors only the **first**
-    /// one and warns about every later conflicting rule, because a single
-    /// animation can only have one global canvas, resolution, and frame rate.
-    ///
-    /// Field: a description of the conflicting configs (e.g. the two sizes).
-    ConfigConflict(String),
-
-    /// W021 — A `#scene` call still passes the deprecated `width` / `height` /
-    /// `bg` arguments. These per-scene page settings were deprecated in favor of
-    /// the global `candy` show rule (`show: candy` / `show: candy.with(..)`),
-    /// which now owns the canvas size. The arguments are ignored; only the
-    /// global `candy` config drives the viewport.
-    ///
-    /// Fields: the offending scene label (or `"<root>"`), and the source location
-    /// of the `#scene` call.
-    SceneDeprecatedSize(String, SourceLoc),
 }
 
 impl CandyWarn {
-    /// Mandatory warning code (W001–W019).
+    /// Mandatory warning code (W001–W018).
     pub fn code(&self) -> &'static str {
         match self {
             CandyWarn::TimeDependent => "W001",
@@ -683,9 +652,6 @@ impl CandyWarn {
             CandyWarn::Interpolation(_) => "W016",
             CandyWarn::KeyframeOffsetClamp(_, _) => "W017",
             CandyWarn::ContentOverflow(_) => "W018",
-            CandyWarn::SceneSizeMismatch(_) => "W019",
-            CandyWarn::ConfigConflict(_) => "W020",
-            CandyWarn::SceneDeprecatedSize(_, _) => "W021",
         }
     }
 
@@ -760,24 +726,6 @@ impl CandyWarn {
                      isn't shown"
                 )
             }
-            CandyWarn::SceneSizeMismatch(d) => {
-                format!(
-                    "render: {d}; every frame is composited onto the single \
-                     largest canvas, so smaller scenes render with blank margins"
-                )
-            }
-            CandyWarn::ConfigConflict(d) => {
-                format!(
-                    "parse: multiple `candy` global-config show rules disagree ({d}); \
-                     only the first one is honored"
-                )
-            }
-            CandyWarn::SceneDeprecatedSize(d, _) => {
-                format!(
-                    "parse: {d}; per-scene width/height/bg are deprecated — the global \
-                     `candy` show rule now sets the canvas and is used instead"
-                )
-            }
         }
     }
 
@@ -790,7 +738,6 @@ impl CandyWarn {
             CandyWarn::UnknownEasing(_, l) => Some(l),
             CandyWarn::RevealFallback(_, l) => Some(l),
             CandyWarn::KeyframeOffsetClamp(_, l) => Some(l),
-            CandyWarn::SceneDeprecatedSize(_, l) => Some(l),
             _ => None,
         }
     }
@@ -819,18 +766,6 @@ impl CandyWarn {
             CandyWarn::ContentOverflow(_) => Some(
                 "shrink the content or position mobjects with absolute `to:` coordinates so it \
                 fits the viewport, or split it into multiple #scene blocks",
-            ),
-            CandyWarn::SceneSizeMismatch(_) => Some(
-                "give every #scene the same width/height (a scene that omits them renders at the \
-                 Typst-side default, not its parent's size) if a uniform output canvas is intended",
-            ),
-            CandyWarn::ConfigConflict(_) => Some(
-                "declare the global config exactly once, e.g. `#show: candy` or \
-                 `#show: candy.with(width: 13.33in, height: 7.5in, ppi: 144, fps: 30)`",
-            ),
-            CandyWarn::SceneDeprecatedSize(_, _) => Some(
-                "remove width/height/bg from the #scene call; configure the canvas via the global \
-                 `show: candy` rule instead",
             ),
             _ => None,
         }

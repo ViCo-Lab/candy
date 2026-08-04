@@ -9,7 +9,7 @@
 //
 // Run:  candy build examples/math_derivation.tyx
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
 
   // Title (spiral-in from a scaled/rotated, invisible state).
   #mobject("title", text(22pt, weight: "bold", fill: blue)[Deriving the Quadratic Formula])

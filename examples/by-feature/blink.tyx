@@ -3,7 +3,7 @@
 
 // Feature: #blink — docs/reference/directives.md
 // Alternate opacity 1↔0 `blinks` times.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("dot", circle(radius: 1cm, fill: blue))
   #blink("dot", blinks: 3, duration: 500, easing: "linear")
 ]

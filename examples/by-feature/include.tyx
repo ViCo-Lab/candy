@@ -1,7 +1,7 @@
 #import "@preview/candy:0.1.0": *
 #show: candy
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   // Split a large animation into reusable partials. `#include` inlines the
   // referenced file *before* candy parses, so its directives are parsed just
   // like the ones written here — they share this single timeline.

@@ -594,6 +594,10 @@ pub struct Scene {
     /// Page size in Typst points, if the `.tyx` source sets a page size via
     /// `#set page(width:.., height:..)` or `#scene(width:.., height:..)`.
     /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide).
+    /// Page size in Typst points, if the `.tyx` source sets a page size via
+    /// `#set page(width:.., height:..)` (or the global `candy` show rule).
+    /// When `None`, the renderer defaults to 16cm × 9cm (16:9 slide). The page
+    /// (not the scene) owns the size; scenes never configure width/height.
     #[serde(default)]
     pub page_size: Option<(f64, f64)>,
     /// Subtitle overlays (the "subtitle module"). Each caption is shown over the
@@ -622,19 +626,13 @@ pub struct Scene {
     /// scope exit and parental shadowing for both subtitles and counters.
     #[serde(default)]
     pub scopes: Vec<ScopeInfo>,
-    /// Nested scene tree (see the scene semantics in `docs` / `typst/README`).
-    /// The implicit root scene (id `0`) always exists and owns every mobject /
-    /// action not declared inside an explicit `#scene(...)`. Each explicit
-    /// `#scene(...)` becomes a child scene with its own page size + timeline
-    /// interval; entering a child scene hides its parent (auto-hide). When
-    /// `scenes` is empty (legacy input) the whole document is treated as a
-    /// single implicit scene and behaves exactly as before.
+    /// Scene list (see the scene semantics in `docs` / `typst/README`). Scenes
+    /// are flat: a `#scene(...)` may only appear at the document root. The
+    /// implicit whole-document scene (id `0`) always exists and owns every
+    /// mobject / action not declared inside an explicit `#scene(...)`. When
+    /// `scenes` is empty the whole document is the single implicit scene.
     #[serde(default)]
     pub scenes: Vec<SceneInfo>,
-    /// The implicit root scene id (always `Some(0)` once parsed). `None` means
-    /// "legacy single-scene document" — behavior is identical to v0.1.
-    #[serde(default)]
-    pub root_scene: Option<usize>,
     /// Group parent map: child label → parent label. A group is a special kind
     /// of mobject — an mobject may own child mobjects, and animating the parent
     /// transforms all of its children together (parent→child inheritance). The
@@ -786,61 +784,31 @@ pub struct ParseArtifacts {
 }
 
 impl Scene {
-    /// Depth of a scene in the scene tree (root = 0). Returns `0` for an
-    /// unknown scene (treated as a top-level alias).
-    pub fn scene_depth(&self, id: usize) -> usize {
-        let mut depth = 0;
-        let mut cur = self
-            .scenes
-            .iter()
-            .find(|s| s.id == id)
-            .and_then(|s| s.parent);
-        while let Some(p) = cur {
-            depth += 1;
-            cur = self
-                .scenes
-                .iter()
-                .find(|s| s.id == p)
-                .and_then(|s| s.parent);
-        }
-        depth
-    }
-
-    /// The active scene at timeline time `time_ms` — the *deepest* scene whose
-    /// `[start_ms, end_ms]` interval contains `time_ms`. This is what makes
-    /// "entering a child scene hides the parent" work: at any moment exactly
-    /// one scene (the innermost enclosing one) is visible.
+    /// The active scene at timeline time `time_ms` — the scene whose
+    /// `[start_ms, end_ms]` interval contains `time_ms`. Scenes are flat (no
+    /// nesting), so at any moment exactly one scene is visible. If no scene's
+    /// interval contains `time_ms`, the first scene in document order is
+    /// returned (so the timeline always maps to a real scene).
     pub fn active_scene_at(&self, time_ms: u32) -> usize {
         let mut best: Option<usize> = None;
-        let mut best_depth = 0usize;
         for s in &self.scenes {
             if time_ms >= s.start_ms && time_ms <= s.end_ms {
-                let depth = self.scene_depth(s.id);
-                if best.is_none() || depth >= best_depth {
-                    best = Some(s.id);
-                    best_depth = depth;
-                }
+                best = Some(s.id);
             }
         }
-        best.or(self.root_scene).unwrap_or(0)
+        best.or_else(|| self.scenes.first().map(|s| s.id))
+            .unwrap_or(0)
     }
 
     /// Resolve the effective canvas size (in Typst points) for `scene_id`,
-    /// inheriting from the nearest ancestor that declares a page size, then the
-    /// root scene, then the 16:9 default. After `parse_tyx` the root scene's
-    /// `page_size` is set from the global `candy` config, so every scene renders
-    /// on the global viewport. (Per-scene `width`/`height` on `#scene` are
-    /// deprecated and ignored — they no longer set the canvas.)
+    /// falling back to the 16:9 default when the scene declares no measured
+    /// page size. After `parse_tyx` each scene's `page_size` is set from the
+    /// document's `#set page(...)` or the global `candy` show rule, so size is
+    /// owned by the page, never by `#scene` arguments.
     pub fn effective_page_pt(&self, scene_id: usize) -> (f64, f64) {
-        let mut cur = Some(scene_id);
-        while let Some(id) = cur {
-            if let Some(s) = self.scenes.iter().find(|s| s.id == id) {
-                if let Some(p) = s.page_size {
-                    return p;
-                }
-                cur = s.parent;
-            } else {
-                break;
+        if let Some(s) = self.scenes.iter().find(|s| s.id == scene_id) {
+            if let Some(p) = s.page_size {
+                return p;
             }
         }
         DEFAULT_PAGE_PT
@@ -1257,46 +1225,33 @@ pub struct ScopeInfo {
 /// are automatically assigned a UUID-like name for internal management.
 ///
 /// Semantics (see `typst/README.md` → *Scene / canvas*):
-/// - scenes may be **nested**;
-/// - entering a child scene **auto-hides** its parent (the renderer shows
-///   only the innermost active scene's content at any frame);
+/// - scenes are **flat** — a `#scene(...)` may only appear at the document root
+///   (never inside another scene); a nested `#scene` is a hard error;
 /// - scenes **respect Typst's lexical scope** — a mobject belongs to the
 ///   innermost scene that encloses it at parse time;
-/// - a scene may **overflow onto multiple pages** (a *cross-page scene*): its
-///   mobjects stay in **one** scene (data shared — same ownership, same timeline)
-///   but are laid out across the overflow pages, and the renderer plays those
-///   pages **in sequence** on a single-page canvas (it does NOT grow the canvas);
-///   each page has its own timeline and the other pages stay frozen until the
-///   current page finishes and the renderer auto-advances (nothing is clipped or
-///   split into sub-scenes);
-/// - with **no explicit root scene**, the whole document is one implicit scene
-///   (id `0`), following the same split rules.
+/// - a scene is rendered on **one page**; content that overflows the page emits
+///   a `W018` content-overflow warning (the page, not the scene, owns the size
+///   and any background fill);
+/// - with **no explicit scene**, the whole document is one implicit scene
+///   (id `0`).
 /// - **Scene switching**: use `#switch(target: "name")` to jump to a named scene.
 ///   Anonymous scenes get auto-assigned UUID names (e.g., `"scene_a1b2c3d4"`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneInfo {
-    /// Unique scene id (root = `0`).
+    /// Unique scene id (implicit whole-document scene = `0`).
     pub id: usize,
     /// Human-readable name for scene switching (e.g., `"intro"`, `"demo"`).
     /// `None` means anonymous (will be auto-assigned a UUID-like name internally).
     #[serde(default)]
     pub name: Option<String>,
-    /// Parent scene id (`None` for the root scene).
-    #[serde(default)]
-    pub parent: Option<usize>,
     /// The lexical Typst scope id this scene occupies (for attribution).
     pub scope: usize,
-    /// Canvas size in Typst points `(w, h)`. `None` ⇒ inherit from parent,
-    /// then the root, then the 16:9 default.
+    /// Canvas size in Typst points `(w, h)`, measured from the document's
+    /// `#set page(...)` or the global `candy` show rule. `None` ⇒ inherit from
+    /// the document-wide page settings or Typst's default page (A4). The page
+    /// itself owns the size; the scene never configures width/height.
     #[serde(default)]
     pub page_size: Option<(f64, f64)>,
-    /// Background fill for this scene, as the raw Typst color expression
-    /// captured from `#scene(bg: …)` (e.g. `white`, `rgb("#05060f")`). `None`
-    /// ⇒ inherit from the parent scene, then the root, then opaque white.
-    /// The renderer resolves this to an actual color (SVG/video) so the
-    /// configured background actually shows up in the output frames.
-    #[serde(default)]
-    pub bg: Option<String>,
     /// Scene timeline interval (ms). The root spans `[0, total]`.
     pub start_ms: u32,
     pub end_ms: u32,
@@ -1639,7 +1594,6 @@ mod tests {
             kc_events: Vec::new(),
             scopes: Vec::new(),
             scenes: Vec::new(),
-            root_scene: None,
             morph_pairs: Vec::new(),
             transform_plans: Vec::new(),
             groups: HashMap::new(),

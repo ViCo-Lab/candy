@@ -1,0 +1,11 @@
+// Expected to fail: E008 (CandyDumpedYou). A document must be either parallel
+// `#scene(...)` calls with no content at the document root, or root content
+// with no `#scene(...)` call at all. Mixing the two is a parse error.
+#import "@preview/candy:0.1.0": *
+#show: candy
+
+#mobject("root", circle(radius: 1cm, fill: gray))
+
+#scene(name: "s")[
+  #mobject("a", square(size: 2cm, fill: red))
+]

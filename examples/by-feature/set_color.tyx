@@ -3,7 +3,7 @@
 
 // Feature: #set_color — docs/reference/directives.md
 // Lerp the box's `fill:` from red to green over 300ms with the "smooth" easing.
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
   #mobject("box", rect(width: 2cm, height: 2cm, fill: red))
   #set-color("box", color: green, duration: 300, easing: "smooth")
 ]

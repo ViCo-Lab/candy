@@ -1,7 +1,7 @@
 #import "@preview/candy:0.1.0": *
 #show: candy
 
-#scene(width: 16cm, height: 9cm, bg: white)[
+#scene()[
 
   // A growing circle whose radius is driven by an easing counter.
   // `ecval("r")` is a valid AST node substituted per-frame by the renderer with

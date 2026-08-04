@@ -175,16 +175,9 @@ pub struct Renderer {
     /// `transform` content swaps) have a distinct source each frame and still
     /// recompile, but are themselves memoized, so a counter that repeats a
     /// value reuses its compile too.
-    /// Memoized background-color resolutions: raw `#scene(bg: …)` expression →
-    /// resolved `#rrggbb` (or `#rrggbbaa`) hex string. Resolving goes through
-    /// the real Typst compiler (see `resolve_bg_hex`), so it is done once per
-    /// distinct background expression and shared across every frame.
-    ///
     /// `Mutex` (not `RefCell`) because the renderer is shared `&self` across a
     /// parallel frame-render loop.
     body_cache: Mutex<LruCache<String, Arc<PagedDocument>>>,
-    /// Memoized `#scene(bg: …)` expression → resolved `#rrggbb(aa)` hex.
-    bg_cache: Mutex<HashMap<String, String>>,
     /// `#set-color` transitions, built once in `ensure_flow` from the scene's
     /// `Action::SetColor` slides. Keyed by mobject label; each value is the
     /// ordered list of color transitions (oldest first) for that label.
@@ -276,7 +269,6 @@ impl Renderer {
             cam_start: None,
             parent_labels: std::collections::HashSet::new(),
             body_cache: Mutex::new(LruCache::with_capacity(BODY_CACHE_CAP)),
-            bg_cache: Mutex::new(HashMap::new()),
             color_changes: HashMap::new(),
             color_rgba_cache: Mutex::new(HashMap::new()),
             param_source,
@@ -441,58 +433,10 @@ impl Renderer {
         self.morph_body_for(label, time_ms)
             .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
     }
-    /// Resolve a `#scene(bg: …)` color expression to a `#rrggbb(aa)` hex string
-    /// suitable for an SVG `fill` / video canvas, using the real Typst compiler.
-    ///
-    /// We compile a 1×1pt page whose `fill` is the expression and read back the
-    /// resolved page color — this honors *any* valid Typst color (`white`,
-    /// `rgb("#05060f")`, `rgb(r,g,b)`, `luma(…)`, gradients, …) instead of a
-    /// hand-rolled string parser. A non-color paint (e.g. a gradient) or an
-    /// unresolvable expression falls back to opaque white. Results are memoized
-    /// per distinct expression.
-    fn resolve_bg_hex(&self, bg: &str) -> Result<String, CandyError> {
-        if let Some(c) = self.bg_cache.lock().unwrap().get(bg) {
-            return Ok(c.clone());
-        }
-        let src = format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {bg})\n#rect()");
-        // A compile failure (e.g. a syntax error inside `bg`) is a real error and
-        // must propagate as `E005`. Only a *successful* compile whose fill is not
-        // a solid colour legitimately falls back to opaque white.
-        let resolved = self
-            .compile(&src, &Dict::new())?
-            .pages()
-            .first()
-            .and_then(|p| match &p.fill {
-                Smart::Custom(Some(Paint::Solid(c))) => Some(c.to_hex().to_string()),
-                _ => None,
-            })
-            .unwrap_or_else(|| "white".to_string());
-        self.bg_cache
-            .lock()
-            .unwrap()
-            .insert(bg.to_string(), resolved.clone());
-        Ok(resolved)
-    }
-    /// Effective background hex for `scene_id`, walking up the scene tree to
-    /// inherit a parent's `bg` (root with none ⇒ opaque white).
-    fn scene_bg_hex(&self, scene_id: usize) -> Result<String, CandyError> {
-        let mut cur = Some(scene_id);
-        while let Some(id) = cur {
-            if let Some(s) = self.scene.scenes.iter().find(|s| s.id == id) {
-                if let Some(bg) = &s.bg {
-                    return self.resolve_bg_hex(bg);
-                }
-                cur = s.parent;
-            } else {
-                break;
-            }
-        }
-        Ok("white".to_string())
-    }
     /// Resolve a Typst color expression (`red`, `rgb(0,255,0)`, `luma(50)`,
     /// `rgb("#7fe3ff")`, …) to its `[r, g, b, a]` bytes (0–255), using the real
-    /// Typst compiler (mirrors [`resolve_bg_hex`] but returns raw RGBA so the
-    /// `#set-color` path can lerp between two colors per frame). A non-solid
+    /// Typst compiler (returning raw RGBA so the `#set-color` path can lerp
+    /// between two colors per frame). A non-solid
     /// paint (e.g. a gradient) or an unresolvable expression falls back to
     /// opaque white. Results are memoized per distinct expression.
     fn resolve_color_rgba(&self, expr: &str) -> Result<[u8; 4], CandyError> {
@@ -501,7 +445,7 @@ impl Renderer {
         }
         let resolved = parse_hex_color(expr).unwrap_or_else(|| {
             // Evaluate the expression as a real Typst color via the page-fill
-            // trick (same mechanism as `resolve_bg_hex`).
+            // trick: compile a 1pt page filled with it and read the fill back.
             let src =
                 format!("#set page(width: 1pt, height: 1pt, margin: 0pt, fill: {expr})\n#rect()");
             let hex = self
@@ -739,7 +683,8 @@ pub(crate) fn compile_file_for_test(
 #[test]
 fn content_timeline_swaps_rendered_body() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"box\", rect(width: 2cm, height: 2cm))\n\
                #transform(\"box\", to: circle(radius: 1cm), duration: 50)\n\
                ]\n";
@@ -770,15 +715,6 @@ fn content_overflow_warning_code_is_registered() {
         CandyWarn::ContentOverflow("scene 'x' overflows".into()).code(),
         "W018"
     );
-}
-
-/// The inconsistent-scene-size condition must be surfaced as a registered,
-/// non-fatal warning code `W019` (SceneSizeMismatch). Verifies the code is
-/// wired up.
-#[test]
-fn scene_size_mismatch_warning_code_is_registered() {
-    use crate::core::diag::CandyWarn;
-    assert_eq!(CandyWarn::SceneSizeMismatch("x".into()).code(), "W019");
 }
 
 /// Run `f` with fd 2 redirected to a temp file so we can assert on the
@@ -821,23 +757,23 @@ where
     (r, out)
 }
 
-/// Regression: under the global `candy` config, the canvas is a single uniform
-/// page owned by `#show: candy`. Per-scene `width`/`height` args are deprecated
-/// (W021), so two scenes with differing *declared* sizes no longer produce a
-/// measured-size mismatch and must NOT emit W019 (SceneSizeMismatch).
+/// Regression: scenes never size the canvas — the page does. Two sibling
+/// scenes under one global `candy` config (and one `#set page`) therefore
+/// measure to the same size, and none of the retired size / config warnings
+/// (`W019`, `W020`, `W021`) may fire.
 #[cfg(unix)]
 #[test]
-fn deprecated_scene_sizes_uniform_canvas_w021_not_w019() {
+fn flat_scenes_share_one_uniform_canvas() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 10cm, height: 6cm)[\n\
+               #set page(width: 10cm, height: 6cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"a\", rect(width: 5cm, height: 1cm))\n\
                ]\n\
-               #scene(width: 10cm, height: 9cm)[\n\
+               #scene()[\n\
                #mobject(\"b\", rect(width: 5cm, height: 1cm))\n\
                ]\n";
-    let tmp = std::env::temp_dir().join("candy_test_w019_mismatch.tyx");
+    let tmp = std::env::temp_dir().join("candy_test_uniform_canvas.tyx");
     std::fs::write(&tmp, src).unwrap();
-    // W021 (deprecated per-scene size) is emitted during parsing.
     let (scene, parse_stderr) =
         capture_stderr(|| crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap());
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -846,18 +782,16 @@ fn deprecated_scene_sizes_uniform_canvas_w021_not_w019() {
     });
     std::fs::remove_file(&tmp).ok();
 
-    // Deprecated per-scene sizes are warned (W021), but the uniform canvas
-    // means there is no measured mismatch to warn about (W019).
-    assert!(
-        parse_stderr.contains("W021"),
-        "deprecated per-scene sizes must emit W021; stderr was:\n{parse_stderr}"
-    );
-    assert!(
-        !flow_stderr.contains("W019"),
-        "uniform canvas must not emit W019; stderr was:\n{flow_stderr}"
-    );
+    // The retired scene-size / config-conflict warnings must never fire again.
+    for stale in ["W019", "W020", "W021"] {
+        assert!(
+            !parse_stderr.contains(stale) && !flow_stderr.contains(stale),
+            "retired warning {stale} was emitted; \
+             parse stderr:\n{parse_stderr}\nflow stderr:\n{flow_stderr}"
+        );
+    }
 
-    // The measured scene heights are now identical (single global canvas).
+    // The measured scene heights are identical (single global canvas).
     let heights: Vec<f64> = r.scene_pages.values().map(|(_, h)| *h).collect();
     let max = heights.iter().cloned().fold(0.0_f64, f64::max);
     let min = heights.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -868,17 +802,17 @@ fn deprecated_scene_sizes_uniform_canvas_w021_not_w019() {
     );
 }
 
-/// Regression: a document with NO explicit `#scene` calls (a bare root) must
-/// respect the document's own `#set page(...)` settings — the canvas adopts the
-/// *measured* page size (here a non-default 12cm × 7cm), and it must NOT emit
-/// `W019` (only inconsistent *explicit* scenes warn).
+/// Regression: a document with NO explicit `#scene` calls is a single implicit
+/// whole-document scene and must respect the document's own `#set page(...)`
+/// settings — the canvas adopts the *measured* page size (here a non-default
+/// 12cm × 7cm) and no size warning is emitted.
 #[cfg(unix)]
 #[test]
-fn bare_root_respects_page_settings_no_w019() {
+fn bare_root_respects_page_settings() {
     let src = "#import \"candy\": *\n#show: candy\n\
                #set page(width: 12cm, height: 7cm)\n\
                #mobject(\"a\", rect(width: 5cm, height: 1cm))\n";
-    let tmp = std::env::temp_dir().join("candy_test_w019_bareroot.tyx");
+    let tmp = std::env::temp_dir().join("candy_test_bareroot_page.tyx");
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
@@ -887,10 +821,12 @@ fn bare_root_respects_page_settings_no_w019() {
     });
     std::fs::remove_file(&tmp).ok();
 
-    assert!(
-        !stderr.contains("W019"),
-        "bare root must not warn W019; stderr was:\n{stderr}"
-    );
+    for stale in ["W019", "W020", "W021"] {
+        assert!(
+            !stderr.contains(stale),
+            "retired warning {stale} was emitted; stderr was:\n{stderr}"
+        );
+    }
     let exp_w = 12.0 * PT_PER_CM;
     let exp_h = 7.0 * PT_PER_CM;
     assert!(
@@ -1069,7 +1005,6 @@ fn substitute_counters_expands_ecval_as_ast_node() {
         kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
-        root_scene: None,
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
@@ -1147,7 +1082,6 @@ fn keyframe_counter_interpolation_and_lifecycle() {
         kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
-        root_scene: None,
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
@@ -1225,7 +1159,6 @@ fn subtitle_stays_in_viewport() {
         kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
-        root_scene: None,
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
@@ -1295,7 +1228,6 @@ fn morph_renders_interpolated_polygon() {
         kc_events: Vec::new(),
         scopes: Vec::new(),
         scenes: Vec::new(),
-        root_scene: None,
         groups: HashMap::new(),
         artifacts: ParseArtifacts::default(),
         private_metadata: PrivateMeta::default(),
@@ -1371,16 +1303,13 @@ fn renderer_flow_layout_matches_native_and_declaration_order() {
         scopes: Vec::new(),
         scenes: vec![SceneInfo {
             id: 0,
-            parent: None,
             scope: 0,
             page_size: None,
-            bg: None,
             start_ms: 0,
             end_ms: 0,
             name: None,
             owns_labels: owns.clone(),
         }],
-        root_scene: Some(0),
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
@@ -1458,16 +1387,13 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
         scopes: Vec::new(),
         scenes: vec![SceneInfo {
             id: 0,
-            parent: None,
             scope: 0,
             page_size: None,
-            bg: None,
             start_ms: 0,
             end_ms: 0,
             name: None,
             owns_labels: owns.clone(),
         }],
-        root_scene: Some(0),
         morph_pairs: Vec::new(),
         transform_plans: Vec::new(),
         groups: HashMap::new(),
@@ -1498,7 +1424,8 @@ fn hidden_at_frame0_mobject_reserves_space_via_hide() {
 #[test]
 fn transform_splits_inline_content_into_glyph_fragments() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #transform(\"eq\", to: [$a + b + d + e = c$], duration: 60)\n\
@@ -1540,7 +1467,8 @@ fn transform_splits_inline_content_into_glyph_fragments() {
 #[test]
 fn set_color_recolors_body_and_lerps() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"box\", rect(width: 2cm, height: 2cm, fill: red))\n\
                #set-color(\"box\", color: green, duration: 300, easing: \"smooth\")\n\
                ]\n";
@@ -1571,7 +1499,8 @@ fn set_color_recolors_body_and_lerps() {
 #[test]
 fn transform_target_renders_after_window() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
@@ -1585,7 +1514,7 @@ fn transform_target_renders_after_window() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -1658,7 +1587,8 @@ fn chained_transform_persists_intermediate() {
     let v = crate::typst_package_version().expect("typst/typst.toml must declare a `version`");
     let pkg = format!("@preview/candy:{v}");
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
@@ -1675,7 +1605,7 @@ fn chained_transform_persists_intermediate() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -1753,7 +1683,7 @@ fn chained_transform_persists_intermediate() {
 #[test]
 fn camera_background_stays_fixed_outside_camera_group() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm, bg: rgb(\"#05060f\"))[\n\
+               #scene(name: \"s\")[\n\
                #mobject(\"a\", circle(radius: 1cm, fill: blue))\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_cam_bg.tyx");
@@ -1821,7 +1751,8 @@ fn camera_background_stays_fixed_outside_camera_group() {
 #[test]
 fn typewriter_multibyte_prefix_does_not_panic() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"outro\", \"The quadratic formula — done.\")\n\
                #typewriter(\"outro\", duration: 100)\n\
                #pause(duration: 60)\n\
@@ -1835,7 +1766,7 @@ fn typewriter_multibyte_prefix_does_not_panic() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -1869,7 +1800,8 @@ fn typewriter_multibyte_prefix_does_not_panic() {
 #[test]
 fn transform_overlay_uses_defs_and_use_in_svg() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
@@ -1883,7 +1815,7 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -1937,7 +1869,8 @@ fn transform_overlay_uses_defs_and_use_in_svg() {
 #[test]
 fn transform_composes_with_concurrent_animate() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #animate(\"eq\", scale: 200%, rotate: 30deg, duration: 60)\n\
@@ -1952,7 +1885,7 @@ fn transform_composes_with_concurrent_animate() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -2003,7 +1936,7 @@ fn transform_translation_animate_shifts_all_fragments() {
             scene
                 .scenes
                 .iter()
-                .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+                .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
                 .collect::<Vec<_>>(),
             scene.items.keys().collect::<Vec<_>>(),
             scene.label_scene_map(),
@@ -2047,13 +1980,15 @@ fn transform_translation_animate_shifts_all_fragments() {
     // transform window (at the transform's mid, the animate has already
     // finished and its dx=5cm is inherited as the transform's base offset).
     let base = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
                #pause(duration: 60)\n\
                ]\n";
     let moved = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #animate(\"eq\", dx: 5cm, duration: 60)\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -2097,7 +2032,8 @@ fn transform_translation_animate_shifts_all_fragments() {
 #[test]
 fn chained_transforms_hide_future_tmp_during_first_window() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"eq\", [$a + b = c$])\n\
                #animate(\"eq\", to: (0cm, 3cm), duration: 60)\n\
                #transform(\"eq\", to: [$a + b + d = c$], duration: 60)\n\
@@ -2113,7 +2049,7 @@ fn chained_transforms_hide_future_tmp_during_first_window() {
         scene
             .scenes
             .iter()
-            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.parent))
+            .map(|s| (s.id, s.name.clone(), s.start_ms, s.end_ms, s.scope))
             .collect::<Vec<_>>(),
         scene.items.keys().collect::<Vec<_>>(),
         scene.label_scene_map(),
@@ -2237,7 +2173,8 @@ fn play_block_hidden_when_not_rendered() {
 #[test]
 fn e005_typst_error_carries_source_location() {
     let src = "#import \"candy\": *\n#show: candy\n\
-               #scene(width: 16cm, height: 9cm)[\n\
+               #set page(width: 16cm, height: 9cm, margin: 0pt)\n\
+               #scene()[\n\
                #mobject(\"bad\", #(1cm + \"x\"))\n\
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_e005_loc.tyx");
