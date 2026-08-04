@@ -446,6 +446,15 @@ impl CandyError {
             CandyError::InvalidKey(_, _) => Some(
                 "keys must resolve to strings; wrap the value in quotes or use a string literal",
             ),
+            // E008 covers two distinct mistakes: a missing/incompatible import
+            // and a missing `#show: candy` rule. Suggesting "add the import" to
+            // someone who already imported candy is actively misleading, so
+            // pick the hint that matches the failure.
+            CandyError::CandyDumpedYou(msg, _) if msg.contains("show rule") => Some(
+                "add `#show: candy` right after the candy import — it sets the global canvas; \
+                 use `#show: candy.with(width: .., height: .., ppi: .., fps: ..)` to override \
+                 the defaults (13.33in x 7.5in, ppi 144, fps 30)",
+            ),
             CandyError::CandyDumpedYou(_, _) => Some(concat!(
                 "add `#import \"@preview/candy:",
                 env!("CARGO_PKG_VERSION"),

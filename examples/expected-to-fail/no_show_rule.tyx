@@ -1,0 +1,12 @@
+// Expected to fail: E008 (CandyDumpedYou). The candy package is imported, but
+// the document never applies the `#show: candy` rule. That rule owns the global
+// canvas (width / height / ppi / fps), so without it there is no viewport to
+// render into and candy refuses the document instead of guessing a page size.
+//
+// Fix: add `#show: candy` right after the import (or
+// `#show: candy.with(width: 20cm, height: 10cm, ppi: 96, fps: 60)` to override
+// the defaults of 13.33in x 7.5in, ppi 144, fps 30).
+#import "@preview/candy:0.1.0": *
+
+#mobject("dot", circle(radius: 1cm, fill: red))
+#animate("dot", to: (6cm, 0pt), duration: 500)

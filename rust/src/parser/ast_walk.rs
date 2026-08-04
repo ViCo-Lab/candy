@@ -366,9 +366,14 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         name: Some("root".to_string()),
         parent: None,
         scope: 0,
-        page_size: ctx
-            .page_size_cm
-            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        page_size: if ctx.candy_show_rule_seen {
+            // The global `candy` show rule owns the canvas; its config sizes
+            // the root scene (scene-level width/height are deprecated).
+            Some((ctx.config.width_pt, ctx.config.height_pt))
+        } else {
+            ctx.page_size_cm
+                .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM))
+        },
         bg: None,
         start_ms: 0,
         end_ms: 0,
@@ -431,6 +436,20 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             None,
         ));
     }
+    // The `candy` show rule owns the global canvas (width / height / ppi / fps).
+    // Without it the document has no viewport configuration at all, so candy
+    // would fall back to a guessed page and render garbage — reject it up front
+    // with the same E008 used for a missing import.
+    if !ctx.candy_show_rule_seen {
+        return Err(CandyError::CandyDumpedYou(
+            "the .tyx never applies the candy show rule; add `#show: candy` \
+             (optionally `#show: candy.with(width: .., height: .., ppi: .., \
+             fps: ..)`) right after the candy import — it configures the global \
+             canvas, resolution and frame rate for the whole animation"
+                .into(),
+            ctx.candy_import_loc.clone(),
+        ));
+    }
     if !ignore_version {
         if let Some(ref imported_v) = ctx.candy_import_version {
             if !crate::version_is_compatible(imported_v) {
@@ -469,6 +488,16 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         });
     }
 
+    // The root `SceneInfo` (id 0) was pushed *before* the AST walk, so its
+    // `page_size` could not yet reflect a `#show: candy` config discovered
+    // during the walk. Backfill it now so every scene (including the root, via
+    // `effective_page_pt`) shares the single global canvas.
+    if ctx.candy_show_rule_seen {
+        if let Some(root) = ctx.scenes.iter_mut().find(|s| s.id == 0) {
+            root.page_size = Some((ctx.config.width_pt, ctx.config.height_pt));
+        }
+    }
+
     // Assign UUID-like names to anonymous scenes so they can be referenced
     // by scene-switch(target: "scene_<uuid>") even when the author didn't provide
     // an explicit name.
@@ -490,9 +519,14 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
         initial: ctx.initial,
         audio: ctx.audio,
         imports: ctx.imports.clone(),
-        page_size: ctx
-            .page_size_cm
-            .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM)),
+        page_size: if ctx.candy_show_rule_seen {
+            // The global `candy` show rule owns the canvas; its config sizes
+            // the root scene (scene-level width/height are deprecated).
+            Some((ctx.config.width_pt, ctx.config.height_pt))
+        } else {
+            ctx.page_size_cm
+                .map(|(w, h)| (w * PT_PER_CM, h * PT_PER_CM))
+        },
         subtitles: ctx.subtitles,
         counters: ctx.counters,
         counter_events: ctx.counter_events,
@@ -511,6 +545,9 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             subtitle_call: ctx.subtitle_call_ranges.clone(),
             label_locs: ctx.label_locs.clone(),
             name_ref_locs: ctx.name_ref_locs.clone(),
+            // Global canvas / export config. Seeded by `DEFAULT` and overwritten
+            // by the first `#show: candy` show rule via `detect_candy_show_rule`.
+            config: ctx.config,
         },
         private_metadata: private,
     };
@@ -682,6 +719,16 @@ pub(crate) struct ParseCtx {
     /// whole-document recompiler can blank the caption out of the base document
     /// (it is drawn as a separate, camera-independent overlay).
     pub(crate) subtitle_call_ranges: HashMap<String, (usize, usize)>,
+    /// Global canvas / resolution / frame-rate config declared via the
+    /// `#show: candy` (or `#show: candy.with(width:.., height:.., ppi:.., fps:..)`)
+    /// show rule. Populated by [`detect_candy_show_rule`] during the AST walk;
+    /// falls back to [`GlobalConfig::DEFAULT`] until the first `candy` show rule
+    /// is seen. Replaces the per-scene `width` / `height` / `bg` mechanism.
+    pub(crate) config: crate::core::ast::GlobalConfig,
+    /// Whether a `#show: candy` show rule has already been seen. The candy config
+    /// is global and singular; a second `candy` show rule triggers W020
+    /// (ConfigConflict) rather than overwriting the first.
+    pub(crate) candy_show_rule_seen: bool,
 }
 
 impl ParseCtx {
@@ -869,9 +916,39 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                     }
                 }
             }
-            let page_size = match (w_cm, h_cm) {
-                (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
-                _ => None,
+            // The per-scene `width` / `height` / `bg` parameters are deprecated:
+            // the canvas (and therefore every scene's size and background) is now
+            // owned globally by the `#show: candy` config. Carrying them on a
+            // `#scene` call still works but emits W021 (SceneDeprecatedSize).
+            if w_cm.is_some() || h_cm.is_some() || bg_src.is_some() {
+                let mut detail = Vec::new();
+                if w_cm.is_some() {
+                    detail.push("width");
+                }
+                if h_cm.is_some() {
+                    detail.push("height");
+                }
+                if bg_src.is_some() {
+                    detail.push("bg");
+                }
+                let cr = node.range();
+                let loc = ctx.loc(cr);
+                crate::warn!(crate::core::diag::CandyWarn::SceneDeprecatedSize(
+                    detail.join(", "),
+                    loc
+                ));
+            }
+            let page_size = if ctx.candy_show_rule_seen {
+                // The global `candy` show rule owns the canvas; every scene
+                // (including nested ones) shares this single uniform page, so
+                // deprecated per-scene width/height are ignored for sizing and
+                // only trigger W021 above.
+                Some((ctx.config.width_pt, ctx.config.height_pt))
+            } else {
+                match (w_cm, h_cm) {
+                    (Some(w), Some(h)) => Some((w * PT_PER_CM, h * PT_PER_CM)),
+                    _ => None,
+                }
             };
             // Capture the *entire* `#scene(...)` call span for Phase 2: the
             // whole-document recompiler gates each scene with
@@ -914,6 +991,10 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         if matches!(target, Expr::Ident(ref id) if id.as_str() == "page") {
             extract_page_size(node, ctx);
         }
+    }
+    // Detect `#show: candy` (global canvas / resolution / frame-rate config).
+    if node.get().cast::<ast::ShowRule>().is_some() {
+        detect_candy_show_rule(node, ctx);
     }
     if let Some(imp) = node.get().cast::<ast::ModuleImport>() {
         // Capture package imports (paths starting with '@') so they can be
@@ -1083,6 +1164,132 @@ fn collect_named_lengths_here(e: Expr) -> Option<f64> {
     crate::parser::expr::expr_length_cm(&e)
 }
 
+/// Detect and consume a `#show: candy` / `#show: candy.with(width:.., height:..,
+/// ppi:.., fps:..)` global-config show rule.
+///
+/// The candy canvas config is *global and singular*. The first such show rule
+/// seeds [`ParseCtx::config`]; any further `candy` show rule triggers
+/// [`CandyWarn::ConfigConflict`] (W020) and is otherwise ignored (the first
+/// config wins). Detection recognizes both the canonical `#import "candy": *`
+/// form (so `candy` resolves through `symbol_map`) and the `#import "candy" as
+/// X` alias form (so `X` resolves through `candy_aliases`), plus the
+/// `candy.with(..)` field-access invocation.
+///
+/// Unlike [`extract_page_size`] this does **not** descend into nested nodes:
+/// a `candy` show rule is always a top-level statement, so only the node itself
+/// is inspected.
+fn detect_candy_show_rule(node: &LinkedNode, ctx: &mut ParseCtx) {
+    let Some(show) = node.get().cast::<ast::ShowRule>() else {
+        return;
+    };
+    // A selector-bearing show rule (`#show math.equation: ...`) is not a candy
+    // config rule; only the no-selector `show: candy` form configures the canvas.
+    if show.selector().is_some() {
+        return;
+    }
+    let transform = show.transform();
+    if !is_candy_show_callee(&transform, ctx) {
+        return;
+    }
+
+    // Extract named args. `#show: candy` (bare, no `.with`) uses defaults;
+    // `#show: candy.with(width:.., ...)` carries the overrides on the FuncCall.
+    let mut width_pt: Option<f64> = None;
+    let mut height_pt: Option<f64> = None;
+    let mut ppi: Option<f64> = None;
+    let mut fps: Option<f64> = None;
+
+    // For `candy.with(..)` the args live on the FuncCall; for bare `candy` there
+    // are none (all default).
+    if let Expr::FuncCall(fc) = &transform {
+        // width / height are lengths; ppi / fps are unitless numbers.
+        for arg in fc.args().items() {
+            let ast::Arg::Named(named) = arg else {
+                continue;
+            };
+            match named.name().as_str() {
+                "width" => {
+                    if let Some(cm) = collect_named_lengths_here(named.expr()) {
+                        width_pt = Some(cm * crate::core::ast::PT_PER_CM);
+                    }
+                }
+                "height" => {
+                    if let Some(cm) = collect_named_lengths_here(named.expr()) {
+                        height_pt = Some(cm * crate::core::ast::PT_PER_CM);
+                    }
+                }
+                "ppi" => ppi = crate::parser::expr::expr_to_f64(&named.expr()),
+                "fps" => fps = crate::parser::expr::expr_to_f64(&named.expr()),
+                _ => {}
+            }
+        }
+    }
+
+    if !ctx.candy_show_rule_seen {
+        ctx.candy_show_rule_seen = true;
+        let mut cfg = crate::core::ast::GlobalConfig::DEFAULT;
+        if let Some(w) = width_pt {
+            cfg.width_pt = w;
+        }
+        if let Some(h) = height_pt {
+            cfg.height_pt = h;
+        }
+        if let Some(p) = ppi {
+            cfg.ppi = p as u32;
+        }
+        if let Some(f) = fps {
+            cfg.fps = f as u32;
+        }
+        ctx.config = cfg;
+    } else {
+        // Second (or later) `candy` show rule — conflicts with the first.
+        let mut desc = String::from("multiple `show: candy` global-config rules found");
+        if let (Some(w), Some(h)) = (width_pt, height_pt) {
+            desc.push_str(&format!(
+                "; the duplicate declares {:.2}in × {:.2}in",
+                w / crate::core::ast::PT_PER_CM / 2.54,
+                h / crate::core::ast::PT_PER_CM / 2.54
+            ));
+        }
+        crate::warn!(crate::core::diag::CandyWarn::ConfigConflict(desc));
+    }
+}
+
+/// True iff `callee` is the candy module used as a show-rule target: either the
+/// bare `candy` identifier (resolved via `symbol_map` or `candy_aliases`) or a
+/// `candy.with(..)` field-access invocation (`candy` is an alias, `with` is the
+/// field).
+fn is_candy_show_callee(callee: &Expr, ctx: &ParseCtx) -> bool {
+    match callee {
+        Expr::Ident(id) => {
+            let name = id.as_str();
+            // `#import "candy" as X` binds X into `candy_aliases`.
+            if ctx.candy_aliases.contains(name) {
+                return true;
+            }
+            // `#import "candy": *` maps the local name to the "candy" symbol.
+            let norm = name.replace('_', "-");
+            ctx.symbol_map
+                .get(&norm)
+                .or_else(|| ctx.symbol_map.get(name))
+                .map(|s| s == "candy")
+                .unwrap_or(false)
+        }
+        Expr::FuncCall(fc) => {
+            // `candy.with(..)` — the callee is a `.with` field access whose
+            // target is the candy function itself. That target may be a module
+            // alias (`#import "candy" as X` → `X.with`) *or* the `candy`
+            // symbol pulled in by a glob import (`#import "candy": *`), so
+            // resolve it with the same rules as a bare identifier.
+            let Expr::FieldAccess(fa) = fc.callee() else {
+                return false;
+            };
+            fa.field().as_str() == "with" && is_candy_show_callee(&fa.target(), ctx)
+        }
+        _ => false,
+    }
+}
+
 /// Re-order the slide timeline to follow `#scene-switch(target)` jumps and
 /// recompute each scene's `[start_ms, end_ms]` interval to match the remapped
 /// playback.
@@ -1249,11 +1456,17 @@ mod tests {
     use crate::core::ast::Action;
 
     /// Rewrite a test's `#import "candy"` into `#import "@preview/candy:<v>"`,
-    /// auto-fetching the published package version from `typst/typst.toml`.
+    /// auto-fetching the published package version from `typst/typst.toml`,
+    /// and inject the mandatory `#show: candy` global-config show rule.
     ///
     /// Project convention: only *test* code needs the Typst package version
     /// auto-fetched (production code must not). Wrapping every test source with
     /// this helper guarantees no test hard-codes a candy version.
+    ///
+    /// Every `.tyx` must apply the `candy` show rule (it owns the global canvas
+    /// / ppi / fps); a missing one is E008. Tests write plain sources without
+    /// it, so the helper appends `#show: candy` right after the candy import —
+    /// mirroring what real `.tyx` documents do (see `examples/*.tyx`).
     fn with_auto_version(raw: &str) -> String {
         let v = crate::typst_package_version().expect("typst/typst.toml must declare a `version`");
         let pkg = format!("@preview/candy:{v}");
@@ -1263,10 +1476,51 @@ mod tests {
         // Bare module import (`#import "candy"`) must preserve the `candy`
         // binding name so `#candy.mobject(...)` still resolves after the path
         // rewrite — bind it explicitly as `candy`.
-        s.replace(
+        let s = s.replace(
             "#import \"candy\"\n",
             &format!("#import \"{pkg}\" as candy\n"),
-        )
+        );
+        inject_candy_show_rule(&s)
+    }
+
+    /// Insert `#show: candy` directly after the first candy `#import` line of
+    /// `src`, unless the source already applies the show rule itself.
+    ///
+    /// The rule must come *after* the import (so the `candy` binding exists)
+    /// but *before* any content, matching the layout of every `examples/*.tyx`.
+    ///
+    /// Some tests use a selective import (`#import "…candy…": animate as anim`)
+    /// that never binds the `candy` show function itself, so an extra
+    /// `#import …: candy` is prepended to bring it into scope.
+    fn inject_candy_show_rule(src: &str) -> String {
+        if src.contains("#show: candy") {
+            return src.to_string();
+        }
+        let Some(import_line) = src
+            .lines()
+            .find(|l| l.trim_start().starts_with("#import") && l.contains("candy"))
+        else {
+            // No candy import at all: this source deliberately tests the
+            // missing-import E008 path, so leave it untouched.
+            return src.to_string();
+        };
+        // Is the `candy` show function in scope? A glob import (`: *`) or a
+        // module import bound `as candy` provides it; a selective import of
+        // other symbols does not, so import `candy` explicitly alongside it.
+        let binds_candy = import_line.contains(" as candy")
+            || import_line.trim_end().ends_with('*')
+            || import_line.contains(": candy")
+            || import_line.contains(", candy");
+        let injected = if binds_candy {
+            format!("{import_line}\n#show: candy")
+        } else {
+            let path = import_line
+                .split('"')
+                .nth(1)
+                .expect("candy import line must contain a quoted package path");
+            format!("{import_line}\n#import \"{path}\": candy\n#show: candy")
+        };
+        src.replacen(import_line, &injected, 1)
     }
 
     const DOT: &str = r#"
@@ -1781,7 +2035,13 @@ mod tests {
         assert_eq!((inner.start_ms, inner.end_ms), (30, 50));
         let outer = scene.scenes.iter().find(|s| s.id == 1).unwrap();
         assert_eq!((outer.start_ms, outer.end_ms), (0, 50));
-        assert_eq!(inner.page_size, Some((10.0 * PT_PER_CM, 6.0 * PT_PER_CM)));
+        // Per-scene `width` / `height` are DEPRECATED (W021): the global
+        // `#show: candy` config owns the single canvas, so every scene —
+        // including the inner one declared `10cm × 6cm` — reports the global
+        // size, not its own.
+        let cfg = crate::core::ast::GlobalConfig::DEFAULT;
+        assert_eq!(inner.page_size, Some((cfg.width_pt, cfg.height_pt)));
+        assert_eq!(outer.page_size, inner.page_size, "uniform global canvas");
 
         assert_eq!(scene.active_scene_at(10), 1);
         assert_eq!(scene.active_scene_at(40), 2);
@@ -1944,6 +2204,55 @@ mod tests {
         let err = parse_tyx(&tmp, true).unwrap_err();
         std::fs::remove_file(&tmp).ok();
         assert_eq!(err.code(), "E008", "expected E008, got {err:?}");
+    }
+
+    /// The `candy` show rule owns the global canvas (width / height / ppi /
+    /// fps). A `.tyx` that imports candy but never applies it has no viewport
+    /// configuration, so it must be rejected with E008 rather than silently
+    /// rendered against a guessed page.
+    #[test]
+    fn missing_candy_show_rule_is_e008() {
+        // Deliberately bypass `with_auto_version`'s show-rule injection: build
+        // the versioned import by hand so the source has the import but no
+        // `#show: candy`.
+        let v = crate::typst_package_version().expect("typst/typst.toml version");
+        let src = format!(
+            "\n#import \"@preview/candy:{v}\": *\n\
+             #mobject(\"a\", circle(radius: 1cm))\n\
+             #animate(\"a\", to: (4cm, 0pt), duration: 30)\n"
+        );
+        let tmp = std::env::temp_dir().join("candy_test_no_show_rule.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let err = parse_tyx(&tmp, true).unwrap_err();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(err.code(), "E008", "expected E008, got {err:?}");
+        assert!(
+            err.to_string().contains("show rule"),
+            "E008 message must name the missing show rule: {err}"
+        );
+    }
+
+    /// `#show: candy.with(..)` overrides the default canvas, and the resulting
+    /// config is what every scene's `page_size` reports.
+    #[test]
+    fn candy_show_rule_with_overrides_global_canvas() {
+        let v = crate::typst_package_version().expect("typst/typst.toml version");
+        let src = format!(
+            "\n#import \"@preview/candy:{v}\": *\n\
+             #show: candy.with(width: 20cm, height: 10cm, ppi: 96, fps: 60)\n\
+             #mobject(\"a\", circle(radius: 1cm))\n\
+             #animate(\"a\", to: (4cm, 0pt), duration: 30)\n"
+        );
+        let tmp = std::env::temp_dir().join("candy_test_show_rule_with.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp, true).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        let cfg = scene.artifacts.config;
+        assert_eq!(cfg.ppi, 96);
+        assert_eq!(cfg.fps, 60);
+        let expect = (20.0 * PT_PER_CM, 10.0 * PT_PER_CM);
+        assert_eq!((cfg.width_pt, cfg.height_pt), expect);
+        assert_eq!(scene.page_size, Some(expect));
     }
 
     #[test]
