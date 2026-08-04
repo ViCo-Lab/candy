@@ -33,8 +33,11 @@ use candy::{
 use candy::{blue, dim, eprint_styled, error, green, print_styled, red, warn, yellow};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
-/// Full version string baked in at compile time, shared by clap's `--version`
-/// flag and the `version` subcommand: `v<version>@<git-hash>(<codename>)`.
+/// Full version string baked in at compile time: `v<version>@<git-hash>(<codename>)`.
+/// Shared by clap's `--version` flag (plain, no color) and the `version`
+/// subcommand, which additionally prints a colored, multi-line build
+/// provenance report: enabled features, target triple, fine-grained ISA level,
+/// and a `Built at <time> on <host>` line.
 const VERSION: &str = concat!(
     "v",
     env!("CARGO_PKG_VERSION"),
@@ -307,12 +310,13 @@ fn run() -> Result<(), CandyError> {
         Commands::Version => {
             // Colored, multi-line build provenance report. ANSI is stripped when
             // piped / NO_COLOR by `print_styled!`. Layout:
-            //   candy v<ver>@<hash>(<codename>)   ← header (as before)
-            //   Features:  <comma-list>            ← yellow
-            //   Arch:      <target arch>           ← blue
-            //   ISA:       <fine-grained level>    ← blue
-            //   Built:     <ISO 8601, second>      ← dim
-            //   Host:      <build hostname>        ← dim
+            //   candy v<ver>@<hash>(<codename>)          ← header (as before)
+            //   Features:  <comma-list>                 ← yellow (bold label)
+            //   Target:   <rust target triple>          ← blue   (bold label)
+            //   ISA:      <fine-grained level>          ← blue   (bold label)
+            //   Built at <ISO 8601, second> on <host>   ← yellow time, blue host
+            // Labels are bold + left-aligned so the colons line up; the colon
+            // itself stays in the regular font.
             let hash = env!("CANDY_GIT_HASH");
             let colored_hash = if hash == "unknown" {
                 dim!("{}", hash)
@@ -332,53 +336,31 @@ fn run() -> Result<(), CandyError> {
                 ")"
             );
 
-            // Enabled cargo features (compiled in via `cfg!`). Listed explicitly
-            // so the build's capability set is visible at a glance.
-            let mut features: Vec<&str> = Vec::new();
-            if cfg!(feature = "video") {
-                features.push("video");
-            }
-            if cfg!(feature = "system-downloader") {
-                features.push("system-downloader");
-            }
-            if cfg!(feature = "gpu") {
-                features.push("gpu");
-            }
-            if cfg!(feature = "zero-copy-audio") {
-                features.push("zero-copy-audio");
-            }
-            let features_str = if features.is_empty() {
-                "none".to_string()
-            } else {
-                features.join(", ")
-            };
-
+            // Enabled cargo features, collected dynamically at build time and
+            // baked into `CANDY_FEATURES` (see build.rs) — no hardcoding here.
             // Labels (bold) are left-aligned to a fixed width so the colons line
             // up; the colon itself stays in the regular (default) font.
             print_styled!(
                 "{}:  {}",
-                bold!("{:<8}", "Features"),
-                yellow!("{}", features_str)
+                bold!("{:<10}", "Features"),
+                yellow!("{}", env!("CANDY_FEATURES"))
             );
             print_styled!(
                 "{}:  {}",
-                bold!("{:<8}", "Arch"),
-                blue!("{}", std::env::consts::ARCH)
+                bold!("{:<10}", "Target"),
+                blue!("{}", env!("CANDY_TARGET_TRIPLE"))
             );
             print_styled!(
                 "{}:  {}",
-                bold!("{:<8}", "ISA"),
+                bold!("{:<10}", "ISA"),
                 blue!("{}", env!("CANDY_ISA_LEVEL"))
             );
+            // `Built at <time> on <host>` — single line, multi-color:
+            // connectors in the default font, time in yellow, host in blue.
             print_styled!(
-                "{}:  {}",
-                bold!("{:<8}", "Built"),
-                dim!("{}", env!("CANDY_BUILD_TIME"))
-            );
-            print_styled!(
-                "{}:  {}",
-                bold!("{:<8}", "Host"),
-                dim!("{}", env!("CANDY_BUILD_HOST"))
+                "Built at {} on {}",
+                yellow!("{}", env!("CANDY_BUILD_TIME")),
+                blue!("{}", env!("CANDY_BUILD_HOST"))
             );
         }
         Commands::Completions { shell } => {

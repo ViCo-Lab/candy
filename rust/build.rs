@@ -17,6 +17,19 @@
 //!   with `semver::VersionReq::parse` here, so a typo fails the build instead
 //!   of silently rejecting every `.tyx` at runtime. If the table is absent or
 //!   empty, the gate falls back to exactly the crate version (`=<version>`).
+//! * `CANDY_TARGET_TRIPLE` — the Rust target triple this binary was compiled
+//!   for (cargo's `TARGET`), surfaced as the `Target:` line in `candy version`.
+//! * `CANDY_FEATURES` — the list of enabled cargo features, reconstructed from
+//!   cargo's `CARGO_FEATURE_*` env vars (names lowercased, hyphens restored),
+//!   comma-separated (or `none` when empty), surfaced as the `Features:` line.
+//! * `CANDY_ISA_LEVEL` — fine-grained instruction-set level reported in the
+//!   `ISA:` line: `x86-64-v3` for a native x86_64 build (matching the flags
+//!   enabled below), `x86-64` baseline for cross-compiles / user-overridden
+//!   flags, or the raw target triple for other architectures.
+//! * `CANDY_BUILD_TIME` — UTC build timestamp, ISO 8601 second precision
+//!   (e.g. `2026-08-04T08:30:23Z`), shown in the `Built at … on …` line.
+//! * `CANDY_BUILD_HOST` — hostname of the build machine (via the `hostname`
+//!   crate), shown in the `Built at … on …` line.
 //!
 //! Also enables architecture-specific ISA extensions for native builds:
 //! - x86_64: x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE, F16C)
@@ -208,6 +221,32 @@ fn main() {
         target.as_str()
     };
     println!("cargo:rustc-env=CANDY_ISA_LEVEL={isa_level}");
+
+    // ---- CANDY_TARGET_TRIPLE (the Rust target this binary was compiled for) ----
+    // Surfaced in `candy version` as the `Target:` line.
+    println!("cargo:rustc-env=CANDY_TARGET_TRIPLE={target}");
+
+    // ---- CANDY_FEATURES (enabled cargo features, shown in `candy version`) ----
+    // Cargo exposes each enabled feature as `CARGO_FEATURE_<NAME>` (uppercased,
+    // hyphens → underscores). Reconstruct the original feature names (lowercase,
+    // underscores → hyphens) so the list stays in sync automatically when
+    // features are added or removed — no hardcoding in `main.rs`.
+    let mut feats: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| {
+            k.strip_prefix("CARGO_FEATURE_")
+                .map(|s| s.to_lowercase().replace('_', "-"))
+        })
+        // The implicit `default` feature is always on unless opted out; listing
+        // it just adds noise, so drop it and show only the meaningful set.
+        .filter(|s| s != "default")
+        .collect();
+    feats.sort();
+    let features_str = if feats.is_empty() {
+        "none".to_string()
+    } else {
+        feats.join(", ")
+    };
+    println!("cargo:rustc-env=CANDY_FEATURES={features_str}");
 
     // ---- CANDY_BUILD_TIME (UTC, ISO 8601, second precision) ----
     // The instant the build script ran — i.e. when this binary was built. Surfaced
