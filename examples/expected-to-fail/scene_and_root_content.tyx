@@ -1,4 +1,4 @@
-// Expected to fail: E008 (CandyDumpedYou). A document must be either parallel
+// Expected to fail: E011 (Scene). A document must be either parallel
 // `#scene(...)` calls with no content at the document root, or root content
 // with no `#scene(...)` call at all. Mixing the two is a parse error.
 #import "@preview/candy:0.1.0": *

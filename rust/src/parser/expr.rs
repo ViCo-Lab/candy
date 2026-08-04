@@ -206,6 +206,22 @@ pub(crate) fn expr_to_key(e: &Expr) -> Option<String> {
     }
 }
 
+/// Whether `name` is a valid Typst identifier, so it can be used as a Candy key
+/// (mobject / ec / kc / scene name) that is later emitted into the Typst source
+/// as a variable or label.
+///
+/// We deliberately delegate to `typst_syntax::is_ident` (the *same* function
+/// Typst's own lexer uses) rather than re-implementing an ASCII subset. This
+/// guarantees the Rust-side check and the Typst-side `_assert_valid_key_name`
+/// agree on what is legal, including Unicode letters (e.g. accented or CJK
+/// names) which Typst accepts as identifiers but a naive `[A-Za-z_]` test would
+/// reject. The rules (per `typst-syntax/src/lexer.rs`):
+///   - first char:  `is_xid_start(c) || c == '_'`   (no leading `-`)
+///   - rest chars:  `is_xid_continue(c) || c == '_' || c == '-'`
+pub(crate) fn is_valid_typst_ident(name: &str) -> bool {
+    typst_syntax::is_ident(name)
+}
+
 /// Try to evaluate an expression as a length in cm. Handles `4cm`, `3in`,
 /// `5pt`, bare numbers (treated as cm), and **signed** lengths like `-4cm`
 /// (which Typst parses as `Expr::Unary`, not `Expr::Numeric`).

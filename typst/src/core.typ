@@ -78,8 +78,11 @@
 /// by the Rust toolchain. Under a plain `typst compile` the body renders inside
 /// the `candy`-configured page.
 #let scene(name: none, body) = {
-  if name != none and type(name) != str {
-    panic("scene name must be a string")
+  if name != none {
+    if type(name) != str {
+      panic("scene name must be a string")
+    }
+    _assert_valid_key_name(name, "Scene name")
   }
   // `scene` returns its body so the surrounding `candy` show rule (and any
   // `#set page`) provides the page.
@@ -133,6 +136,7 @@
   if type(name) != str {
     panic("Mobject name must be a string")
   }
+  _assert_valid_key_name(name, "Mobject name")
   [#body#label(name)]
 }
 

@@ -23,8 +23,8 @@ use crate::warn;
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
     call_symbol, current_scope, expr_src, expr_to_angle, expr_to_bool, expr_to_f64, expr_to_i64,
-    expr_to_key, expr_to_ratio, parse_sub_pos, range_of, resolve_easing, strip_string_literal,
-    target_arg, track_key_from_expr, tuple_cm,
+    expr_to_key, expr_to_ratio, is_valid_typst_ident, parse_sub_pos, range_of, resolve_easing,
+    strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
 };
 
 /// Parse the `timing` named argument. Returns `None` when absent (the caller
@@ -139,18 +139,48 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
         // Subtitle + easing-counter modules.
         "subtitle" => process_subtitle(&pos, &named, node, raw, ctx),
         "ecnew" => process_ecnew(&pos, &named, node, raw, ctx),
-        "scene-switch" => process_scene_switch(&pos, &named, ctx),
+        "scene-switch" => process_scene_switch(&pos, &named, node, raw, ctx),
         "ecval" => { /* read; value substituted per-frame by the renderer */ }
-        "ecpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause, false),
-        "ecresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume, false),
-        "ecdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy, false),
+        "ecpause" => {
+            process_counter_event(&pos, &named, node, raw, ctx, CounterEventKind::Pause, false)
+        }
+        "ecresume" => process_counter_event(
+            &pos,
+            &named,
+            node,
+            raw,
+            ctx,
+            CounterEventKind::Resume,
+            false,
+        ),
+        "ecdestroy" => process_counter_event(
+            &pos,
+            &named,
+            node,
+            raw,
+            ctx,
+            CounterEventKind::Destroy,
+            false,
+        ),
         // Keyframe-counter module.
         "kcnew" => process_kcnew(&pos, &named, node, raw, ctx),
         "kcval" => { /* read; value substituted per-frame by the renderer */ }
         "kcpush" => process_kcpush(&pos, &named, node, raw, ctx),
-        "kcpause" => process_counter_event(&pos, &named, ctx, CounterEventKind::Pause, true),
-        "kcresume" => process_counter_event(&pos, &named, ctx, CounterEventKind::Resume, true),
-        "kcdestroy" => process_counter_event(&pos, &named, ctx, CounterEventKind::Destroy, true),
+        "kcpause" => {
+            process_counter_event(&pos, &named, node, raw, ctx, CounterEventKind::Pause, true)
+        }
+        "kcresume" => {
+            process_counter_event(&pos, &named, node, raw, ctx, CounterEventKind::Resume, true)
+        }
+        "kcdestroy" => process_counter_event(
+            &pos,
+            &named,
+            node,
+            raw,
+            ctx,
+            CounterEventKind::Destroy,
+            true,
+        ),
         // Snake-case Candy private functions — warn but still parse.
         sym if sym.starts_with('_') => {
             let loc = ctx
@@ -238,11 +268,26 @@ fn process_mobject(
     raw: &str,
     ctx: &mut ParseCtx,
 ) {
-    let label_expr = pos
-        .first()
-        .or_else(|| named.get("label"))
-        .and_then(|e| expr_to_key(e));
-    let Some(label_str) = label_expr else { return };
+    let label_expr = pos.first().or_else(|| named.get("label"));
+    let Some(label_str) = label_expr.and_then(|e| expr_to_key(e)) else {
+        if let Some(e) = label_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "mobject".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    };
+    if !is_valid_typst_ident(&label_str) {
+        // `label_expr` is `Some` here (we just extracted `label_str` from it).
+        if let Some(e) = label_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "mobject".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    }
     let body_expr = pos.get(1).or_else(|| named.get("body"));
     let Some(body_expr) = body_expr else { return };
     let body = expr_src(raw, node, body_expr).to_string();
@@ -1645,11 +1690,25 @@ fn process_ecnew(
     _raw: &str,
     ctx: &mut ParseCtx,
 ) {
-    let name = pos
-        .first()
-        .or_else(|| named.get("name"))
-        .and_then(|e| expr_to_key(e));
-    let Some(name) = name else { return };
+    let name_expr = pos.first().or_else(|| named.get("name"));
+    let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "ecnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    };
+    if !is_valid_typst_ident(&name) {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "ecnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    }
     let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
     let step = named.get("step").and_then(expr_to_i64).unwrap_or(1);
     let duration_ms = named
@@ -1714,15 +1773,31 @@ fn process_ecnew(
 fn process_counter_event(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
+    node: &LinkedNode,
+    _raw: &str,
     ctx: &mut ParseCtx,
     kind: CounterEventKind,
     kc: bool,
 ) {
-    let name = pos
-        .first()
-        .or_else(|| named.get("name"))
-        .and_then(|e| expr_to_key(e));
-    let Some(name) = name else { return };
+    let name_expr = pos.first().or_else(|| named.get("name"));
+    let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "ecnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    };
+    if !is_valid_typst_ident(&name) {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                if kc { "kcnew" } else { "ecnew" }.into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    }
     if kc {
         if !kc_name_visible(ctx, &name) {
             ctx.pending_error = Some(CandyError::UnknownKey(
@@ -1756,11 +1831,25 @@ fn process_kcnew(
     _raw: &str,
     ctx: &mut ParseCtx,
 ) {
-    let name = pos
-        .first()
-        .or_else(|| named.get("name"))
-        .and_then(|e| expr_to_key(e));
-    let Some(name) = name else { return };
+    let name_expr = pos.first().or_else(|| named.get("name"));
+    let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "kcnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    };
+    if !is_valid_typst_ident(&name) {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "kcnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    }
     let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
     let easing = resolve_easing(named, &Label(format!("kc:{name}")), Easing::Linear, ctx);
     let scope = current_scope(ctx);
@@ -1812,15 +1901,20 @@ fn process_kcnew(
 fn process_kcpush(
     pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
-    _node: &LinkedNode,
+    node: &LinkedNode,
     _raw: &str,
     ctx: &mut ParseCtx,
 ) {
-    let name = pos
-        .first()
-        .or_else(|| named.get("name"))
-        .and_then(|e| expr_to_key(e));
-    let Some(name) = name else { return };
+    let name_expr = pos.first().or_else(|| named.get("name"));
+    let Some(name) = name_expr.and_then(|e| expr_to_key(e)) else {
+        if let Some(e) = name_expr {
+            ctx.pending_error = Some(CandyError::InvalidKey(
+                "kcnew".into(),
+                Some(ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range()))),
+            ));
+        }
+        return;
+    };
     // Scope restriction: the target must be visible in the current scope.
     if !kc_name_visible(ctx, &name) {
         ctx.pending_error = Some(CandyError::UnknownKey(
@@ -2012,19 +2106,24 @@ fn active_kcdef_index(ctx: &ParseCtx, name: &str) -> Option<usize> {
 fn process_scene_switch(
     _pos: &[Expr],
     named: &std::collections::HashMap<String, Expr>,
+    node: &LinkedNode,
+    _raw: &str,
     ctx: &mut ParseCtx,
 ) {
     // Accept `target:` or `name:` as the scene reference.
-    let target = named
-        .get("target")
-        .or_else(|| named.get("name"))
-        .and_then(|e| match e {
-            Expr::Str(s) => Some(s.get().to_string()),
-            _ => None,
-        });
+    let target_expr = named.get("target").or_else(|| named.get("name"));
+    let target_loc = target_expr
+        .map(|e| ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range())));
+    let target = target_expr.and_then(|e| match e {
+        Expr::Str(s) => Some(s.get().to_string()),
+        _ => None,
+    });
     let Some(target) = target else {
         return;
     };
+    if let Some(loc) = target_loc {
+        ctx.scene_switch_locs.insert(target.clone(), loc);
+    }
 
     let duration = named
         .get("duration")

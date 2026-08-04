@@ -284,13 +284,20 @@ impl SourceLoc {
 // ============================== Error (E) ==============================
 
 /// Candy's unified error type. The [`CandyError::code`] method maps each
-/// variant to the mandatory error codes E001–E010 (E008 is the fixed easter-egg slot).
+/// variant to the mandatory error codes E001–E011 (E008 is the fixed easter-egg slot).
 #[derive(Debug)]
 pub enum CandyError {
     /// E001 — `.tyx` file not found / generic I/O failure.
     Io(std::io::Error),
-    /// E002 — Invalid `.tyx` syntax. Carries the offending source location
-    /// when the failure can be tied to a specific span.
+    /// E002 — Invalid `.tyx` syntax / API-format error. This is the *uniform*
+    /// home for every malformed user-facing API call: invalid syntax, an
+    /// **unknown named argument**, or a **wrong-typed argument** (e.g. passing
+    /// a non-string where a string/label is required). This includes the
+    /// `#scene` argument mistakes — `width` / `height` / `bg` (and any other
+    /// unknown argument) are reported here as "not a valid argument for
+    /// #scene", and a non-string `name` is reported as a type error — so all
+    /// argument-format problems across the candy API share one code. Carries
+    /// the offending source location when the failure can be tied to a span.
     Parse(String, Option<SourceLoc>),
     /// E003 — `candy-json` missing/invalid (SVG extraction).
     Svg(String),
@@ -304,16 +311,16 @@ pub enum CandyError {
     /// (E002/E004/…). Without a resolvable span (e.g. an internal Typst panic)
     /// the location is `None`.
     Typst(String, Option<SourceLoc>),
-    /// E009 — Rav1e / codec / mux encoding failure.
-    Encode(String),
-    /// E010 — SVG frame **rasterization** failure. This is the *render* stage
-    /// (usvg parse, wgpu adapter/device, vello scene render/poll) that turns a
-    /// compiled SVG frame into RGBA pixels — distinct from `Encode` (E009), which
-    /// is the later codec/mux stage. Mislabeling a raster failure as `Encode`
-    /// sent users hunting in the wrong subsystem (codec vs. rasterizer) and
-    /// printed a misleading `encode:` prefix, exactly the kind of code/message
-    /// mismatch that was fixed for `validate()` (E002 vs E006).
-    Raster(String),
+    /// E006 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
+    /// points to a mobject that was never registered via `#mobject`. Also used
+    /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
+    /// …) reference an unknown counter name. The first field is the kind
+    /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
+    /// key name.
+    UnknownKey(String, String, Option<SourceLoc>),
+    /// E007 — A key parameter evaluated to a non-string type (e.g., number,
+    /// boolean, array). Keys must always resolve to strings.
+    InvalidKey(String, Option<SourceLoc>),
     /// E008 — The `.tyx` does not import the candy package (or imports it
     /// with a version incompatible with the installed candy CLI), so its
     /// static content has no scene to own it. Candy can only render documents
@@ -325,16 +332,29 @@ pub enum CandyError {
     /// incompatible version all trigger this error. Pass `--ignore-version`
     /// to skip the version check (useful for development).
     CandyDumpedYou(String, Option<SourceLoc>),
-    /// E006 — A key reference (`@label`, `target:`, `animate(target:)`, etc.)
-    /// points to a mobject that was never registered via `#mobject`. Also used
-    /// when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`,
-    /// …) reference an unknown counter name. The first field is the kind
-    /// (`"mobject"` / `"ecnew"` / `"scene"`) and the second is the offending
-    /// key name.
-    UnknownKey(String, String, Option<SourceLoc>),
-    /// E007 — A key parameter evaluated to a non-string type (e.g., number,
-    /// boolean, array). Keys must always resolve to strings.
-    InvalidKey(String, Option<SourceLoc>),
+    /// E009 — Rav1e / codec / mux encoding failure.
+    Encode(String),
+    /// E010 — SVG frame **rasterization** failure. This is the *render* stage
+    /// (usvg parse, wgpu adapter/device, vello scene render/poll) that turns a
+    /// compiled SVG frame into RGBA pixels — distinct from `Encode` (E009), which
+    /// is the later codec/mux stage. Mislabeling a raster failure as `Encode`
+    /// sent users hunting in the wrong subsystem (codec vs. rasterizer) and
+    /// printed a misleading `encode:` prefix, exactly the kind of code/message
+    /// mismatch that was fixed for `validate()` (E002 vs E006).
+    Raster(String),
+    /// E011 — The `#scene`-specific **structural** errors that are *not*
+    /// argument-format mistakes (those are `E002`). This is the dedicated home
+    /// for mistakes that are purely about *how scenes are declared*, kept
+    /// separate from the catch-all E008 so the two never collide:
+    ///   (a) a `#scene(...)` call appears **inside another scene's body** —
+    ///       scenes are flat, there is only "switch scene", never "enter a
+    ///       sub-scene";
+    ///   (b) the document mixes explicit `#scene(...)` calls with content at
+    ///       the **document root** — it must be either parallel scenes with an
+    ///       empty root, or root content with no scene call at all.
+    /// Argument-format mistakes (unknown argument, wrong-typed `name`) go to
+    /// `E002` instead.
+    Scene(String, Option<SourceLoc>),
     /// EYEE — Batch partial failure: `candy build a.tyx b.tyx …` ran every
     /// input but at least one failed midway. Surfaced as the "yee~ Batch
     /// failed. \\(!_!)/" marker. **Deliberately does NOT follow** the `ERROR_EXIT_BASE +
@@ -356,6 +376,7 @@ impl CandyError {
             CandyError::Typst(_, _) => "E005",
             CandyError::Encode(_) => "E009",
             CandyError::Raster(_) => "E010",
+            CandyError::Scene(_, _) => "E011",
             CandyError::CandyDumpedYou(_, _) => "E008",
             CandyError::UnknownKey(_, _, _) => "E006",
             CandyError::InvalidKey(_, _) => "E007",
@@ -375,6 +396,7 @@ impl CandyError {
             CandyError::Typst(_, _) => 5,
             CandyError::Encode(_) => 9,
             CandyError::Raster(_) => 10,
+            CandyError::Scene(_, _) => 11,
             CandyError::CandyDumpedYou(_, _) => 8,
             CandyError::UnknownKey(_, _, _) => 6,
             CandyError::InvalidKey(_, _) => 7,
@@ -409,6 +431,7 @@ impl CandyError {
             CandyError::Typst(e, _) => format!("typst: {e}"),
             CandyError::Encode(e) => format!("encode: {e}"),
             CandyError::Raster(e) => format!("raster: {e}"),
+            CandyError::Scene(e, _) => format!("scene: {e}"),
             CandyError::CandyDumpedYou(e, _) => format!("candy: {e}. She dumped you! (-_-)"),
             CandyError::UnknownKey(kind, key, _) => {
                 format!(
@@ -446,6 +469,9 @@ impl CandyError {
             CandyError::InvalidKey(_, _) => Some(
                 "keys must resolve to strings; wrap the value in quotes or use a string literal",
             ),
+            CandyError::Scene(_, _) => Some(
+                "a scene takes only `name:`; set the canvas via `#show: candy` and the background via `#set page(fill: ...)` inside the scene body",
+            ),
             // E008 covers two distinct mistakes: a missing/incompatible import
             // and a missing `#show: candy` rule. Suggesting "add the import" to
             // someone who already imported candy is actively misleading, so
@@ -472,6 +498,7 @@ impl CandyError {
         match self {
             CandyError::LabelNotFound(_, l) => l.as_ref(),
             CandyError::Parse(_, l) => l.as_ref(),
+            CandyError::Scene(_, l) => l.as_ref(),
             CandyError::CandyDumpedYou(_, l) => l.as_ref(),
             CandyError::UnknownKey(_, _, l) => l.as_ref(),
             CandyError::InvalidKey(_, l) => l.as_ref(),

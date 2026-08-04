@@ -197,3 +197,38 @@
     panic(what + " must be a native Typst color (e.g. `red`, `rgb(255,0,0)`), not a string")
   }
 }
+
+// Assert `v` is a valid Typst identifier, so it can serve as a Candy key
+// (mobject / ec / kc / scene name) emitted into the Typst source as a variable
+// or label.
+//
+// The *authoritative* check lives on the Rust side (`typst_syntax::is_ident`,
+// which implements the full Unicode XID rules and accepts accented / CJK
+// letters). This Typst-side guard is a defensive secondary layer that runs even
+// when a directive is invoked from hand-written Typst. To stay consistent with
+// the Rust check and avoid false rejections of valid Unicode names, it only
+// rejects characters that are *never* legal in any Typst identifier — i.e. the
+// punctuation / symbol class (spaces and operators). A leading digit or `-` is
+// also rejected as a start character. Anything the Rust side has already
+// approved will pass here.
+#let _assert_valid_key_name(v, what) = {
+  if type(v) != str {
+    panic(what + " must be a string naming a valid Typst identifier")
+  }
+  if v == "" {
+    panic(what + " must be a non-empty Typst identifier")
+  }
+  // Characters that are never part of a Typst identifier (operators, brackets,
+  // separators, quotes, etc.). Excludes `_` and `-`, which ARE legal.
+  let illegal = " !?'\":;,./\\(){}[]#@$%&*=+<>^~`"
+  let chars = v.codepoints()
+  let first = chars.first()
+  if first in "0123456789-" {
+    panic(what + " must start with a letter or `_` (got " + repr(v) + ")")
+  }
+  for c in chars {
+    if c in illegal {
+      panic(what + " contains an invalid character " + repr(c) + " (got " + repr(v) + ")")
+    }
+  }
+}

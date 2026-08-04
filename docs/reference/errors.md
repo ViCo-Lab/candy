@@ -1,4 +1,4 @@
-# Error model (E001–E010, EYEE)
+# Error model (E001–E011, EYEE)
 
 All fallible operations return `Result<T, CandyError>`; production code must not panic.
 `CandyError::code()` maps each variant to a mandatory error code:
@@ -15,25 +15,26 @@ All fallible operations return `Result<T, CandyError>`; production code must not
 |---|---|---|
 | EYEE | `Yee` | Batch partial failure — `candy build a.tyx b.tyx …` ran **every** input but at least one failed midway. |
 | E001 | `Io` | `.tyx` file not found / generic I/O failure. |
-| E002 | `Parse` | Invalid `.tyx` syntax (or non-monotonic `time_ms` in `schedule`). |
+| E002 | `Parse` | Invalid `.tyx` syntax, or any **API-format error** — an unknown named argument, or a wrong-typed argument (e.g. a non-string where a string/label is required). This is the *uniform* code for every malformed user-facing API call across the candy API, including `#scene` argument mistakes: `width` / `height` / `bg` (and any other unknown argument) are reported here as "not a valid argument for #scene", and a non-string `name` is reported as a type error. (Non-monotonic `time_ms` in `schedule` also lands here.) |
 | E003 | `Svg` | `candy-json` missing/invalid (SVG extraction). |
 | E004 | `LabelNotFound` | `@label` not found in the Typst layout. |
 | E005 | `Typst` | Typst render failure — the full `typst::diag::SourceDiagnostic` (message + any `hint:` lines) is captured and surfaced. The offending span is mapped back from candy's instrumented compiled source to the user's **original** `.tyx` line (file:line:col + the offending line), so the caret lands on the user's real code, not the `#mobject(label, { let __b = … })` wrapper candy injects around each body. When the error originates inside an `#include`d file, the deepest trace frame points at the **real error inside the deepest included file** (not the includer's `#include` line), and — for **nested** includes (`a → b → c`) — the whole include chain is printed as layer-by-layer `= included from \`path:line:col\`:` frames, one per outer includer. |
 | E006 | `UnknownKey` | A key reference (`@label`, `target:`, `animate(target:)`, etc.) points to a mobject that was never registered via `#mobject`. Also used when `ecval(...)` or lifecycle events (`ecpause`, `ecdestroy`, …) reference an unknown counter name. |
 | E007 | `InvalidKey` | A key parameter evaluated to a non-string type (e.g., number, boolean, array). Keys must always resolve to strings. |
-| E008 | `CandyDumpedYou` | A structural contract of the document was violated. Raised when: (a) the `.tyx` does not `#import` the candy package (or imports it with a version incompatible with the installed candy CLI — the imported version must satisfy at least one semver requirement in the CLI's `compatible_versions` list, e.g. `0.1.*`); (b) it imports candy but never applies the `#show: candy` show rule, which configures the global canvas (`width`, `height`, `ppi`, `fps`) — write `#show: candy` for the defaults (`13.33in × 7.5in`, `ppi: 144`, `fps: 30`) or `#show: candy.with(width: 20cm, height: 10cm, ppi: 96, fps: 60)` right after the import; (c) a `#scene(...)` call appears **inside another scene's body** — scenes are flat, there is only "switch scene", never "enter a sub-scene"; (d) the document mixes explicit `#scene(...)` calls with content at the **document root** — it must be either parallel scenes with an empty root, or root content with no scene call at all; (e) a `#scene(...)` call passes a named argument that is **not in the Typst signature**, including the removed `width` / `height` / `bg` (set the canvas via `#show: candy` and the background via `#set page(fill: ...)` inside the scene body). |
+| E008 | `CandyDumpedYou` | A structural contract of the document was violated. Raised when: (a) the `.tyx` does not `#import` the candy package (or imports it with a version incompatible with the installed candy CLI — the imported version must satisfy at least one semver requirement in the CLI's `compatible_versions` list, e.g. `0.1.*`); (b) it imports candy but never applies the `#show: candy` show rule, which configures the global canvas (`width`, `height`, `ppi`, `fps`) — write `#show: candy` for the defaults (`13.33in × 7.5in`, `ppi: 144`, `fps: 30`) or `#show: candy.with(width: 20cm, height: 10cm, ppi: 96, fps: 60)` right after the import. |
 | E009 | `Encode` | Rav1e/openh264 encoding failure (the codec/mux stage). |
 | E010 | `Raster` | SVG frame **rasterization** failure during the *render* stage — usvg parse, wgpu adapter/device, vello scene render/poll — turning a compiled SVG frame into RGBA pixels. Distinct from `E009`, which is the later codec/mux stage. Previously mislabeled as `E009` (printed a misleading `encode:` prefix); fixed so a raster failure reports its true code. |
+| E011 | `Scene` | The `#scene`-specific **structural** errors that are *not* argument-format mistakes (those are `E002`): (a) a `#scene(...)` call appears **inside another scene's body** — scenes are flat, there is only "switch scene", never "enter a sub-scene"; (b) the document mixes explicit `#scene(...)` calls with content at the **document root** — it must be either parallel scenes with an empty root, or root content with no scene call at all. |
 
 ## Process exit codes
 
 The terminal `error!` reporter prints `error[Exxx]: <message>` to **stderr** (cargo/rustc
 style) and terminates the process with `CandyError::exit_code()`:
 
-- **E001–E009** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
-  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E006` → `69`, `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`. `E008` is the fixed
+- **E001–E011** follow the `64`-based scheme `ERROR_EXIT_BASE + n - 1`
+  (`ERROR_EXIT_BASE = 64`), so `E001` → `64` … `E006` → `69`, `E007` → `70`, `E008` → `71`, `E009` → `72`, `E010` → `73`, `E011` → `74`. `E008` is the fixed
   easter-egg slot (`candy dumped you`). This keeps all
-  Candy fatal codes in a dedicated `64–72` segment that does not collide with `0` (success),
+  Candy fatal codes in a dedicated `64–74` segment that does not collide with `0` (success),
   `1` (generic), `2` (clap usage), or `101` (Rust panic).
 - **EYEE is the one exception**: it deliberately does **not** use the `64` rule. Its exit code
   is the dedicated `BATCH_ERROR_EXIT = 111`. A batch is run to completion (no fail-fast) so

@@ -1,5 +1,6 @@
-// Expected to fail: E008 (CandyDumpedYou). `width` / `height` / `bg` were
-// removed from `#scene`. The canvas comes from `#show: candy` and the
+// Expected to fail: E011 (Scene). `width` / `height` / `bg` are not valid
+// arguments for `#scene` (they are treated as if they never existed — a
+// regular parse error). The canvas comes from `#show: candy` and the
 // background from `#set page(fill: ...)` inside the scene body.
 #import "@preview/candy:0.1.0": *
 #show: candy

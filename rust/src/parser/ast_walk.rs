@@ -26,11 +26,12 @@ use crate::core::ast::{
     Action, AudioTrack, CounterDef, CounterEvent, FrameData, IncludeRegion, KeyframeCounterDef,
     Label, ParseArtifacts, Scene, SceneInfo, Slide, SourceMap, Subtitle, Timing,
 };
-use crate::core::diag::{CandyError, SourceLoc};
+use crate::core::diag::{CandyError, CandyWarn, SourceLoc};
 use crate::core::meta::PrivateMeta;
+use crate::warn;
 
 use crate::parser::directives::process_call;
-use crate::parser::expr::{CANDY, call_symbol};
+use crate::parser::expr::{CANDY, call_symbol, is_valid_typst_ident};
 
 /// Typst points per centimeter — re-exported from core::ast for convenience.
 use crate::core::ast::PT_PER_CM;
@@ -517,7 +518,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
             .map(|s| s.owns_labels.len())
             .unwrap_or(0);
         if root_owns > 0 {
-            return Err(CandyError::CandyDumpedYou(
+            return Err(CandyError::Scene(
                 "a document that defines explicit `#scene(...)` calls must not \
                  also contain content at the document root; either put all \
                  content inside scenes (parallel scenes, no root content) or \
@@ -541,7 +542,7 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     // recompute each scene's `[start_ms, end_ms]` interval so the renderer's
     // `active_scene_at(time_ms)` gating shows the target scene's content.
     // No-op for documents without scene switching.
-    finalize_scene_switching(&mut ctx);
+    finalize_scene_switching(&mut ctx)?;
 
     let private = PrivateMeta::default();
     let scene = Scene {
@@ -705,6 +706,10 @@ pub(crate) struct ParseCtx {
     /// (`E004` LabelNotFound / `E006` UnknownKey) can point at the *usage* site
     /// rather than only at declarations (which don't exist for an unknown name).
     pub(crate) name_ref_locs: HashMap<String, SourceLoc>,
+    /// Source location of each `#scene-switch(target: "X")` call, keyed by the
+    /// target name. Used to point `E006 UnknownKey` at the *usage* site when a
+    /// scene switch references a scene that was never declared.
+    pub(crate) scene_switch_locs: HashMap<String, SourceLoc>,
     /// Source location of the directive currently being processed. `process_call`
     /// sets it from the call node's range; `emit_slide` copies it onto each
     /// produced `Slide` so structural `E002`/`Parse` errors (e.g. a bad
@@ -881,9 +886,12 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
 
     // Scene scoping: a `scene` call opens a *flat* scene around its body.
     // Scenes may only appear at the document root — a `#scene` nested inside
-    // another `#scene` is a hard parse error, and `#scene` no longer accepts
-    // `width` / `height` / `bg` (the canvas, including its size and background,
-    // is owned by the page via `#set page(...)` or the global `#show: candy`).
+    // another `#scene` is a hard parse error. `#scene` accepts **only** the
+    // `name` argument; every other argument (including the historically-removed
+    // `width` / `height` / `bg`, which are treated as if they never existed) is
+    // an unknown / undefined argument — a regular parse error, not a silent
+    // ignore. All scene-specific errors use the dedicated `CandyError::Scene`
+    // (E011) code so they never collide with E008.
     if let Some(call) = node.get().cast::<ast::FuncCall>() {
         if call_symbol(&call, ctx).as_deref() == Some("scene") {
             // Nesting is forbidden. We are already inside a scene if the stack
@@ -891,7 +899,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             // pushed onto the stack, so this only triggers for explicit nested
             // scenes).
             if !ctx.scene_stack.is_empty() {
-                ctx.pending_error = Some(CandyError::CandyDumpedYou(
+                ctx.pending_error = Some(CandyError::Scene(
                     "nested #scene is not allowed; a scene may only be defined at \
                      the document root. Use `#switch(target: \"name\")` to move \
                      between scenes instead of nesting them."
@@ -905,9 +913,12 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             let scope = ctx.next_scope_id;
             ctx.next_scope_id += 1;
             // Validate `#scene` arguments against its signature. Only `name` is
-            // supported; `width` / `height` / `bg` are gone (the page owns the
-            // canvas), and any other argument is a hard parse error — unknown
-            // candy arguments are never silently ignored.
+            // supported. Argument-format mistakes (an unknown argument or a
+            // wrong-typed one) are a regular **parse** error (`E002`), uniform
+            // with every other API-format error in candy — including the removed
+            // `width` / `height` / `bg`, which are treated as if they never
+            // existed. Scene *structural* mistakes (nesting, root-content mix)
+            // use the dedicated `CandyError::Scene` (E011).
             let mut scene_name: Option<String> = None;
             for a in call.args().items() {
                 if let ast::Arg::Named(n) = a {
@@ -915,31 +926,27 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
                     match name {
                         "name" => {
                             if let Expr::Str(s) = n.expr() {
-                                scene_name = Some(s.get().to_string());
+                                let name = s.get().to_string();
+                                if !is_valid_typst_ident(&name) {
+                                    ctx.pending_error = Some(CandyError::InvalidKey(
+                                        "scene".into(),
+                                        Some(ctx.loc(node.range())),
+                                    ));
+                                    return;
+                                }
+                                scene_name = Some(name);
                             } else {
-                                let cr = node.range();
-                                let loc = ctx.loc(cr);
-                                crate::warn!(crate::core::diag::CandyWarn::DuplicateName(
-                                    "scene".into(),
-                                    "<non-string>".into(),
-                                    loc
+                                ctx.pending_error = Some(CandyError::Parse(
+                                    "the `name` argument of #scene must be a string \
+                                     literal, got a non-string value"
+                                        .to_string(),
+                                    Some(ctx.loc(node.range())),
                                 ));
+                                return;
                             }
                         }
-                        "width" | "height" | "bg" => {
-                            ctx.pending_error = Some(CandyError::CandyDumpedYou(
-                                format!(
-                                    "the #scene `{name}` argument is no longer supported; \
-                                     the canvas (its size and background) is owned by the \
-                                     page via `#set page(...)` or the global `#show: candy` \
-                                     rule, not by #scene"
-                                ),
-                                Some(ctx.loc(node.range())),
-                            ));
-                            return;
-                        }
                         other => {
-                            ctx.pending_error = Some(CandyError::CandyDumpedYou(
+                            ctx.pending_error = Some(CandyError::Parse(
                                 format!(
                                     "`{other}` is not a valid argument for #scene; valid \
                                      arguments are: name"
@@ -970,6 +977,21 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
             let cr = node.range();
             ctx.scene_call_ranges.insert(id, (cr.start, cr.end));
             let start = ctx.cursor;
+            // Warn on a scene name redefined in the same lexical scope. A scene
+            // with no explicit `name` is anonymous and cannot collide.
+            if let Some(name) = &scene_name {
+                if ctx
+                    .scenes
+                    .iter()
+                    .any(|s| s.name.as_deref() == Some(name.as_str()))
+                {
+                    warn!(CandyWarn::DuplicateName(
+                        "scene".into(),
+                        name.clone(),
+                        ctx.loc(node.range()),
+                    ));
+                }
+            }
             ctx.scenes.push(SceneInfo {
                 id,
                 name: scene_name,
@@ -1310,14 +1332,14 @@ fn is_candy_show_callee(callee: &Expr, ctx: &ParseCtx) -> bool {
 /// `start_ms <=` current cursor) are intentionally not jumped: replaying an
 /// earlier scene would require duplicating its frames and is out of scope for
 /// the v1 switch model.
-fn finalize_scene_switching(ctx: &mut ParseCtx) {
+fn finalize_scene_switching(ctx: &mut ParseCtx) -> Result<(), CandyError> {
     let has_switch = ctx.slides.iter().any(|s| {
         s.actions
             .iter()
             .any(|a| matches!(a, Action::SceneSwitch { .. }))
     });
     if !has_switch {
-        return;
+        return Ok(());
     }
 
     let n = ctx.slides.len();
@@ -1388,7 +1410,14 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
         });
         let mut jumped = false;
         if let Some(t) = switch {
-            if let Some(tid) = resolve(&t) {
+            let tid = resolve(&t);
+            if tid.is_none() {
+                // Unknown scene target: report E006 at the `#scene-switch` call
+                // site rather than silently skipping the jump.
+                let loc = ctx.scene_switch_locs.get(&t).cloned();
+                return Err(CandyError::UnknownKey("scene".into(), t, loc));
+            }
+            if let Some(tid) = tid {
                 let tstart = ctx
                     .scenes
                     .iter()
@@ -1435,6 +1464,7 @@ fn finalize_scene_switching(ctx: &mut ParseCtx) {
             s.end_ms = u32::MAX;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2589,5 +2619,59 @@ This is plain Typst content with an equation $E = mc^2$.
         assert!(scene.items.contains_key(&Label("a".into())));
         assert!(scene.items.contains_key(&Label("b".into())));
         assert!(scene.items.contains_key(&Label("x".into())));
+    }
+
+    /// Keys must be valid Typst identifiers. A `#mobject` whose label contains a
+    /// space (not an identifier) is rejected with `E007 InvalidKey`.
+    #[test]
+    fn mobject_with_spaced_label_is_e007() {
+        let src = with_auto_version(
+            "#import \"candy\": *\n#mobject(\"my object\", circle(radius: 1cm))\n",
+        );
+        let tmp = std::env::temp_dir().join("candy_test_bad_mobject_space.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let err = parse_tyx(&tmp, true).unwrap_err();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(err.code(), "E007", "expected E007, got {err:?}");
+    }
+
+    /// A leading digit is not a valid identifier start, so a numeric-prefixed
+    /// `#mobject` label is also `E007 InvalidKey`.
+    #[test]
+    fn mobject_with_leading_digit_label_is_e007() {
+        let src =
+            with_auto_version("#import \"candy\": *\n#mobject(\"1st\", circle(radius: 1cm))\n");
+        let tmp = std::env::temp_dir().join("candy_test_bad_mobject_digit.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let err = parse_tyx(&tmp, true).unwrap_err();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(err.code(), "E007", "expected E007, got {err:?}");
+    }
+
+    /// A `#scene(name: ...)` whose name is not a valid identifier is `E007`.
+    #[test]
+    fn scene_with_invalid_name_is_e007() {
+        let src = with_auto_version(
+            "#import \"candy\": *\n#scene(name: \"bad name\", body: { #mobject(\"a\", circle()) })\n",
+        );
+        let tmp = std::env::temp_dir().join("candy_test_bad_scene_name.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let err = parse_tyx(&tmp, true).unwrap_err();
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(err.code(), "E007", "expected E007, got {err:?}");
+    }
+
+    /// Valid identifier keys (including Unicode letters, which Typst's
+    /// `is_ident` accepts) must parse without an `E007`.
+    #[test]
+    fn valid_unicode_mobject_name_is_accepted() {
+        let src = with_auto_version(
+            "#import \"candy\": *\n#mobject(\"café_名前-x\", circle(radius: 1cm))\n",
+        );
+        let tmp = std::env::temp_dir().join("candy_test_good_mobject_unicode.tyx");
+        std::fs::write(&tmp, src).unwrap();
+        let scene = parse_tyx(&tmp, true).expect("Unicode identifier keys must be accepted");
+        std::fs::remove_file(&tmp).ok();
+        assert!(scene.items.contains_key(&Label("café_名前-x".into())));
     }
 }

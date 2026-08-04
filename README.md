@@ -39,6 +39,10 @@ rendered and (optionally) encoded.
 // dot_move.tyx — valid standard Typst; candy build renders the clip.
 #import "@preview/candy:0.1.0": *
 
+// The `#show: candy` show rule is mandatory — it configures the global canvas
+// (width, height, ppi, fps) and must appear once, right after the import.
+#show: candy
+
 #mobject("dot", circle(radius: 1cm, fill: blue))
 #animate("dot", to: (4cm, 0pt), duration: 1000, easing: "linear")
 #pause(duration: 500)
@@ -47,7 +51,9 @@ rendered and (optionally) encoded.
 
 The `@preview/candy` Typst package (the `typst/` directory) exposes this DSL. Each directive
 is *valid, standard Typst*: `typst compile` renders the first frame (no animation); `candy
-build` renders the full clip by reading the AST directly.
+build` renders the full clip by reading the AST directly. Note that a `.tyx` file must apply
+the `#show: candy` show rule (optionally `#show: candy.with(width: .., height: .., ppi: ..,
+fps: ..)`) or `candy build` fails with `E008`.
 
 ## Install
 

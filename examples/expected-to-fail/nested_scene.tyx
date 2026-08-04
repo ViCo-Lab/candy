@@ -1,4 +1,4 @@
-// Expected to fail: E008 (CandyDumpedYou). Scenes are flat — a `#scene(...)`
+// Expected to fail: E011 (Scene). Scenes are flat — a `#scene(...)`
 // call inside another scene's body is a parse error. Use a sibling scene (and
 // `#switch(target: "name")`) instead of nesting.
 #import "@preview/candy:0.1.0": *

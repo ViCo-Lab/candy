@@ -26,6 +26,7 @@
 /// counter of the same name, and it auto-destroys when its scope exits.
 #let ecnew(name, seed: 0, step: 1, duration: none, easing: "linear") = {
   _assert_str(name, "Easing-counter name")
+  _assert_valid_key_name(name, "Easing-counter name")
   _assert_int(seed, "ecnew seed")
   _assert_int(step, "ecnew step")
   if duration != none {
@@ -113,6 +114,7 @@
 /// exits.
 #let kcnew(name, seed: 0, easing: "linear") = {
   _assert_str(name, "Keyframe-counter name")
+  _assert_valid_key_name(name, "Keyframe-counter name")
   _assert_int(seed, "kcnew seed")
   _assert_easing(easing, "easing")
   none

@@ -774,22 +774,12 @@ fn flat_scenes_share_one_uniform_canvas() {
                ]\n";
     let tmp = std::env::temp_dir().join("candy_test_uniform_canvas.tyx");
     std::fs::write(&tmp, src).unwrap();
-    let (scene, parse_stderr) =
-        capture_stderr(|| crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap());
+    let scene = capture_stderr(|| crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap()).0;
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    let ((), flow_stderr) = capture_stderr(|| {
+    capture_stderr(|| {
         r.ensure_flow_public().unwrap();
     });
     std::fs::remove_file(&tmp).ok();
-
-    // The retired scene-size / config-conflict warnings must never fire again.
-    for stale in ["W019", "W020", "W021"] {
-        assert!(
-            !parse_stderr.contains(stale) && !flow_stderr.contains(stale),
-            "retired warning {stale} was emitted; \
-             parse stderr:\n{parse_stderr}\nflow stderr:\n{flow_stderr}"
-        );
-    }
 
     // The measured scene heights are identical (single global canvas).
     let heights: Vec<f64> = r.scene_pages.values().map(|(_, h)| *h).collect();
@@ -816,17 +806,11 @@ fn bare_root_respects_page_settings() {
     std::fs::write(&tmp, src).unwrap();
     let scene = crate::parser::ast_walk::parse_tyx(&tmp, true).unwrap();
     let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    let ((), stderr) = capture_stderr(|| {
+    capture_stderr(|| {
         r.ensure_flow_public().unwrap();
     });
     std::fs::remove_file(&tmp).ok();
 
-    for stale in ["W019", "W020", "W021"] {
-        assert!(
-            !stderr.contains(stale),
-            "retired warning {stale} was emitted; stderr was:\n{stderr}"
-        );
-    }
     let exp_w = 12.0 * PT_PER_CM;
     let exp_h = 7.0 * PT_PER_CM;
     assert!(
