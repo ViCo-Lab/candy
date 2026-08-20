@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashSet;
+use std::fmt::Write;
 use typst_syntax::ast as typst_ast;
 
 impl Renderer {
@@ -906,10 +907,21 @@ impl Renderer {
         hide_fading: bool,
         time_ms: u32,
     ) -> Dict {
+        // Precompute which labels are hidden by an active transform at this
+        // time, so we avoid O(M) scans per label (M = transform plan count).
+        let hidden_labels: HashSet<&str> = self
+            .transform_fragments
+            .iter()
+            .filter(|p| time_ms >= p.start_ms && time_ms <= p.end_ms)
+            .flat_map(|p| [&p.target.0 as &str, &p.old.0 as &str])
+            .collect();
+
+        // Estimate Dict size to avoid rehashing.
         let mut inputs = Dict::new();
         if !self.scene.scenes.is_empty() {
             inputs.insert("candy:active_scene".into(), Value::Int(active as i64));
         }
+        let mut key_buf = String::with_capacity(64);
         for (label, st) in states {
             let owner = self.label_scene.get(label).copied().unwrap_or(active);
             if owner != active {
@@ -924,21 +936,21 @@ impl Renderer {
                 // body is still reached when an ancestor scene's context is
                 // injected — leaving it at its default transform would show it
                 // on top of the active scene.
-                inputs.insert(
-                    format!("candy:{}:absent", label.0).into(),
-                    Value::Bool(true),
-                );
+                key_buf.clear();
+                write!(key_buf, "candy:{}:absent", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), Value::Bool(true));
                 continue;
             }
-            let l = &label.0;
-            if self.transform_hidden(label, time_ms) {
+            if hidden_labels.contains(&label.0 as &str) {
                 // The target/old mobjects are replaced by the interpolated
                 // per-glyph fragments, so suppress them in the base document.
                 // `hide` (not `absent`) so the formula keeps occupying its flow
                 // box during the window — otherwise every element below it
                 // jumps up for the duration of the transform and the overlay
                 // fragments land on top of the shifted content.
-                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
+                key_buf.clear();
+                write!(key_buf, "candy:{}:hide", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), Value::Bool(true));
                 continue;
             }
             // Position model (cm, matching `tuple_cm` / `st` units): `#move` is a
@@ -962,13 +974,18 @@ impl Renderer {
                 }
                 None => (st.x, st.y),
             };
-            inputs.insert(format!("candy:{l}:dx").into(), Value::Float(dx));
-            inputs.insert(format!("candy:{l}:dy").into(), Value::Float(dy));
-            inputs.insert(
-                format!("candy:{l}:s").into(),
-                Value::Float(st.scale * 100.0),
-            );
-            inputs.insert(format!("candy:{l}:r").into(), Value::Float(st.rotation));
+            key_buf.clear();
+            write!(key_buf, "candy:{}:dx", label.0).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Float(dx));
+            key_buf.clear();
+            write!(key_buf, "candy:{}:dy", label.0).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Float(dy));
+            key_buf.clear();
+            write!(key_buf, "candy:{}:s", label.0).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Float(st.scale * 100.0));
+            key_buf.clear();
+            write!(key_buf, "candy:{}:r", label.0).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Float(st.rotation));
             // A `#play` block that is not fully rendered (before its FadeIn
             // window, while fading, or after its trailing `Hide`) must be
             // suppressed in BOTH the pixel path and the plain SVG draft path —
@@ -979,8 +996,10 @@ impl Renderer {
             // but a play block that is "not rendered" must be hidden everywhere.
             // `hide` (not `none`) keeps the block's flow box reserved so the
             // layout does not jitter and later mobjects stay put.
-            if (hide_fading || l.starts_with("__block_")) && st.opacity < 1.0 - 1e-4 {
-                inputs.insert(format!("candy:{}:hide", label.0).into(), Value::Bool(true));
+            if (hide_fading || label.0.starts_with("__block_")) && st.opacity < 1.0 - 1e-4 {
+                key_buf.clear();
+                write!(key_buf, "candy:{}:hide", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), Value::Bool(true));
             }
         }
         // Easing-counter values: each declared counter's live value at this
@@ -989,14 +1008,18 @@ impl Renderer {
         // the source byte-stable (only the inputs vary) so the `body_cache` hits.
         for c in &self.scene.counters {
             let v = self.scene.counter_value_at(&c.name, time_ms);
-            inputs.insert(format!("candy:counter:{}", c.name).into(), Value::Int(v));
+            key_buf.clear();
+            write!(key_buf, "candy:counter:{}", c.name).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Int(v));
         }
         // Keyframe-counter values: each declared kc's live interpolated value at
         // this frame is supplied as `candy:kc:<name>`, matching the
         // `kcval_to_inputs` rewrite above. Independent key space from `candy:counter:`.
         for c in &self.scene.kcdefs {
             let v = self.scene.kc_value_at(&c.name, time_ms);
-            inputs.insert(format!("candy:kc:{}", c.name).into(), Value::Int(v));
+            key_buf.clear();
+            write!(key_buf, "candy:kc:{}", c.name).unwrap();
+            inputs.insert(key_buf.clone().into(), Value::Int(v));
         }
         // `reveal`/`typewriter` revealed-prefix lengths and non-string `#transform`
         // body swaps: string targets are driven by `candy:<label>:reveal:len`,
@@ -1010,16 +1033,14 @@ impl Renderer {
                 .and_then(|b| strip_string_literal(b))
             {
                 let len = Self::reveal_len_at(&self.scene, label, time_ms, full.chars().count());
-                inputs.insert(
-                    format!("candy:{}:reveal:len", label.0).into(),
-                    Value::Int(len as i64),
-                );
+                key_buf.clear();
+                write!(key_buf, "candy:{}:reveal:len", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), Value::Int(len as i64));
             } else {
                 let idx = Self::body_idx_at(&self.scene, label, time_ms);
-                inputs.insert(
-                    format!("candy:{}:body_idx", label.0).into(),
-                    Value::Int(idx as i64),
-                );
+                key_buf.clear();
+                write!(key_buf, "candy:{}:body_idx", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), Value::Int(idx as i64));
             }
         }
         // `#set-color` transitions: lerp the paint per frame and feed the real
@@ -1045,10 +1066,9 @@ impl Renderer {
                 }
             }
             if let Some(rgba) = chosen {
-                inputs.insert(
-                    format!("candy:{}:color", label.0).into(),
-                    rgba_to_value(rgba),
-                );
+                key_buf.clear();
+                write!(key_buf, "candy:{}:color", label.0).unwrap();
+                inputs.insert(key_buf.clone().into(), rgba_to_value(rgba));
             }
         }
         inputs

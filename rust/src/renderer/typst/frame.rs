@@ -309,11 +309,8 @@ impl Renderer {
     ) -> Result<RenderedFrame, CandyError> {
         let (states, camera) = self.prepare_states(all_frames, time_ms);
         let active = self.active_scene_for_render(time_ms);
-        // Base: every *non-fading* object at full opacity. Fading objects
-        // are excluded from the base and re-composited on top at their
-        // opacity, so they never show at full opacity in the base.
-        let mut base_states = states.clone();
-        let fading: Vec<(Label, f64)> = states
+        // Collect fading objects first so we know the exact sizes.
+        let fading_labels: Vec<&Label> = states
             .iter()
             .filter(|(l, s)| {
                 let owner = self.label_scene.get(*l).copied().unwrap_or(active);
@@ -322,36 +319,47 @@ impl Renderer {
                     && s.opacity > 1e-4
                     && s.opacity < 1.0 - 1e-4
             })
-            .map(|(l, s)| {
-                base_states.insert(
-                    l.clone(),
-                    FrameData {
-                        opacity: 0.0,
-                        ..s.clone()
-                    },
-                );
-                (l.clone(), s.opacity)
-            })
+            .map(|(l, _)| l)
             .collect();
+        let fading_ops: Vec<f64> = fading_labels
+            .iter()
+            .map(|l| states.get(*l).unwrap().opacity)
+            .collect();
+        let fading: Vec<(&Label, f64)> = fading_labels.iter().copied().zip(fading_ops).collect();
+        // Build `base_states` and `hidden_template` in a single pass over
+        // `states`. Both need a clone of every entry; doing it in one loop
+        // is more cache-friendly than two separate loops.
+        let fading_set: std::collections::HashSet<&Label> = fading_labels.iter().copied().collect();
+        let mut base_states = HashMap::with_capacity(states.len());
+        let mut hidden_template = HashMap::with_capacity(states.len());
+        for (l, s) in &states {
+            let is_fading = fading_set.contains(l);
+            base_states.insert(
+                l.clone(),
+                FrameData {
+                    opacity: if is_fading { 0.0 } else { s.opacity },
+                    ..s.clone()
+                },
+            );
+            hidden_template.insert(
+                l.clone(),
+                FrameData {
+                    opacity: 0.0,
+                    ..s.clone()
+                },
+            );
+        }
         let base_svg = self.render_frame_svg(&base_states, &camera, time_ms, true, false)?;
         let mut out = rasterize_svg(&base_svg, tw, th)?;
         if fading.is_empty() {
             return Ok(out);
         }
-        // Per-object opacity layer template: a copy of `states` with every
-        // object hidden (opacity 0). Each fading object's layer is produced by
-        // cloning this template once and un-hiding just that object, which
-        // avoids re-zeroing the whole map for every layer. The layer is
-        // rasterized with a *transparent* background (`transparent_bg = true`)
-        // so compositing only adds the target object at `op` over the
-        // already-correct base — never the canvas colour (an opaque layer
-        // background would wash the whole frame toward the background at `op`).
-        let mut hidden = states.clone();
-        for s in hidden.values_mut() {
-            s.opacity = 0.0;
-        }
+        // Per-object layer: for each fading object, clone the hidden template
+        // and un-hide just that one object (opacity 1.0). The template is
+        // cloned once per layer — this is the unavoidable O(L*N) cost of
+        // building a distinct states map per fading object.
         for (label, op) in &fading {
-            let mut layer_states = hidden.clone();
+            let mut layer_states = hidden_template.clone();
             if let Some(s) = layer_states.get_mut(label) {
                 s.opacity = 1.0;
             }
