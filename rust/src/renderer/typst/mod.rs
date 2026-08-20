@@ -198,7 +198,7 @@ pub struct Renderer {
     /// empty `param_source` (only used by hand-built test scenes that don't
     /// render; real scenes are parsed from a `.tyx` and carry a non-empty
     /// `artifacts.source`).
-    param_source: String,
+    param_source: Arc<str>,
     /// Per-mobject wrapped body (the `sys.inputs`-driven body expression),
     /// collected once in [`Renderer::build_parameterized_source`]. The building
     /// block for the per-page render documents in `param_sources`.
@@ -218,7 +218,7 @@ pub struct Renderer {
     /// This replaces the old whole-document render path: each frame compiles
     /// exactly one of these documents (the active scene's active page) instead
     /// of recompiling the entire document and extracting a page.
-    param_sources: HashMap<usize, String>,
+    param_sources: HashMap<usize, Arc<str>>,
     /// Absolute path of the original `.tyx` source file, if known (empty for
     /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
     /// source a real `FileId` so an `E005` points the user at the actual file
@@ -253,6 +253,7 @@ impl Renderer {
             scene.artifacts.mobject_body = mobject_body;
         }
         let (param_source, wrapped_bodies) = Self::build_parameterized_source(&scene);
+        let param_source: Arc<str> = Arc::from(param_source);
         let scene_contexts = Self::build_scene_contexts(&scene, &wrapped_bodies);
         Ok(Self {
             state: Arc::new(WorldState::new(project_root)),
@@ -346,6 +347,8 @@ impl Renderer {
     /// distinct compiled documents.
     fn compile_cached(&self, src: &str, inputs: &Dict) -> Result<Arc<PagedDocument>, CandyError> {
         let key = Self::cache_key(src, inputs);
+        // LruCache doesn't support entry API, so we keep two lock acquisitions.
+        // The common case (cache hit) returns early after the first lock.
         if let Some(doc) = self.body_cache.lock().unwrap().get(&key) {
             return Ok(doc.clone());
         }
@@ -375,7 +378,7 @@ impl Renderer {
         sid: usize,
         inputs: &Dict,
     ) -> Result<Arc<PagedDocument>, CandyError> {
-        let src = self
+        let src: Arc<str> = self
             .param_sources
             .get(&sid)
             .cloned()

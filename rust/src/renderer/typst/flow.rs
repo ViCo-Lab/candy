@@ -515,7 +515,7 @@ impl Renderer {
         // from the top in raw flow ("裸排"), with the scene's runtime context
         // injected via its preamble. This replaces the old whole-document
         // recompile-and-extract-page render path.
-        let mut param_sources: HashMap<usize, String> = HashMap::new();
+        let mut param_sources: HashMap<usize, Arc<str>> = HashMap::new();
         let assembly_ids: Vec<usize> = if self.scene.scenes.is_empty() {
             vec![0]
         } else {
@@ -523,7 +523,7 @@ impl Renderer {
         };
         for sid in &assembly_ids {
             let doc = self.assemble_page_doc(*sid);
-            param_sources.insert(*sid, doc);
+            param_sources.insert(*sid, Arc::from(doc));
         }
         self.param_sources = param_sources;
         // Single-page rendering: content never spills onto extra pages, so no
