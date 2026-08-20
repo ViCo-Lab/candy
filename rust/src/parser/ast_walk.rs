@@ -828,9 +828,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         // symbol for the rest of the enclosing scope.
         for b in lb.kind().bindings() {
             let n = b.as_str();
-            if ctx.symbol_map.remove(n).is_some()
-                || ctx.symbol_map.remove(&n.replace('_', "-")).is_some()
-            {
+            if ctx.symbol_map.remove(n).is_some() {
                 // Suspended; will be restored on enclosing scope exit.
             }
         }
@@ -844,7 +842,7 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
         // shadow a real directive in the detached module.
         let is_candy_named = lb.kind().bindings().iter().any(|b| {
             let n = b.as_str();
-            CANDY.iter().any(|c| *c == n || *c == n.replace('_', "-"))
+            CANDY.contains(&n)
         });
         if !is_candy_named && ctx.scene_stack.is_empty() && ctx.scope_stack.len() == 1 {
             let text = format!("#{}", raw[node.range()].trim());
@@ -1101,13 +1099,12 @@ fn process_import(imp: ast::ModuleImport, range: std::ops::Range<usize>, ctx: &m
             for it in items.iter() {
                 let orig = it.original_name().as_str().to_string();
                 let bound = it.bound_name().as_str().to_string();
-                // Canonicalize the resolved symbol to kebab-case (the `CANDY`
-                // convention) and also accept the alternative naming
-                // convention for the bound name, so both `save_state` and
-                // `save-state` resolve to the same directive.
-                let canon = orig.replace('_', "-");
-                ctx.symbol_map.insert(bound.clone(), canon.clone());
-                ctx.symbol_map.insert(bound.replace('_', "-"), canon);
+                // The resolved directive name is the kebab-case `orig` from
+                // `CANDY`; the user's local `bound` name is whatever identifier
+                // they wrote and is stored verbatim. No `_`/`-` normalization:
+                // `save_state` and `save-state` are distinct identifiers and do
+                // not alias each other.
+                ctx.symbol_map.insert(bound, orig);
             }
         }
         None => {
@@ -1262,10 +1259,8 @@ fn is_candy_show_callee(callee: &Expr, ctx: &ParseCtx) -> bool {
                 return true;
             }
             // `#import "candy": *` maps the local name to the "candy" symbol.
-            let norm = name.replace('_', "-");
             ctx.symbol_map
-                .get(&norm)
-                .or_else(|| ctx.symbol_map.get(name))
+                .get(name)
                 .map(|s| s == "candy")
                 .unwrap_or(false)
         }
@@ -1738,7 +1733,7 @@ mod tests {
             r#"
 #import "candy": *
 #mobject("dot", circle(radius: 1cm))
-#save_state("dot", slot: "home")
+#save-state("dot", slot: "home")
 #animate("dot", to: (4cm, 0pt), duration: 20)
 #restore("dot", slot: "home", duration: 20, easing: "smooth")
 #indicate("dot", factor: 120%, duration: 18)
@@ -1746,7 +1741,7 @@ mod tests {
 #wiggle("dot", degrees: 12deg, duration: 16)
 #disappear("dot")
 #appear("dot")
-#set_color("dot", color: red, duration: 1)
+#set-color("dot", color: red, duration: 1)
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_manim.tyx");

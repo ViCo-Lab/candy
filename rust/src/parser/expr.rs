@@ -102,20 +102,22 @@ pub(crate) const CANDY: &[&str] = &[
 ///
 /// Crucially, this does **not** treat an arbitrary field access as Candy:
 /// `obj.morph()` or `dict.animate()` are ordinary user code and return `None`.
+///
+/// Identifier resolution is **strict**: a Candy directive name uses kebab-case
+/// (e.g. `save-state`, `set-color`), and that is the only form recognized. An
+/// `_` and a `-` are two distinct identifier characters and are *not*
+/// interconverted — a call written as `save_state(...)` is treated as an
+/// ordinary user identifier, never as the `save-state` directive. This keeps
+/// the parser's notion of a Candy symbol aligned with the kebab-case names
+/// declared in `typst/src/*.typ`, with no silent normalization.
 pub(crate) fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String> {
     let callee = call.callee();
     match callee {
         Expr::Ident(id) => {
             let name = id.as_str();
-            // Accept both naming conventions: the public API and the Typst
-            // module both use kebab-case (`save-state`, `set-color`,
-            // `ecpause`), but authors may write snake_case for convenience.
-            // Normalize so a call resolves regardless of which convention the
-            // author wrote.
-            let norm = name.replace('_', "-");
+            // Strict match only — no `_`/`-` normalization.
             ctx.symbol_map
-                .get(&norm)
-                .or_else(|| ctx.symbol_map.get(name))
+                .get(name)
                 .filter(|o| CANDY.contains(&o.as_str()))
                 .cloned()
         }
@@ -132,10 +134,7 @@ pub(crate) fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String
                 return None;
             }
             let field = fa.field().as_str();
-            let norm = field.replace('_', "-");
-            if CANDY.contains(&norm.as_str()) {
-                Some(norm)
-            } else if CANDY.contains(&field) {
+            if CANDY.contains(&field) {
                 Some(field.to_string())
             } else {
                 None

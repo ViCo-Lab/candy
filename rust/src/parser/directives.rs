@@ -761,7 +761,7 @@ fn process_appear_disappear(
     named: &std::collections::HashMap<String, Expr>,
     ctx: &mut ParseCtx,
 ) {
-    let Some(label) = target_arg(pos, &std::collections::HashMap::new()) else {
+    let Some(label) = target_arg(pos, named) else {
         return;
     };
     let action = if appear {

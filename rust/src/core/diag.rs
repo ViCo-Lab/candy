@@ -225,12 +225,6 @@ impl SourceLoc {
     /// The caret column is computed from `char_span` (Unicode scalar count),
     /// not byte length, so multi-byte characters (Chinese, Emoji, …) are
     /// underlined correctly.
-    /// Render the location as a plain (ANSI-free) cargo/rustc-style block. Use
-    /// [`SourceLoc::render_colored`] when a colored caret is desired.
-    pub fn render(&self) -> String {
-        self.render_block(None)
-    }
-
     /// Render with color, mimicking rustc: the ` --> ` arrow and the `|` gutter
     /// are dim (bright-black), the line number is dim + bold, and the caret is
     /// drawn in `caret_color` (red for errors, yellow for warnings). The returned
@@ -239,16 +233,14 @@ impl SourceLoc {
     /// them automatically when the output is not a terminal or `NO_COLOR`
     /// (https://no-color.org) is set, so piped / captured output stays clean.
     pub fn render_colored(&self, caret_color: Color) -> String {
-        self.render_block(Some(caret_color))
+        self.render_block(caret_color)
     }
 
-    /// Shared implementation for [`SourceLoc::render`] (plain) and
-    /// [`SourceLoc::render_colored`] (colored). When `caret_color` is `None` the
-    /// output is ANSI-free; otherwise the arrow, gutter, and line number are dim
-    /// and the caret is colored. The codes are emitted unconditionally — the
-    /// `anstream`-backed writers decide whether to keep or strip them based on
-    /// the destination's terminal / `NO_COLOR` state.
-    fn render_block(&self, caret_color: Option<Color>) -> String {
+    /// Shared implementation. The arrow, gutter, and line number are always dim
+    /// and the caret is drawn in `caret_color`. The codes are emitted
+    /// unconditionally — the `anstream`-backed writers decide whether to keep or
+    /// strip them based on the destination's terminal / `NO_COLOR` state.
+    fn render_block(&self, caret_color: Color) -> String {
         let line_str = self.line.to_string();
         let line_len = self.line_text.chars().count();
         let avail = line_len.saturating_sub(self.col.saturating_sub(1)).max(1);
@@ -256,15 +248,12 @@ impl SourceLoc {
         let indent = " ".repeat(self.col.saturating_sub(1));
         let caret = "^".repeat(caret_len);
 
-        let (arrow, bar, lineno, caret_str) = match caret_color {
-            Some(c) => (
-                paint(style_dim(), " -->"),
-                paint(style_dim(), "  |"),
-                paint(style_dim(), &line_str),
-                paint(style_caret(c), &caret),
-            ),
-            None => (" -->".to_string(), "  |".to_string(), line_str, caret),
-        };
+        let (arrow, bar, lineno, caret_str) = (
+            paint(style_dim(), " -->"),
+            paint(style_dim(), "  |"),
+            paint(style_dim(), &line_str),
+            paint(style_caret(caret_color), &caret),
+        );
         format!(
             "{} {}:{}:{}\n{}\n{} | {}\n{} {}{}",
             arrow,

@@ -163,29 +163,42 @@ impl Easing {
             return Some(Easing::Expr(rest.trim().to_string()));
         }
 
+        // No `_`/`-` interconversion: an easing name is matched verbatim after
+        // lowercasing, with both the snake and kebab spellings listed explicitly
+        // below (not silently rewritten). This keeps the parser's relaxed easing
+        // alias support while honoring that `_` and `-` are distinct characters.
         let n = raw.to_ascii_lowercase();
-        let n = n.replace('_', "-");
         match n.as_str() {
             "linear" => Some(Easing::Linear),
             "smooth" | "sigmoid" => Some(Easing::Smooth),
             "smoothstep" => Some(Easing::Smoothstep),
             "smootherstep" => Some(Easing::Smootherstep),
             // quad family
-            "quad" | "quad-in" | "ease-in-quad" => Some(Easing::QuadIn),
-            "quad-out" | "ease-out-quad" => Some(Easing::QuadOut),
-            "quad-in-out" | "ease-in-out-quad" => Some(Easing::QuadInOut),
+            "quad" | "quad-in" | "quad_in" | "ease-in-quad" | "ease_in_quad" => {
+                Some(Easing::QuadIn)
+            }
+            "quad-out" | "quad_out" | "ease-out-quad" | "ease_out_quad" => Some(Easing::QuadOut),
+            "quad-in-out" | "quad_in_out" | "ease-in-out-quad" | "ease_in_out_quad" => {
+                Some(Easing::QuadInOut)
+            }
             // cubic family
-            "cubic" | "cubic-in" | "ease-in-cubic" => Some(Easing::CubicIn),
-            "cubic-out" | "ease-out-cubic" => Some(Easing::CubicOut),
-            "cubic-in-out" | "ease-in-out-cubic" => Some(Easing::CubicInOut),
+            "cubic" | "cubic-in" | "cubic_in" | "ease-in-cubic" | "ease_in_cubic" => {
+                Some(Easing::CubicIn)
+            }
+            "cubic-out" | "cubic_out" | "ease-out-cubic" | "ease_out_cubic" => {
+                Some(Easing::CubicOut)
+            }
+            "cubic-in-out" | "cubic_in_out" | "ease-in-out-cubic" | "ease_in_out_cubic" => {
+                Some(Easing::CubicInOut)
+            }
             // CSS-style aliases (map to cubic by convention)
-            "ease-in" => Some(Easing::CubicIn),
-            "ease-out" => Some(Easing::CubicOut),
-            "ease-in-out" => Some(Easing::CubicInOut),
+            "ease-in" | "ease_in" => Some(Easing::CubicIn),
+            "ease-out" | "ease_out" => Some(Easing::CubicOut),
+            "ease-in-out" | "ease_in_out" => Some(Easing::CubicInOut),
             // kino names
-            "sin" | "sine" | "ease-out-sine" => Some(Easing::Sin),
+            "sin" | "sine" | "ease-out-sine" | "ease_out_sine" => Some(Easing::Sin),
             // manim names
-            "there-and-back" => Some(Easing::ThereAndBack),
+            "there-and-back" | "there_and_back" => Some(Easing::ThereAndBack),
             "wiggle" => Some(Easing::Wiggle),
             "lingering" => Some(Easing::Lingering),
             _ => None,
