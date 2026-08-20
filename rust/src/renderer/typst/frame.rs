@@ -10,7 +10,6 @@ impl Renderer {
     // =========================================================================
     // Whole-document native-Typst render path (the authentic typesetting model)
     // =========================================================================
-    //
     // Typst typesets the *entire* document natively each frame. Every mobject
     // body is wrapped in `#move`/`#scale`/`#rotate` (all exist in typst 0.15) so
     // the animation is just a code expansion driven by the eased per-frame
@@ -33,7 +32,6 @@ impl Renderer {
     }
 
     /// Build the SVG for one frame from precomputed `states` + `camera`.
-    ///
     /// The base document is compiled (all transforms read from `sys.inputs`)
     /// and, when the document declares a `#camera` directive, composed with
     /// the camera `<g>` group + per-glyph transform/morph overlays + the
@@ -104,7 +102,6 @@ impl Renderer {
 
     /// Compose the full draft SVG for one frame: the base document (typst_svg
     /// output) with the per-glyph `#transform` overlay and subtitles injected.
-    ///
     /// The base document's mobjects and the transform overlay are wrapped in a
     /// single camera group (so they pan/zoom/rotate with the view together),
     /// while the background `<rect>` and the subtitle overlays stay fixed (drawn
@@ -218,7 +215,6 @@ impl Renderer {
         self.ensure_flow()
     }
     /// The scene to draw at `time_ms`.
-    ///
     /// Single-page rendering: only one page is ever on stage, so the active
     /// scene is simply the one whose timeline interval contains `time_ms`
     /// (or `0` when there are no scenes).
@@ -255,7 +251,6 @@ impl Renderer {
             .sum()
     }
     /// Render the full scene at a frame index to an SVG string (draft / fallback).
-    ///
     /// The renderer has a single code path: the whole-document native-Typst SVG
     /// path (`render_frame_at_whole_doc`), which typesets the entire document
     /// natively each frame and is the single source of truth for the frame.
@@ -268,12 +263,10 @@ impl Renderer {
         self.render_frame_at_par(time_ms, all_frames)
     }
     /// Parallel-safe variant of [`render_frame_at`].
-    ///
     /// Takes `&self` so it can be called from a rayon parallel iterator.
     /// **Precondition:** `ensure_flow()` must have been called once before
     /// any parallel call (it initializes `nat`/`page_w`/`page_h`). The
     /// [`Renderer::ensure_flow_public`] method exposes this.
-    ///
     /// The renderer has a single code path now: the whole-document native-Typst
     /// SVG path (`render_frame_at_whole_doc`). The old hand-composed per-object
     /// SVG path was removed — the whole-document path is the single source of
@@ -288,7 +281,6 @@ impl Renderer {
     }
     /// Render a frame to RGBA pixels with per-object opacity applied
     /// through the SVG/pixel **bypass**.
-    ///
     /// Typst 0.15 has no in-document `opacity()`, so a fading object
     /// (0 < opacity < 1) cannot be expressed in the compiled SVG.
     /// Instead the base frame is rasterized with every fading object *hidden*
@@ -562,14 +554,12 @@ impl Renderer {
 /// Split the leading page-fill background element (the scene's canvas
 /// background, always the first child emitted by `typst_svg`) from the rest of
 /// the inner SVG markup.
-///
 /// `typst_svg` may render the page fill as a `<rect>` (older builds) or a
 /// `<path>` (current builds); we accept whichever appears first. The returned
 /// background slice is drawn *outside* the camera group so the canvas stays
 /// filled with the background color regardless of any camera zoom/pan/rotate;
 /// if it stayed inside the camera group it would be transformed along with the
 /// mobjects and shrink on zoom-out, exposing transparent (uncovered) edges.
-///
 /// Returns `("", inner)` (no background extracted) when the inner markup has
 /// neither a leading `<rect>` nor `<path>` (e.g. a transparent page fill).
 fn split_background(inner: &str) -> (&str, &str) {

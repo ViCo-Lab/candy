@@ -13,14 +13,12 @@ use std::fs::File;
 use std::io::Write;
 
 /// Stateful, frame-by-frame H.264 encoder.
-///
 /// Unlike the batch [`encode`], an `H264Stream` keeps the `openh264` encoder
 /// alive across [`push`](Self::push) calls and emits one coded sample per
 /// frame. This is what lets the renderer stream frames to the muxer without
 /// holding every RGBA frame in memory at once: each `push` consumes exactly one
 /// frame and produces a small length-prefixed NAL sample, so peak memory is
 /// bounded by the coded stream rather than `N × width × height × 4` RGBA.
-///
 /// The coded samples are written to a temp file as they are produced (see
 /// `finish_file`); only the small per-sample metadata stays in RAM, so a long
 /// HD/high-FPS render cannot OOM on the coded stream.
@@ -200,7 +198,6 @@ impl H264Stream {
 }
 
 /// Encode rasterized frames into H.264 and return an [`EncodedVideo`].
-///
 /// Batch entry point; the streaming path uses [`H264Stream`] directly.
 pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyError> {
     if frames.is_empty() {

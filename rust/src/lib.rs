@@ -56,7 +56,6 @@ use crate::renderer::audio::AudioData;
 use crate::renderer::encode::{self, Container};
 
 /// Input source for the `build` pipeline.
-///
 /// Candy v0.1 only accepted a `.tyx` path. The `@preview/candy` Typst package
 /// also supports rendering an SVG with an embedded `candy-json` block, which
 /// `extract_scene_from_svg` recovers. Exposing both paths from `build()` makes
@@ -127,7 +126,6 @@ pub enum OutputFormat {
 }
 
 /// End-to-end build: `.tyx` → `Scene` → keyframes → frames → output.
-///
 /// * `input`            — path to the `.tyx` X-sheet (valid standard Typst).
 /// * `intermediate_dir` — directory (`.candy/<stem>`) for draft artifacts.
 /// * `output`           — final video path (under `dist`) for video formats.
@@ -233,7 +231,6 @@ pub fn build_input_with_gpu(
 }
 
 /// Like [`build_input`], but with an explicit `use_gpu` flag.
-///
 /// When `use_gpu` is true and the `gpu` cargo feature is enabled, candy
 /// rasterizes each frame on the GPU via vello + wgpu. If the `gpu` feature is
 /// not compiled in, `use_gpu` is silently ignored (CPU path is used). If the
@@ -352,7 +349,6 @@ pub fn build_scene_with_gpu(
     // call like `#invalid()`) parses into an empty scene, which yields zero
     // sample times. Surface this as a clean error instead of letting the encoder
     // index into an empty frame buffer and panic (index out of bounds).
-    //
     // Since every scene now gets at least one slide (auto-inserted pause if
     // needed), the only way to be truly "empty" is if the parser itself failed
     // or produced zero slides — which should not happen after the ast_walk
@@ -526,7 +522,6 @@ pub fn build_scene_with_gpu(
 /// error rather than an explicit format choice.
 /// Append fps-grid sample times so the rendered timeline reaches `end_ms`
 /// (exclusive) — the end of the page scheduler's cross-page playback windows.
-///
 /// The page scheduler gives overflow pages that received no animation of
 /// their own a default dwell *after* the last keyframe; without extra sample
 /// times those windows are never rendered (the pages are "timed but not
@@ -568,7 +563,6 @@ fn write_svg_draft_on_encode_fail(
 /// Simulate a render without producing any artifact: candy compiles and
 /// composes every frame's SVG (Typst → SVG) but never rasterizes to a bitmap or
 /// encodes. This is a fast way to catch compile/compose errors.
-///
 /// This path is intentionally GPU-free: it never rasterizes, so there is no
 /// `use_gpu` flag and no `gpu` feature dependency — the same `render_frame_at`
 /// SVG composition the build uses runs here, just without the rasterization /
@@ -1092,7 +1086,6 @@ fn stream_encode_cpu(
 ) -> Result<(), CandyError> {
     // Bounded channel: at most `jobs` frames may be buffered between producer
     // and consumer, so in-flight RGBA is capped regardless of `N`.
-    //
     // IMPORTANT: the producer renders frames in *parallel*, so it finishes them
     // in arbitrary (non-time) order. The consumer encodes strictly in time
     // order, so we must NOT send bare frames down the channel — doing so
@@ -1105,7 +1098,6 @@ fn stream_encode_cpu(
     // between windows), so the consumer's reorder buffer only ever holds frames
     // from the single in-flight window. That bounds peak RGBA memory to ≈
     // `window` frames regardless of the total frame count `N`.
-    //
     // Without this, a plain `par_iter` over all frames lets rayon race
     // far-ahead contiguous chunks to completion while the frame the consumer is
     // waiting for is still rendering; every finished out-of-order frame then

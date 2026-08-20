@@ -33,7 +33,6 @@ pub(crate) fn imports_preamble(scene: &Scene) -> String {
 }
 
 /// Resolve the Typst body for `label` at frame time `time_ms`.
-///
 /// A `transform` records content switches on `Scene.content_timeline` as
 /// `(time_ms, new_body)` pairs. For a given frame we use the latest switch
 /// whose `time_ms <= frame`, falling back to `items[label]` (the original
@@ -67,11 +66,9 @@ pub(crate) fn content_for(
 /// Replace every `ecval("name")` / `kcval("name")` counter reference in `body`
 /// with the integer value of the counter at `time_ms`, per the scene's scope
 /// shadowing / lifecycle rules.
-///
 /// Returns `(substituted_body, unknown_ec, unknown_kc)` where `unknown_ec` /
 /// `unknown_kc` are the easing-counter / keyframe-counter names referenced but
 /// not declared (reported as `E006 UnknownKey` with kind `"ecnew"` / `"kcnew"`).
-///
 /// Expansion is **AST-driven**, not naive string replacement: `body` is parsed
 /// into a Typst `SyntaxNode` tree and every *real* `ecval(..)` / `kcval(..)`
 /// function-call node is swapped for an integer literal. This keeps the call a

@@ -21,12 +21,10 @@ pub const DEFAULT_PAGE_PT: (f64, f64) = (16.0 * PT_PER_CM, 9.0 * PT_PER_CM);
 
 /// Global canvas / export configuration for a Candy animation, declared once
 /// per `.tyx` via the `candy` show rule:
-///
 /// ```typst
 /// #show: candy
 /// #show: candy.with(width: 13.33in, height: 7.5in, ppi: 144, fps: 30)
 /// ```
-///
 /// `width_pt` / `height_pt` are the *viewport* dimensions in Typst points.
 /// The rendering canvas equals `(width_pt, height_pt)` for every scene (the
 /// page size is derived from the global config, not per-scene `width` /
@@ -51,7 +49,6 @@ impl GlobalConfig {
 }
 
 /// Unique identifier for an animatable element.
-///
 /// Matches an `@label` reference in Typst / the `.tyx` DSL. Serialized
 /// transparently as the bare string so it can be used as a JSON/map key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -82,16 +79,12 @@ impl Label {
 }
 
 /// An animation action applied to a target element within a slide.
-///
 /// Each action carries its own [`Easing`], so a single slide can mix
 /// different rate functions per target (e.g. one object moves `linear` while
 /// another fades `smooth`).
-///
 /// # Manim-inspired actions
-///
 /// Beyond the core transform actions (MoveTo/Scale/Rotate/FadeTo), candy
 /// ports several Manim Community animation concepts:
-///
 /// - **State management**: [`Action::SaveState`] / [`Action::Restore`]
 ///   mirror `mobject.save_state()` + `Restore(mobject)`. SaveState captures
 ///   the current transform; Restore interpolates back to it from the current
@@ -121,7 +114,6 @@ pub enum PathMode {
 
 /// Sequencing of an object animation relative to the previous one on the
 /// timeline. Mirrors the PowerPoint animation-pane "Start" options:
-///
 /// - [`Timing::After`] (default): begin once the previous animation finishes
 ///   (PPT "Start: After Previous").
 /// - [`Timing::With`]: begin at the same time as the previous animation, i.e.
@@ -336,7 +328,6 @@ pub enum Action {
     /// must exist in `scenes` with a matching `name` field. If the target is
     /// an anonymous scene, use its auto-assigned UUID name (e.g.,
     /// `"scene_a1b2c3d4"`).
-    ///
     /// When a named scene is switched to via this action:
     /// - If the target is a **sibling** scene at the same hierarchy level,
     ///   it replaces the current scene on canvas (mutual exclusion).
@@ -361,11 +352,9 @@ pub enum Action {
 /// `MorphPlan` from the two bodies' outlines and, during `[start_ms, end_ms]`,
 /// renders the *target* (`to`) as the interpolated shape so the source shape
 /// visibly morphs into the target shape (instead of a plain opacity crossfade).
-///
 /// The pair window matches the `from`→`to` crossfade window emitted by the
 /// parser, so the two effects are composited (shape morph on `to`, fade-out on
 /// `from`).
-///
 /// `to_body`, when set, overrides `items[to]` as the *target outline* source for
 /// the plan (used by `#transform`, where `to` keeps its original body in
 /// `items` until the content-timeline swap, but the morph must interpolate
@@ -490,7 +479,6 @@ impl Action {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Slide {
     /// Absolute start time of this slide on the timeline, in **milliseconds**.
-    ///
     /// Resolved by the parser from the directive's `timing` (`after`/`with`)
     /// and `delay` parameters. The scheduler places the slide's keyframes at
     /// `[start_ms, start_ms + duration_ms)`. Defaults to `0` for hand-built
@@ -498,7 +486,6 @@ pub struct Slide {
     #[serde(default)]
     pub start_ms: u32,
     /// Duration of this slide in **milliseconds**. Must be ≥ 1.
-    ///
     /// Internally candy works in milliseconds everywhere; the `--fps` CLI
     /// flag only affects the final video timebase (how many frames per
     /// second are rasterized and encoded). A 1000ms slide at 30fps produces
@@ -656,7 +643,6 @@ pub struct Scene {
 }
 
 /// Re-derivable parse artifacts for the per-frame whole-document recompiler.
-///
 /// See `Scene::artifacts`. All fields are default-empty so a `Scene` built
 /// without parsing (e.g. unit tests) carries no artifacts and the renderer
 /// transparently falls back to its legacy per-object compositing path.
@@ -1042,7 +1028,6 @@ pub enum SubPos {
 }
 
 /// A subtitle (caption) overlay rendered over the animation.
-///
 /// Lifetime rules (Typst-scope aware):
 /// - Default: persists until *replaced* by another subtitle in the **same**
 ///   scope, or until its **scope exits** (auto-destroy).
@@ -1095,7 +1080,6 @@ impl Subtitle {
 // ============================================================================
 
 /// A named integer counter ("easing counter").
-///
 /// Key-value store of animatable integers referenced from mobject / subtitle
 /// bodies via `ecval(name)`. The value is:
 /// - under **standard Typst**, the integer `seed`;
@@ -1159,7 +1143,6 @@ pub struct Keyframe {
 }
 
 /// A keyframe counter declaration (the "keyframe-counter module", `kc*`).
-///
 /// Unlike the easing counter (a single `seed + step` ramp defined in `ecnew`),
 /// a keyframe counter is driven by discrete keyframes pushed at runtime via
 /// `kcpush`. The value at any timeline position interpolates between the two
@@ -1190,7 +1173,6 @@ pub struct KeyframeCounterDef {
 // ============================================================================
 
 /// A lexical Typst scope interval on the timeline.
-///
 /// Scopes nest: a block `{ ... }` opens a child scope whose `start_ms` is the
 /// cursor when the block is entered and `end_ms` the cursor when it is left.
 /// This interval drives auto-destroy on scope exit and parental shadowing.
@@ -1206,7 +1188,6 @@ pub struct ScopeInfo {
 
 /// A scene in the animation — a nestable, scope-bounded, one-page segment of
 /// the timeline.
-///
 /// Scenes form a tree rooted at the implicit root scene (id `0`). Each
 /// explicit `#scene(...)` in the `.tyx` source becomes a child `SceneInfo`
 /// with:
@@ -1220,7 +1201,6 @@ pub struct ScopeInfo {
 /// or `#switch(target: "scene_name")`, which jumps the timeline cursor to the
 /// target scene's `start_ms`. When a named scene is entered, it auto-hides all
 /// sibling/ancestor scenes (same as nested scene semantics).
-///
 /// **Anonymous scenes** (created by old-style `#scene(...)` without a name)
 /// are automatically assigned a UUID-like name for internal management.
 ///
@@ -1304,7 +1284,6 @@ impl Scene {
     /// Resolve the integer value of counter `name` at timeline time `time_ms`,
     /// honoring Typst-scope shadowing (innermost active counter wins) and the
     /// `pause` / `resume` / `destroy` lifecycle.
-    ///
     /// - Before a counter's `start_ms` (or if undefined) → its `seed`.
     /// - With a `duration`: value ramps `seed → seed + step·duration`, shaped by
     ///   the easing function of the *effective* elapsed time (paused intervals
@@ -1390,7 +1369,6 @@ impl Scene {
     }
 
     /// Live value of a keyframe counter named `name` at timeline `time_ms`.
-    ///
     /// Mirrors [`Scene::counter_value_at`]: shadowing by scope depth, plus
     /// `destroy` freeze and accumulated `pause`..`resume` intervals. The value
     /// interpolates between the two surrounding keyframes (the segment uses the

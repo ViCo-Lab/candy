@@ -95,7 +95,6 @@ impl Renderer {
         // at its plain-Typst position). This mirrors the per-scene reset used
         // for every other animated property. With no scene tree the camera
         // applies globally (legacy behaviour).
-        //
         // The camera's "home scene" is the scene active at the camera's *first*
         // keyframe (the directive's start). We apply the camera only while the
         // current frame's active scene is that same home scene. (The scheduler
@@ -156,7 +155,6 @@ impl Renderer {
         (out, camera)
     }
     /// Compute (once) the flow layout of every mobject.
-    ///
     /// Each scene's objects are laid out by plain Typst document flow — every
     /// `#mobject(name, body)` now returns `block(body) + label(name)`, so
     /// Typst stacks them top-to-bottom (left-aligned) with its standard
@@ -165,7 +163,6 @@ impl Renderer {
     /// at their "standard mode" positions instead of all piling up at the page
     /// origin (0, 0), and it stays consistent with how hand-written Typst would
     /// typeset the same content (no synthetic `#stack` gap or centring).
-    ///
     /// The flow (first-frame) position of each mobject is read straight
     /// from the compiled document via the Typst **introspector**: because every
     /// mobject carries its own `label(name)`, `introspector.query_label`

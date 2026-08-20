@@ -38,7 +38,6 @@ use crate::renderer::RenderedFrame;
 use crate::renderer::raster::cpu::set_svg_viewport_px;
 
 /// A reusable GPU rasterization context: wgpu device + queue + vello renderer.
-///
 /// Building a wgpu device is expensive (driver handshake, shader compilation),
 /// so this struct is meant to be constructed once and reused across every
 /// frame in an animation. `GpuRenderer::render_svg` is the per-frame entry
@@ -106,7 +105,6 @@ impl GpuRenderer {
     }
 
     /// Rasterize an SVG string to an RGBA8 buffer at `width x height`.
-    ///
     /// The SVG is parsed by `vello_svg`, rendered to a GPU texture by vello,
     /// then copied back to CPU memory. The returned `RenderedFrame` has the
     /// same shape as the CPU path's output, so the video encoder consumes it
@@ -118,7 +116,6 @@ impl GpuRenderer {
         height: u32,
     ) -> Result<RenderedFrame, CandyError> {
         // 1. Parse SVG → vello Scene.
-        //
         // The SVG root carries `width`/`height` in *point* units (the scene's
         // page size) with a matching `viewBox`. vello renders the scene in that
         // native coordinate space, so feeding it a pixel-sized texture would
@@ -161,7 +158,6 @@ impl GpuRenderer {
             .map_err(|e| CandyError::Raster(format!("vello render: {e}")))?;
 
         // 4. Copy texture → buffer → CPU.
-        //
         // wgpu requires `bytes_per_row` for copy_texture_to_buffer to be a
         // multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256). The tight row width
         // `width * 4` usually isn't, so we pad to the aligned stride and then

@@ -95,14 +95,11 @@ pub(crate) const CANDY: &[&str] = &[
 ];
 
 /// Resolve a function call to its Candy symbol (or `None` if it isn't one).
-///
 /// Works for `mobject(...)` (imported via `#import "candy": *` or
 /// `#import "candy": mobject as mob`), `candy.mobject(...)` (field access on
 /// the Candy module alias), and renamed imports.
-///
 /// Crucially, this does **not** treat an arbitrary field access as Candy:
 /// `obj.morph()` or `dict.animate()` are ordinary user code and return `None`.
-///
 /// Identifier resolution is **strict**: a Candy directive name uses kebab-case
 /// (e.g. `save-state`, `set-color`), and that is the only form recognized. An
 /// `_` and a `-` are two distinct identifier characters and are *not*
@@ -150,7 +147,6 @@ pub(crate) fn current_scope(ctx: &ParseCtx) -> String {
 }
 
 /// Resolve the easing named arg.
-///
 /// Each directive declares its own default easing in its Typst signature; pass
 /// that default as `default` so the Rust parser honors the Typst contract
 /// exactly (e.g. `animate` defaults to `"smooth"`, `ecnew`/`set-color`/`subtitle`
@@ -209,7 +205,6 @@ pub(crate) fn expr_to_key(e: &Expr) -> Option<String> {
 /// Whether `name` is a valid Typst identifier, so it can be used as a Candy key
 /// (mobject / ec / kc / scene name) that is later emitted into the Typst source
 /// as a variable or label.
-///
 /// We deliberately delegate to `typst_syntax::is_ident` (the *same* function
 /// Typst's own lexer uses) rather than re-implementing an ASCII subset. This
 /// guarantees the Rust-side check and the Typst-side `_assert_valid_key_name`
@@ -303,7 +298,6 @@ pub(crate) fn expr_to_f64(e: &Expr) -> Option<f64> {
 }
 
 /// Evaluate an opacity-style ratio expression to `f64` in `[0, 1]`.
-///
 /// Accepts a Typst `ratio` literal such as `50%` (→ `0.5`). Nothing else is
 /// accepted: lengths and angles are rejected (`None`) because they are not
 /// valid opacity values. A bare unitless number is intentionally **not**
@@ -333,7 +327,6 @@ pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
 }
 
 /// Evaluate an angle expression to degrees (`f64`).
-///
 /// Accepts a Typst `angle` literal such as `90deg` (→ `90.0`) or `1.5rad`
 /// (→ `≈85.94`). Nothing else is accepted: lengths, ratios, and other units
 /// are rejected (`None`). A bare unitless number is intentionally **not**
@@ -375,7 +368,6 @@ pub(crate) fn expr_to_bool(e: &Expr) -> Option<bool> {
 }
 
 /// Evaluate a unit-less numeric expression to `i64` (for counter seed/step).
-///
 /// Only accepts integer literals (`Expr::Int`) and unary `±` around them.
 /// Floats and lengths are rejected — the caller should report an error rather
 /// than silently rounding, to stay consistent with the `_assert_int` validation
@@ -472,7 +464,6 @@ pub(crate) fn strip_string_literal(body: &str) -> Option<String> {
 /// Parse a `#track` keyframe tuple `(t, (x, y, scale, opacity, rotation))` into
 /// a [`crate::core::ast::TrackKey`]. `x`/`y` are unit-aware centimeters;
 /// `scale`/`opacity`/`rotation` are unitless numbers.
-///
 /// Matches the format documented in `lib.typ`: `keys` is an array of `(t,
 /// (x, y, scale, opacity, rotation))` tuples, e.g.
 /// `((0, (1cm, 0cm, 1, 1, 0)), (500, (4cm, 0cm, 1.5, 0.5, 0)))`.

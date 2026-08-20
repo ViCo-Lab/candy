@@ -39,7 +39,6 @@ pub type Point = [f64; 2];
 pub type Ring = Vec<Point>;
 
 // ─── SVG path extraction & generation ──────────────────────────────────────
-//
 // These functions bridge the Typst renderer and the morph core: they extract
 // polygon rings from typst-svg's SVG output (so mobjects can be morphed
 // without the user providing explicit point arrays), and convert morphed
@@ -235,7 +234,6 @@ fn svg_polyline(tag: &str) -> Option<Ring> {
 
 /// Parse SVG path `d` attribute (M/L/H/V/Z commands; curves approximated).
 /// Tokenize an SVG path `d` string into command letters and numeric arguments.
-///
 /// Unlike a naive whitespace split, this correctly separates a command letter
 /// that is *concatenated* with the following number (e.g. `0m` or `28.3c`, which
 /// Typst emits for circles/ellipses) so each becomes its own token.
@@ -799,11 +797,9 @@ fn rotate(from: &mut Ring, to: &[Point]) {
 // ─── Core interpolator (interpolate.js) ────────────────────────────────────
 
 /// Build an interpolator closure between two rings.
-///
 /// The returned closure takes `t ∈ [0, 1]` and returns the interpolated ring
 /// at that parameter. At `t=0` the result matches `from`; at `t=1` it matches
 /// `to`.
-///
 /// This is the core of Flubber's `interpolateRing`: equalize point counts,
 /// find best cyclic alignment, then lerp index-by-index.
 pub fn interpolate_ring(
@@ -868,14 +864,12 @@ pub fn morph(from: &[Point], to: &[Point], t: f64, max_segment_length: f64) -> R
 }
 
 /// A precomputed morph between two rings.
-///
 /// Building a `MorphPlan` is the *expensive* part: it renders/extracts both
 /// shapes (caller-supplied), normalizes winding, bisects long segments,
 /// equalizes point counts, and finds the best cyclic alignment — all O(n²) in
 /// the worst case. Once built, sampling it at any `t ∈ [0, 1]` is a cheap
 /// index-by-index `lerp`, so the plan should be constructed **once** (e.g. in
 /// a renderer's natural-layout pass) and reused for every animation frame.
-///
 /// `fill` / `stroke` are carried so the morphed shape can be re-emitted with
 /// the original paint.
 pub struct MorphPlan {
@@ -967,7 +961,6 @@ pub fn regular_polygon_points(cx: f64, cy: f64, r: f64, n_sides: usize) -> Ring 
 /// the system default font (or the embedded Typst fallback fonts). Returns
 /// `None` if the glyph has no outline (e.g. whitespace) or the font can't be
 /// loaded.
-///
 /// The outline is returned in font units scaled to `font_size` in points.
 /// The origin is at the glyph's baseline-left.
 pub fn glyph_outline(ch: char, font_size: f64) -> Option<Ring> {
@@ -1069,7 +1062,6 @@ fn load_system_font() -> Option<Vec<u8>> {
 
 /// Split a source ring into `n_pieces` polygonal pieces by triangulating and
 /// greedily merging the smallest triangles with neighbors.
-///
 /// This is a simplified port of Flubber's `triangulate` + `collapseTopology`:
 /// instead of TopoJSON arc-merging, we use union-find on triangle adjacency
 /// to coalesce triangles into N groups by area.

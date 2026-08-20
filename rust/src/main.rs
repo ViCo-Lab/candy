@@ -421,7 +421,6 @@ fn run() -> Result<(), CandyError> {
                 )));
             }
             // Build each input in turn, writing a separate output per file.
-            //
             // Batch mode is **non-fatal per input**: a failure on one input does
             // NOT abort the others — every input is attempted so partial
             // progress is preserved (outputs already written are kept). Failures
@@ -699,7 +698,6 @@ fn run() -> Result<(), CandyError> {
 }
 
 /// A single render unit produced by [`collect_render_inputs`].
-///
 /// `path` is the `.tyx` file to render; `rel` is the directory portion of that
 /// path relative to the recursive root it was discovered under — but always
 /// **prefixed with the source directory's own name** so the tree is mirrored
@@ -717,7 +715,6 @@ struct RenderInput {
 
 /// Expand the user's explicit `<inputs>` files and `--recursive <dir>` arguments
 /// into one flat, ordered list of `.tyx` render units.
-///
 /// - Directly-passed `<inputs>` become `RenderInput`s with `rel = None` (they
 ///   land at the top level of `--output-dir`, not under any source-name folder).
 /// - Each `--recursive` directory is walked (via `walkdir`, a mature
@@ -798,7 +795,6 @@ fn collect_render_inputs(
 }
 
 /// Whether `c` counts as a path separator on the current platform.
-///
 /// `/` is a separator everywhere; `\` is a separator only on Windows (on other
 /// platforms it is a legal filename character, e.g. `a\b.mp4`).
 fn is_separator_char(c: char) -> bool {
@@ -806,7 +802,6 @@ fn is_separator_char(c: char) -> bool {
 }
 
 /// Resolve the final output path.
-///
 /// `output_name` is the user's custom name for this input (already validated to
 /// be a 1:1 match by the caller). When it is `None`, the default
 /// `dist/<stem>.<ext>` (or `<output_dir>/<stem>.<ext>` when `--output-dir` is
@@ -819,7 +814,6 @@ fn is_separator_char(c: char) -> bool {
 /// resolved by the OS when the file is opened — we never hand-roll path
 /// normalization. Otherwise a name containing a separator is rejected (with a
 /// warning) and the default is used.
-///
 /// `rel` mirrors the source tree for `--recursive` builds: it is the directory
 /// portion of the `.tyx`'s path relative to its recursive root (e.g. `a/b` for
 /// `<root>/a/b/c.tyx`). When `rel` is `Some`, the output lands at
@@ -883,7 +877,6 @@ fn root_page_pt(scene: &Scene) -> (f64, f64) {
 }
 
 /// Resolve the effective pixels-per-point.
-///
 /// - `--width` pins the output *width* in pixels → `ppt = width / page_w_pt`.
 /// - `--height` pins the output *height* in pixels → `ppt = height / page_h_pt`.
 /// - Otherwise `--pixel-per-pt` is used unchanged.
@@ -907,7 +900,6 @@ fn resolve_pixel_per_pt(
 }
 
 /// Best-effort removal of a per-build intermediate directory (`.candy/<stem>`).
-///
 /// Called after a successful video build (unless `--keep-intermediates` is
 /// given). Errors are non-fatal: we only `warn` and move on, so a file held
 /// open by another process won't abort the run. If removing the directory

@@ -38,7 +38,6 @@ use anstyle::Style;
 pub use anstyle::AnsiColor as Color;
 
 // ============================ Style helpers ============================
-//
 // All styling goes through `anstyle` `Style`s. The strings we build always
 // carry ANSI codes; the `anstream`-backed writers ([`eprint_styled`] /
 // [`print_styled`]) strip them when the destination isn't a terminal or
@@ -92,7 +91,6 @@ pub fn style_green_bold() -> Style {
 use crate::core::ast::Label;
 
 // ============================== SourceLoc ==============================
-//
 // Every diagnostic that originates from a specific piece of user source
 // (a duplicate name, an unknown label, a syntax problem) carries a `SourceLoc`
 // so the reporter can point the user at the *exact* file:line:col and the
@@ -414,7 +412,6 @@ impl CandyError {
     }
 
     /// Process exit code for this error.
-    ///
     /// The E001–E011 family follows `ERROR_EXIT_BASE + n - 1` (`E001` → `64` …
     /// `E011` → `74`). `EYEE` is the **one exception**: it bypasses that scheme
     /// and returns the dedicated [`BATCH_ERROR_EXIT`] (111) — the batch
@@ -568,7 +565,6 @@ impl From<serde_json::Error> for CandyError {
 }
 
 // ===================== Typst Error capture (E005) ======================
-//
 // A Typst compile yields `typst::ecow::EcoVec<typst::diag::SourceDiagnostic>`
 // (the error half of `typst::SourceResult<T>`). This `From` impl lets any
 // `?` on a Typst result be captured uniformly as `CandyError::Typst` and thus
@@ -633,13 +629,11 @@ pub enum CandyWarn {
     /// W008 — MP4 only muxes AAC audio; a non-AAC track was ignored.
     AudioIgnored,
     /// W009 — An unknown easing name was given; falling back to `linear`.
-    ///
     /// Fields: the offending easing name, and the source location of the
     /// directive that carried it (for the source-trace / `hint:` output).
     UnknownEasing(String, SourceLoc),
     /// W010 — A `#reveal` body was not a string literal; falling back to
     /// `FadeIn`.
-    ///
     /// Fields: the offending label, and the source location of the directive
     /// that carried it (for the source-trace / `hint:` output).
     RevealFallback(String, SourceLoc),
@@ -665,7 +659,6 @@ pub enum CandyWarn {
 
     /// W015 — The user called a Candy private function (name starts with `_`).
     /// These are internal helpers, not part of the public API.
-    ///
     /// Fields: the private function name (e.g. `"_assert_str"`), and the
     /// source location of the call (for the source-trace / `hint:` output).
     CallingPrivate(String, SourceLoc),
@@ -696,7 +689,6 @@ pub enum CandyWarn {
     /// `viewBox` (content may overflow in any direction; the viewport stays in
     /// place), so it isn't shown. This is usually unintentional (the content was
     /// expected to fit one screen), so candy warns with the scene name.
-    ///
     /// Field: a description like `scene 'intro' content overflows the viewport`.
     ContentOverflow(String),
 }
@@ -858,7 +850,6 @@ impl fmt::Display for CandyWarn {
 }
 
 // ============================ Reporters (macros) =========================
-//
 // All four reporters are **macros** (not functions) so call sites read like
 // `eprintln!`/`println!` without wrapping every message in `format!`. Each is
 // `#[macro_export]`ed, so it is available at the crate root: `crate::error!`,
@@ -866,12 +857,10 @@ impl fmt::Display for CandyWarn {
 // `candy::error!` etc. from the `candy` binary.
 
 /// Base for fatal-error exit codes.
-///
 /// On Unix the process exit status is an 8-bit value (0–255); any code above
 /// 255 is truncated (`code & 0xFF`), which is why the old `1000 + n` scheme was
 /// unusable on Linux (our primary platform). Every fatal code is therefore kept
 /// ≤ 255.
-///
 /// Allocation (must not collide with anything else candy emits):
 ///   - `0`     success
 ///   - `1`     generic / catch-all error
@@ -1040,7 +1029,6 @@ pub fn render_warn_loc(loc: &SourceLoc) -> String {
 }
 
 // ===================== Stream writers (anstream) =====================
-//
 // Every diagnostic string we build carries ANSI codes unconditionally. These
 // two helpers write such a string through an `anstream::AutoStream` with
 // `ColorChoice::Auto`, which strips the codes automatically when the

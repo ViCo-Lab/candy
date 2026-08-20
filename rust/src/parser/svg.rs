@@ -13,10 +13,8 @@ use crate::core::ast::Scene;
 use crate::core::diag::CandyError;
 
 /// Extract a `Scene` AST from an SVG rendered by `@preview/candy`.
-///
 /// Precondition: `svg_path` is a valid SVG file.
 /// Postcondition: returns `Ok(Scene)` with matching `private_metadata`.
-///
 /// NOTE: the spec says "use `usvg` to parse the SVG". For the first version we
 /// use a targeted XML scan for the `lang="candy-json"` node instead (a full
 /// `usvg` parse is a reserved optimization; the JSON itself is authoritative).

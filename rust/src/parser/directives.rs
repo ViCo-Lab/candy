@@ -83,7 +83,6 @@ fn register_label(ctx: &mut ParseCtx, label: Label, scene: usize) {
 }
 
 /// Resolve a named ratio argument (e.g. `opacity: 50%`).
-///
 /// Returns `None` when the argument is absent. When the argument *is* present
 /// but is not a valid Typst `ratio` literal (Typst does not treat a bare number
 /// as a ratio), an `E007 InvalidKey` is raised so the mistake is reported up
@@ -110,7 +109,6 @@ fn ratio_arg(
 }
 
 /// Resolve a named angle argument (e.g. `rotate: 90deg`).
-///
 /// See [`ratio_arg`] for the error-handling contract; a bare number is *not* an
 /// angle in Typst.
 fn angle_arg(
@@ -134,7 +132,6 @@ fn angle_arg(
 }
 
 /// Resolve a named length argument (e.g. `dx: 2cm`, `dy: -1.5cm`).
-///
 /// Accepts Typst length literals (`4cm`, `3in`, `5pt`) and bare unitless numbers
 /// (treated as cm). Rejects ratios, angles, and other types with E007 so the
 /// user gets a clear error instead of the value being silently dropped.
@@ -159,7 +156,6 @@ fn length_arg(
 }
 
 /// Resolve a named integer argument (e.g. `seed: 42`, `step: 1`).
-///
 /// Only accepts integer literals (`Expr::Int`). Floats and lengths are rejected
 /// with E007 InvalidKey so the user sees a clear error rather than the value
 /// being silently dropped and replaced by a default.
@@ -486,7 +482,6 @@ fn process_mobject(pos: &[Expr], node: &LinkedNode, raw: &str, ctx: &mut ParseCt
 
 /// `animate(target, to:, dx:, dy:, scale:, scale-by:, rotate:, rotate-by:,
 /// opacity:, duration:, easing:)`.
-///
 /// The `easing` named argument accepts a string (`"linear"`, `"smooth"`,
 /// `"ease-in-out"`, …). Its default is `"smooth"` — matching the `animate`
 /// signature declared in the Typst package (`typst/src/core.typ`). Unrecognized
@@ -2310,7 +2305,6 @@ fn active_kcdef_index(ctx: &ParseCtx, name: &str) -> Option<usize> {
 /// `scene-switch(target, duration: 0, easing: "smooth")` — switch to a named
 /// scene. This creates a `SceneSwitch` action that the scheduler handles as a
 /// timeline jump (the cursor jumps to the target scene's `start_ms`).
-///
 /// The target scene must have been previously defined via `#scene(name: "foo",
 /// ...)`. Anonymous scenes (without a `name:` argument) are auto-assigned
 /// UUID-like names and can also be targeted.

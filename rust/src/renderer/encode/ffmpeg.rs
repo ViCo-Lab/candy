@@ -57,7 +57,6 @@ use crate::renderer::encode::{Codec, Container};
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Seekable sink for ffmpeg's muxed container output.
-///
 /// On Linux the sink is an anonymous `memfd` (tmpfs-resident, seekable) rather
 /// than a real temp file: ffmpeg's MP4/MKV/WebM muxers need a seekable output
 /// (for `faststart` moov rewriting) and a memfd satisfies that while keeping
@@ -206,7 +205,6 @@ pub fn find_ffmpeg() -> Option<PathBuf> {
 }
 
 /// The ffmpeg encoder name and container format for a given candy [`Codec`].
-///
 /// Returns `(encoder_name, output_format, file_extension)`. Returns `None`
 /// for self-contained codecs (Av1, H264) — those don't use ffmpeg.
 fn ffmpeg_args(codec: Codec) -> Option<(&'static str, &'static str)> {
@@ -251,7 +249,6 @@ fn container_format(container: Container) -> &'static str {
 /// process, its stdin handle (the caller writes frames to it, then drops it),
 /// the [`MuxSink`] ffmpeg writes the container to, and the [`ErrLog`] used for
 /// failure diagnosis.
-///
 /// This is the streaming primitive behind [`encode_via_ffmpeg`]: the caller can
 /// feed frames one at a time instead of buffering every RGBA frame up front.
 pub(crate) fn spawn_ffmpeg(
@@ -365,9 +362,7 @@ pub(crate) fn spawn_ffmpeg(
 }
 
 /// Spawn an ffmpeg child on Linux that reads raw RGBA frames from a **pipe**.
-///
 /// # Why a pipe, not a memfd
-///
 /// A previous version used a `memfd` for frame input and told ffmpeg to read
 /// from `/proc/self/fd/N`. That approach has a fundamental race: ffmpeg opens
 /// the memfd as a *regular file* and its `read()` returns 0 (EOF) the instant
@@ -378,16 +373,13 @@ pub(crate) fn spawn_ffmpeg(
 /// render the next frame, hits EOF, and finalises the container with only a
 /// handful of frames encoded — producing a video that is a fraction of the
 /// expected duration (e.g. 5 frames out of 61 for `preview_demo`).
-///
 /// The fix is to feed ffmpeg through a **pipe** (`pipe2(2)`). A pipe's `read()`
 /// blocks on the read end until the producer writes more data (or closes the
 /// write end → real EOF), which is exactly the streaming contract ffmpeg
 /// expects from `-i -` / stdin input. The pipe is still entirely kernel-buffered
 /// (no disk I/O), so it retains the "intermediate never touches disk" property
 /// the memfd was after.
-///
 /// # Zero-copy frame feed via `vmsplice`
-///
 /// To avoid the `write()` syscall's user→kernel copy on the producer side, the
 /// caller ([`crate::renderer::encode::video::StreamingVideo::push`]) writes each
 /// frame's RGBA buffer into the pipe with `vmsplice(2)` + `SPLICE_F_GIFT`. This
@@ -395,15 +387,12 @@ pub(crate) fn spawn_ffmpeg(
 /// without copying a single byte — true zero-copy on the producer side. ffmpeg's
 /// `read()` then copies the data out of the pipe buffer as usual (one copy,
 /// unavoidable: the kernel must hand the bytes to userspace).
-///
 /// `vmsplice` with `SPLICE_F_GIFT` requires the buffer to be page-aligned and a
 /// multiple of the page size. The caller is responsible for padding the RGBA
 /// buffer accordingly; `compose()` in `video.rs` does this by sizing the canvas
 /// to an even width/height (already required by the encoder) and rounding the
 /// buffer length up to a page multiple, zero-padding the tail.
-///
 /// # Pipe capacity
-///
 /// The default pipe capacity is 64 KiB — far too small for a single HD frame
 /// (~1.85 MiB at 907×510×4). We grow the pipe with `fcntl(F_SETPIPE_SZ)` to at
 /// least one frame plus one page, so a single `vmsplice` never deadlocks (the
@@ -411,9 +400,7 @@ pub(crate) fn spawn_ffmpeg(
 /// power of two and may round up; on systems where the unprivileged pipe size
 /// cap (`/proc/sys/fs/pipe-max-size`) is too low the `F_SETPIPE_SZ` call fails
 /// and we fall back to a plain `write()` — still correct, just not zero-copy.
-///
 /// # Why we still use memfds elsewhere
-///
 /// The mux **output** sink (see [`make_mux_sink`]) and the stderr redirection
 /// (see [`make_err_log`]) still use memfds, and that is correct: ffmpeg writes
 /// the whole container to the output sink and seeks back for the `faststart`
@@ -421,7 +408,6 @@ pub(crate) fn spawn_ffmpeg(
 /// stderr sink needs an unbounded buffer so a long encode cannot deadlock on a
 /// full stderr pipe. Both of those are write-only-from-ffmpeg, read-once-by-us,
 /// so the EOF race does not apply.
-///
 /// Returns `(Child, File, MuxSink, ErrLog)` where the `File` is the **write end
 /// of the pipe** (caller writes one frame at a time, then drops it to signal
 /// EOF). The read end is handed to ffmpeg via `-i /proc/self/fd/N` (ffmpeg
@@ -578,9 +564,7 @@ pub(crate) fn spawn_ffmpeg_streaming(
 /// without a `write()`-style copy). Falls back to a plain `write()` if the
 /// buffer is not page-aligned, not a page-size multiple, or `vmsplice` fails
 /// (e.g. the pipe is too small to accept the whole gift at once).
-///
 /// # Safety contract
-///
 /// After a successful `vmsplice` with `SPLICE_F_GIFT`, the gifted pages must
 /// not be modified by the caller until ffmpeg has drained them from the pipe.
 /// In practice the caller (`StreamingVideo::push`) drops the RGBA buffer
@@ -588,7 +572,6 @@ pub(crate) fn spawn_ffmpeg_streaming(
 /// allocation is freed (the pages are now owned by the kernel), and even if
 /// the allocator reuses them, the kernel still holds its reference until
 /// ffmpeg reads the data.
-///
 /// Returns the number of bytes written (always `data.len()` on success).
 #[cfg(target_os = "linux")]
 pub(crate) fn vmsplice_frame(writer: &mut std::fs::File, data: &[u8]) -> std::io::Result<usize> {
@@ -742,10 +725,8 @@ pub(crate) fn finish_ffmpeg_to_file(
 }
 
 /// Encode `frames` to a muxed container byte buffer via system ffmpeg.
-///
 /// Batch wrapper over [`spawn_ffmpeg`]/[`finish_ffmpeg`]; the streaming path
 /// feeds frames one at a time instead of buffering them all.
-///
 /// # Errors
 /// Returns `CandyError::Encode` (E009) if ffmpeg is not found, exits non-zero,
 /// or writes no output.

@@ -45,28 +45,24 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 /// parser sees *all* directives — including those declared inside included
 /// `.tyx` / `.typ` files (and the files *they* include) — as one flat
 /// document.
-///
 /// Without this, included files would be resolved by Typst's built-in `include`
 /// only at *compile* time (inside the World), long after candy's parse has
 /// run: directives inside an included file would never be parsed (no animation,
 /// no `#mobject` capture, no scene gating). Expanding up front keeps
 /// `ParseArtifacts::source` (the string the renderer text-splices against)
 /// consistent with what candy actually parsed.
-///
 /// Expansion is AST-driven (not regex): only real `#include "literal"` calls
 /// are touched, so an `include` inside a string or comment is left alone.
 /// Each included file is expanded in the context of *its own* directory
 /// (matching Typst's path resolution) and expanded fully *before* being
 /// spliced, so a chain `a → b → c` collapses in one pass. A depth cap
 /// guards against a cyclic include expanding forever.
-///
 /// Returns the expanded source **and** a [`SourceMap`]: every byte range that
 /// came from an inlined include is recorded together with the `#include(…)`
 /// call-site that pulled it in and the included file itself, so later diagnostics
 /// can point at the *actual* error inside the included file and walk up the
 /// include chain, instead of pointing at a meaningless offset in the concatenated
 /// document or collapsing to the includer's `#include` line.
-///
 /// `chain` is the stack of *include-call* records from the root down to (but not
 /// including) the file currently being expanded. Each record is
 /// `(canonical_target, includer_path, includer_source, include_call_range)`:
@@ -150,10 +146,8 @@ fn expand_includes(
 /// nested regions returned by the recursive expansion). We do not descend into
 /// a call's children (the entire `include "…"` text is replaced anyway), which
 /// also stops the recursive expansion from re-scanning the same call.
-///
 /// `source` is the text of `file_path`; it is used here to attach a precise
 /// [`SourceLoc`] to a circular-include error at the offending `#include` call.
-///
 /// `chain` is the stack of *include-call* records from the root down to (but not
 /// including) `file_path`. *Single-chain* cycle guard: a file may appear at
 /// most once along the path from the root to this include. If the target is
@@ -283,7 +277,6 @@ fn include_file(
 }
 
 // Parse `.tyx` file into a `Scene` AST.
-///
 /// Precondition: `path` exists and is valid UTF-8 (else E001).
 /// Postcondition: returns `Ok(Scene)` with validated slides (else E002).
 /// `private_metadata` is set to the fixed defaults.
@@ -742,7 +735,6 @@ pub(crate) struct ParseCtx {
 impl ParseCtx {
     /// Resolve a byte-range `range` (in the *expanded* source) to a
     /// [`SourceLoc`] for diagnostics.
-    ///
     /// If the range falls inside a region that was inlined by `#include(…)`,
     /// this returns a [`SourceLoc`] pointing at the *referencing position* —
     /// the `#include "…"` call-site in the includer file (its original
@@ -772,7 +764,6 @@ impl ParseCtx {
 
     /// Begin a new directive entry and return its absolute start time on the
     /// timeline, resolving `timing` + `delay`:
-    ///
     /// - `Some(Timing::With)` → start at the previous entry's start (`delay` added).
     /// - `None` / `Some(Timing::After)` → start at the sequential boundary `cursor`
     ///   (`delay` added).
@@ -1022,7 +1013,6 @@ fn walk(node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     // interval. This drives subtitle auto-destroy and counter/subtitle
     // shadowing. The top-level document node is not a code block — it is the
     // implicit root scope finalized in `parse_tyx`.
-    //
     // We also snapshot `symbol_map` here so that any Candy name shadowed by a
     // local `let` inside this block is restored when the block exits.
     let opened_scope: Option<usize> = node.get().cast::<ast::CodeBlock>().map(|_| {
@@ -1165,7 +1155,6 @@ fn collect_named_lengths_here(e: Expr) -> Option<f64> {
 
 /// Detect and consume a `#show: candy` / `#show: candy.with(width:.., height:..,
 /// ppi:.., fps:..)` global-config show rule.
-///
 /// The candy canvas config is *global and singular*. The first such show rule
 /// seeds [`ParseCtx::config`]; any further `candy` show rule is silently
 /// ignored (the first config wins). Detection recognizes both the canonical
@@ -1173,7 +1162,6 @@ fn collect_named_lengths_here(e: Expr) -> Option<f64> {
 /// form (so `candy` resolves through `symbol_map`) and the `#import "candy" as
 /// X` alias form (so `X` resolves through `candy_aliases`), plus the
 /// `candy.with(..)` field-access invocation.
-///
 /// Unlike [`extract_page_size`] this does **not** descend into nested nodes:
 /// a `candy` show rule is always a top-level statement, so only the node itself
 /// is inspected.
@@ -1282,7 +1270,6 @@ fn is_candy_show_callee(callee: &Expr, ctx: &ParseCtx) -> bool {
 /// Re-order the slide timeline to follow `#scene-switch(target)` jumps and
 /// recompute each scene's `[start_ms, end_ms]` interval to match the remapped
 /// playback.
-///
 /// The renderer decides which scene is visible at a given frame via
 /// `Scene::active_scene_at(time_ms)` (every `#scene(...)` body is gated by
 /// `sys.inputs.at("candy:active_scene")`), so for a scene switch to actually
@@ -1292,7 +1279,6 @@ fn is_candy_show_callee(callee: &Expr, ctx: &ParseCtx) -> bool {
 /// cursor to that scene's `start_ms` and skips the slides belonging to the
 /// scenes in between (so they are not replayed at the wrong time). Each scene's
 /// interval is then recomputed from the segments it actually played.
-///
 /// Documents without any `SceneSwitch` action are left completely untouched —
 /// their linear timeline and sequential (mutually-exclusive) scene intervals are
 /// already correct, so this is a no-op for them. Backward switches (target
@@ -1442,11 +1428,9 @@ mod tests {
     /// Rewrite a test's `#import "candy"` into `#import "@preview/candy:<v>"`,
     /// auto-fetching the published package version from `typst/typst.toml`,
     /// and inject the mandatory `#show: candy` global-config show rule.
-    ///
     /// Project convention: only *test* code needs the Typst package version
     /// auto-fetched (production code must not). Wrapping every test source with
     /// this helper guarantees no test hard-codes a candy version.
-    ///
     /// Every `.tyx` must apply the `candy` show rule (it owns the global canvas
     /// / ppi / fps); a missing one is E008. Tests write plain sources without
     /// it, so the helper appends `#show: candy` right after the candy import —
@@ -1469,10 +1453,8 @@ mod tests {
 
     /// Insert `#show: candy` directly after the first candy `#import` line of
     /// `src`, unless the source already applies the show rule itself.
-    ///
     /// The rule must come *after* the import (so the `candy` binding exists)
     /// but *before* any content, matching the layout of every `examples/*.tyx`.
-    ///
     /// Some tests use a selective import (`#import "…candy…": animate as anim`)
     /// that never binds the `candy` show function itself, so an extra
     /// `#import …: candy` is prepended to bring it into scope.

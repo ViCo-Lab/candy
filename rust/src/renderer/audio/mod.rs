@@ -300,11 +300,9 @@ fn ogg_packets(bytes: &[u8]) -> Result<Vec<Vec<u8>>, CandyError> {
 }
 
 /// Transcode an audio file to a target codec/container via system ffmpeg.
-///
 /// When the audio format doesn't match the target container (e.g. Opus audio
 /// with an MP4 container, or AAC audio with a WebM container), candy can
 /// transcode using system ffmpeg. This is runtime-detected (no cargo dep).
-///
 /// Returns the path to the transcoded temporary file, or `None` if ffmpeg is
 /// not available (caller should fall back to the original file).
 pub fn transcode_via_ffmpeg(

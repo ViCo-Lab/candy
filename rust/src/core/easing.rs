@@ -29,7 +29,6 @@ use keyframe::EasingFunction;
 use serde::{Deserialize, Serialize};
 
 /// A named easing curve (serializable) used by `animate(easing: ..)`.
-///
 /// The string form matches the variant name in lower case (e.g. `"linear"`,
 /// `"smooth"`, `"ease-in-out"`), so `.tyx` files can use the familiar CSS /
 /// Manim vocabulary. Unknown names fall back to `Linear` at parse time and
@@ -92,18 +91,15 @@ pub enum Easing {
 
 impl Easing {
     /// Resolve to a concrete `f64 → f64` rate function.
-    ///
     /// For the standard ease family (linear, quad, cubic), the returned
     /// function delegates to `keyframe::functions::*` — a mature, well-tested
     /// Rust easing library. For Manim-specific curves (smooth, sin,
     /// there_and_back, wiggle, lingering), candy uses its own implementations
     /// since keyframe doesn't ship those. For the custom modes (`Bezier`,
     /// `Expr`) candy evaluates the user-supplied definition.
-    ///
     /// All returned functions accept any `f64` (callers may pass slightly
     /// out-of-range values during interpolation) and return a value that, when
     /// used as the interpolation parameter, produces the eased curve.
-    ///
     /// Returns a boxed closure so the custom variants can capture their
     /// definition data (bezier control points / parsed expression AST).
     pub fn resolve(&self) -> Box<dyn Fn(f64) -> f64> {
@@ -137,12 +133,10 @@ impl Easing {
     }
 
     /// Parse a string easing name (from `.tyx` source) into an [`Easing`].
-    ///
     /// Accepts kebab-case (`"ease-in-out"`), snake_case (`"ease_in_out"`),
     /// and a few common aliases (`"ease-in"` → `CubicIn`, `"ease-out"` →
     /// `CubicOut`). Unknown names return `None`; the caller falls back to
     /// `Linear` and emits a parse warning.
-    ///
     /// Custom modes are parsed here too:
     /// - `"bezier:x1,y1,x2,y2"` → [`Easing::Bezier`].
     /// - `"expr:<math>"` → [`Easing::Expr`].
@@ -209,7 +203,6 @@ impl Easing {
 // ---- keyframe-backed wrappers --------------------------------------------
 
 /// Wrap a zero-sized `keyframe::functions::*` easing struct as a `fn(f64)->f64`.
-///
 /// `F: EasingFunction + Default` lets us instantiate the struct without
 /// constructor arguments (all keyframe static easing structs are `Default`).
 fn kf<F: EasingFunction + Default>() -> fn(f64) -> f64 {
@@ -271,7 +264,6 @@ pub fn lingering(t: f64) -> f64 {
 
 // ============================================================================
 // Custom easing: CSS-style cubic-bezier solver.
-//
 // Honors the "use bezier_easing" request: this is the same Newton-Raphson
 // control-point inversion `bezier-easing` performs, implemented in-process so
 // candy stays offline-friendly. Given progress `x ∈ [0, 1]` (the *time*
@@ -340,7 +332,6 @@ pub mod bezier {
 
 // ============================================================================
 // Custom easing: safe math-expression evaluator.
-//
 // Parses a function of `t ∈ [0, 1]` (and `x`, an alias for `t`) with `+ - * /
 // ^`, parentheses, the constants `pi`/`e`, and the functions sin cos tan asin
 // acos atan sqrt abs exp ln log pow min max floor ceil round. No heap, no

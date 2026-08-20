@@ -83,7 +83,6 @@ pub(crate) struct TransformFragmentPlan {
 /// Build the Typst source that renders a single mobject body at `(x_cm, y_cm)`
 /// from the top-left corner, scaled by `scale_pct`% and rotated by `rotation`
 /// degrees (clockwise, around the object's centre).
-///
 /// The body is emitted in **native Typst document flow** (no `#place` hack):
 /// `#move(dx, dy)` shifts it from its flow position, `#scale`/`#rotate`
 /// (with `origin: center`) apply the transform. This matches the main render
@@ -246,7 +245,6 @@ impl Renderer {
     }
 
     /// Build the per-glyph transform layout for one inline `#transform` plan.
-    ///
     /// Renders the whole old and new formulas and extracts each glyph /
     /// decoration (fraction bar, root, …) as a positioned graphical unit, using
     /// Typst's *own* SVG layout — no custom token scanner (smart splitting: one
@@ -468,7 +466,6 @@ impl Renderer {
     /// absolute bounding box (pt, in the SVG's own coordinate space) plus a
     /// stable signature used to match the same glyph across the old and new
     /// formulas.
-    ///
     /// Typst renders every glyph as `<use xlink:href="#sym">` referencing a
     /// `<path>` outline inside `<defs>`, and decorations (fraction bars, roots,
     /// …) as `<path>` elements. We walk the DOM, compute each element's bbox by
@@ -558,7 +555,6 @@ impl Renderer {
         // The target's absolute anchor (cm). The label-anchor offset that keeps
         // the overlay aligned with the base document is applied per-fragment in
         // `transform_overlay_svg` (it differs between the old and new formula).
-        //
         // Position convention (mirrors `build_frame_inputs`): a mobject whose
         // animated state is still `(0, 0)` is *un-positioned* — it sits in its
         // flow slot, so the overlay must anchor at the measured `flow_pos` (the
@@ -599,7 +595,6 @@ impl Renderer {
     }
 
     /// Emit the per-glyph transform SVG overlay for the current frame.
-    ///
     /// For each active plan the whole old/new formula is embedded exactly ONCE
     /// (its inner markup, with symbol ids localized under a per-plan prefix and
     /// wrapped in a single `<g id=…>` inside `<defs>`), then each fragment is

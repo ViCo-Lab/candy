@@ -31,7 +31,6 @@ impl Default for State {
 }
 
 /// Generate keyframe `FrameData` from the `Scene` AST.
-///
 /// Precondition: every `slide.duration_ms ≥ 1` (enforced by
 /// `Scene::validate`).
 /// Postcondition: returns `Vec<FrameData>`; for every `Action::MoveTo` the
@@ -39,7 +38,6 @@ impl Default for State {
 /// (validated below). Every animatable item also gets a frame-0 default
 /// keyframe (seeded from `scene.initial`) and a final keyframe at the last
 /// frame.
-///
 /// Errors: returns `CandyError::Parse` (E002) if a non-monotonic `time_ms`
 /// is detected for a target — previously this panicked, violating spec §6
 /// ("production code must not panic").
@@ -745,7 +743,6 @@ fn apply_state(s: State, action: &Action) -> State {
 
 /// Emit a single start/end keyframe pair for all `pending` core transforms on
 /// `pending_target`, animating every axis simultaneously over `[start, end]`.
-///
 /// Must be called before handling a non-core action (so the core transforms are
 /// finalized into `state`) and at the end of each slide (to flush the last
 /// group). Clears `pending` and resets `pending_target`.

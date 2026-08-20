@@ -6,47 +6,49 @@ use typst_syntax::ast as typst_ast;
 impl Renderer {
     /// Build the stable, *parameterized* whole-document source from the parsed
     /// `Scene` — done **once** (in [`Renderer::with_root`]), never per frame.
-    ///
     /// The result is byte-stable across frames: every per-frame-varying quantity
     /// is read from `sys.inputs` (the per-frame `Dict` supplied to the World), so
     /// the `source_cache` / `body_cache` keep hitting while the rendered document
     /// still changes per frame. Specifically:
+    /// Each animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
+    /// so its transform (dx/dy/scale/rotation, opacity) is read from
+    /// `sys.inputs`. Each mobject is pinned at the page origin with
+    /// `place(top + left)` and then shifted by the per-frame `dx`/`dy`, so all
+    /// mobjects share a single reference point (the origin) regardless of how
+    /// many there are — they never overflow the canvas into extra pages.
     ///
-    /// * Every animatable mobject body is wrapped (via [`wrap_mobject_inputs`])
-    ///   so its transform (dx/dy/scale/rotation, opacity) is read from
-    ///   `sys.inputs`. Each mobject is pinned at the page origin with
-    ///   `place(top + left)` and then shifted by the per-frame `dx`/`dy`, so all
-    ///   mobjects share a single reference point (the origin) regardless of how
-    ///   many there are — they never overflow the canvas into extra pages.
-    /// * `ecval("name")` counter reads inside mobject bodies are rewritten to
-    ///   `sys.inputs.at("candy:counter:name", default: 0)` (see [`ecval_to_inputs`])
-    ///   so the live counter value is also an input.
-    /// * A `reveal`/`typewriter` target whose body is a string literal is wrapped
-    ///   so the revealed prefix length comes from `sys.inputs.at(
-    ///   "candy:<label>:reveal:len")` (see [`reveal_wrap_body`]) — the typewriter
-    ///   effect is then pure input variation, no source change.
-    /// * Every `#subtitle(...)` call is blanked to `#none` so the caption is NOT
-    ///   rendered as part of the base document (it is drawn as a separate,
-    ///   camera-independent overlay — leaving it in the base double-renders it).
-    /// * Every `#scene` call is wrapped by **Rust-generated** gating source (no
-    ///   weird parameters are added to the Typst `scene` function): a code block
-    ///   that reads `sys.inputs.at("candy:active_scene")` and, using the scene's
-    ///   (Rust-known) id and descendant set as literal values, decides whether to
-    ///   render the scene's `page()` (active == 0 or == its id), emit just the
-    ///   scene *body* with **no** `page()` (so a nested descendant scene inside
-    ///   it can render — a `page()` inside another `page()` is illegal in Typst),
-    ///   or emit `none`. This is what makes *nested* scenes work while still
-    ///   emitting exactly one page per frame and keeping the `body_cache` hit
-    ///   rate high. Scenes are processed innermost-first so a parent's gated body
-    ///   already contains its (wrapped) child scene.
+    /// `ecval("name")` counter reads inside mobject bodies are rewritten to
+    /// `sys.inputs.at("candy:counter:name", default: 0)` (see [`ecval_to_inputs`])
+    /// so the live counter value is also an input.
+    ///
+    /// A `reveal`/`typewriter` target whose body is a string literal is wrapped
+    /// so the revealed prefix length comes from `sys.inputs.at(
+    /// "candy:<label>:reveal:len")` (see [`reveal_wrap_body`]) — the typewriter
+    /// effect is then pure input variation, no source change.
+    ///
+    /// Every `#subtitle(...)` call is blanked to `#none` so the caption is NOT
+    /// rendered as part of the base document (it is drawn as a separate,
+    /// camera-independent overlay — leaving it in the base double-renders it).
+    ///
+    /// Every `#scene` call is wrapped by **Rust-generated** gating source (no
+    /// weird parameters are added to the Typst `scene` function): a code block
+    /// that reads `sys.inputs.at("candy:active_scene")` and, using the scene's
+    /// (Rust-known) id and descendant set as literal values, decides whether to
+    /// render the scene's `page()` (active == 0 or == its id), emit just the
+    /// scene *body* with **no** `page()` (so a nested descendant scene inside
+    /// it can render — a `page()` inside another `page()` is illegal in Typst),
+    /// or emit `none`. This is what makes *nested* scenes work while still
+    /// emitting exactly one page per frame and keeping the `body_cache` hit
+    /// rate high. Scenes are processed innermost-first so a parent's gated body
+    /// already contains its (wrapped) child scene.
     ///
     /// Edits are applied in **character space** (not raw bytes) so a cumulative
     /// shift can never land inside a multi-byte character — this is what made
     /// the old per-frame `replace_range` byte-splicing panic ("end of range
     /// should be a character boundary") impossible.
+    ///
     /// Build the stable *parameterized* whole-document source (used for the
     /// flow-measurement pass) **and** the per-mobject wrapped-body map.
-    ///
     /// The whole-document `String` is still compiled once per scene during
     /// [`Renderer::ensure_flow`] to read each mobject's flow position and which
     /// page it landed on (the "measurement" pass). The wrapped-body `HashMap`
@@ -205,7 +207,6 @@ impl Renderer {
 
     /// Build, for every scene, the **Typst context** that the scene's mobjects
     /// must see when rendered as a standalone per-scene document.
-    ///
     /// In the old whole-document path the full `.tyx` source was compiled, so a
     /// scene's mobjects naturally inherited every `#import`, `#set` / `#show`
     /// rule, helper `#let` definition, and top-level content established at the
@@ -213,7 +214,6 @@ impl Renderer {
     /// containing only that scene's `#mobject` calls, so all of that context
     /// would otherwise be lost. This function extracts it by walking the parse
     /// tree and keeping, for scene `sid`:
-    ///
     /// * the document-root context (everything outside any `#scene` call), minus
     ///   `#mobject` / `#subtitle` calls (those are re-emitted per scene) and
     ///   minus every `#scene` call other than `sid`'s own;
@@ -282,7 +282,6 @@ impl Renderer {
 
     /// Collect the byte-range *edits* that turn `node`'s source into the injected
     /// context for the scene in `keep`.
-    ///
     /// * The `#scene(...)` call **in** `keep` is kept, but only its inner body —
     ///   its `#scene(name)` wrapper (everything outside the body) is subtracted,
     ///   and we recurse into the body to drop any `#mobject` / `#subtitle` calls
@@ -462,7 +461,6 @@ impl Renderer {
     /// standalone Typst document header that injects the scene's page size,
     /// background, and (implicitly, via the global `sys.inputs`) its counters
     /// and `active_scene` — **plus the full chain of ancestor Typst contexts**.
-    ///
     /// The preamble is: `[candy import if absent] + [#set page(...)] +
     /// [accumulated ancestor context]`. The `#set page(...)` comes *first* so the
     /// candy canvas is established before the ancestor context is applied (an
@@ -568,7 +566,6 @@ impl Renderer {
     /// counter value is supplied per frame as a `sys.inputs` entry (see
     /// [`Renderer::build_frame_inputs`]) instead of being hard-coded. The source
     /// stays byte-stable, so the `body_cache` keeps hitting.
-    ///
     /// AST-driven (like [`crate::renderer::typst::content::substitute_counters`])
     /// so it never rewrites a substring that merely *looks* like the call (inside
     /// a string / comment). Only counters actually declared in the scene are
@@ -689,7 +686,6 @@ impl Renderer {
         // when the prefix ends inside a multi-byte character (e.g. an em-dash).
         // Slice the codepoint array instead so the prefix is always taken on a
         // character boundary; `calc.min` clamps against any out-of-range `__n`.
-        //
         // The *not-yet-revealed* suffix is emitted through `hide(...)` (invisible
         // but still occupying its exact layout space) instead of being dropped.
         // Dropping it would re-flow the paragraph every frame — the line breaks
@@ -707,7 +703,6 @@ impl Renderer {
     }
 
     /// Wrap a mobject body in a `sys.inputs`-driven transform.
-    ///
     /// `inner` is the (already `ecval`-substituted, and possibly `reveal`-wrapped)
     /// body expression. The wrapper reads the per-frame eased transform from
     /// `sys.inputs` (supplied by the World each frame) instead of embedding
@@ -726,7 +721,6 @@ impl Renderer {
         // slot). `scale`/`rotate` are absolute transforms with **origin: center**
         // so the object scales/rotates around its own centre (Manim semantics).
         // Opacity is NOT applied here — it is composited via the SVG bypass.
-        //
         // Two distinct "not drawn" states:
         // * `candy:<label>:absent` → `none`. The mobject does not exist on this
         //   frame's layout at all (a parent scene's content while a child scene
@@ -755,7 +749,6 @@ impl Renderer {
     /// the base document would freeze on the original body and the formula would
     /// snap back to its pre-transform state at the end of every `#transform`
     /// (and, for chained transforms, the intermediate steps would never persist).
-    ///
     /// The selection mirrors [`crate::renderer::typst::content::content_for`]:
     /// the latest timeline entry with `t <= frame` wins. Each branch gets the
     /// `ecval(..)` → input rewrite so counter reads work inside swapped bodies
@@ -896,7 +889,6 @@ impl Renderer {
     }
 
     /// Build the per-frame `sys.inputs` dictionary for the whole-document path.
-    ///
     /// `hide_fading` controls whether opacity < 1 objects get a `…:hide` flag
     /// (the pixel path draws them via the opacity overlay; the SVG draft shows
     /// them at full opacity, so it passes `false`).
@@ -1076,7 +1068,6 @@ impl Renderer {
 
     /// Resolve the revealed character count of a `reveal`/`typewriter` target at
     /// `time_ms`, following its `content_timeline` (`(t, "prefix")` entries).
-    ///
     /// Mirrors the legacy `content_for` fallback: the latest timeline entry with
     /// `t <= time_ms` wins; `"none"` → `0` (hidden), otherwise the prefix's char
     /// length. Before any timeline entry the original (full) body length is used.

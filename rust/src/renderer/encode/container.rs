@@ -18,7 +18,6 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Mux an encoded video (and optional audio) into an MP4 file.
-///
 /// `private_metadata` is embedded in the `moov`/`udta` user-data area as an
 /// iTunes-style `meta`/`ilst`/`©cmt` (comment) entry containing the compact
 /// JSON, mirroring the metadata embedded in GIF comments and PNG tEXt chunks.
@@ -129,7 +128,6 @@ fn video_shim(v: &EncodedVideoFile) -> EncodedVideo {
 }
 
 /// Mux a file-backed encoded video (and optional audio) directly into `output`.
-///
 /// `ftyp` + `moov` are built in RAM (small — only per-sample metadata), then the
 /// coded samples are streamed from `v.samples_path` into the `mdat` box. Peak
 /// memory is bounded to the metadata regardless of video length / resolution,
@@ -238,7 +236,6 @@ pub(crate) fn mux_mp4_to_file(
 }
 
 /// Copy each coded sample (sized by `sizes`) from `path` into `out`, in order.
-///
 /// On Linux with the `zero-copy-audio` feature, uses `sendfile` for true
 /// kernel-space zero-copy transfer (no user-space buffer, no syscall overhead).
 /// Otherwise falls back to a 1 MiB buffered copy.
@@ -367,7 +364,6 @@ fn build_moov(
 
 /// Build a `udta` box holding the private metadata as an iTunes-style
 /// `meta`/`ilst`/`©cmt` (comment) entry.
-///
 /// Layout:
 /// ```text
 /// udta
@@ -956,7 +952,6 @@ fn audio_track_entry(a: &AudioData) -> Vec<u8> {
 
 /// Build a Matroska `Tags` element embedding the private metadata as a
 /// `SimpleTag` (`TagName` = `candy-meta`, `TagString` = JSON).
-///
 /// Layout:
 /// ```text
 /// Tags (0x1254C367)
@@ -991,7 +986,6 @@ fn simple_block(track: u64, rel_timecode: i16, keyframe: bool, data: &[u8]) -> V
 }
 
 /// Encode an unsigned integer as an EBML vint.
-///
 /// An `L`-byte vint carries `7 * L` data bits; its top `L` bits are a fixed
 /// length marker (`1` followed by `L-1` zero bits, i.e. `0x80 >> (L-1)`) and
 /// the remaining bits hold the value, 8 bits per subsequent byte (the first
@@ -1002,7 +996,6 @@ fn simple_block(track: u64, rel_timecode: i16, keyframe: bool, data: &[u8]) -> V
 /// (ascending `i`); emitting them in reverse corrupts every `L >= 3` vint —
 /// which was the original playback bug (the Segment / large Cluster sizes then
 /// decoded to the wrong length and the whole file mis-framed).
-///
 /// A single-byte vint of value 127 would encode as `0xFF`, which EBML reserves
 /// for "unknown length"; that one value is bumped to two bytes.
 fn ebml_vint(v: u64) -> Vec<u8> {
@@ -1052,7 +1045,6 @@ fn f64_to_bytes(v: f64) -> Vec<u8> {
 
 /// Mux a file-backed encoded video (and optional audio) directly into `output`
 /// for Matroska (WebM/MKV).
-///
 /// The EBML header, `Segment` info/tracks/tags, and the total `Segment` size are
 /// computed in RAM (all small — only per-sample metadata), then each `Cluster`
 /// is streamed to `output` by reading the coded samples from `v.samples_path`.

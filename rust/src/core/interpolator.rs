@@ -28,7 +28,6 @@ pub enum InterpMethod {
 }
 
 /// Interpolate between keyframes to generate all frames (linear method).
-///
 /// Precondition: `keyframes` is non-empty and sorted by `time_ms` (the
 /// scheduler guarantees both; we re-sort defensively).
 /// Postcondition: returns `Vec<FrameData>` with length ≥ `keyframes.len()`,
@@ -41,7 +40,6 @@ pub fn interpolate(keyframes: Vec<FrameData>) -> Vec<FrameData> {
 }
 
 /// Like [`interpolate`] but with an explicit [`InterpMethod`] and `fps`.
-///
 /// The interpolator samples the timeline at `1000/fps` ms intervals (the
 /// video frame rate). Keyframe times are in ms; the output has one
 /// `FrameData` per video frame, per target.
@@ -127,7 +125,6 @@ fn interp_linear(kfs: &[FrameData], frame: u32) -> Option<FrameData> {
 }
 
 /// Catmull-Rom spline interpolation through the keyframe points.
-///
 /// For each segment between keyframes `p1` and `p2`, uses the neighbors `p0`
 /// and `p3` (clamped to the endpoints if out of range) to compute a cubic
 /// spline that passes through all four points with C1 continuity. The easing

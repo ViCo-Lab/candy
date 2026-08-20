@@ -11,7 +11,6 @@ use crate::renderer::RenderedFrame;
 
 /// Rasterize a complete SVG document to a `width × height` RGBA8 buffer in a
 /// single pass.
-///
 /// The SVG root carries `width`/`height` in *point* units (the scene's page
 /// size) with a matching `viewBox`. We rewrite the root viewport to the target
 /// pixel size (leaving the `viewBox` in pt) so `usvg` applies the
@@ -42,7 +41,6 @@ pub(crate) fn rasterize_svg(
 
 /// Rewrite the root `<svg>` element's `width`/`height` (the viewport) to the
 /// given pixel dimensions, leaving the `viewBox` (in pt) untouched.
-///
 /// `usvg` fits the `viewBox` into the viewport via a scale transform, so this
 /// is what maps the scene's point-space geometry to the pixel-sized render
 /// target. Only the first `width`/`height` attributes — those on the opening

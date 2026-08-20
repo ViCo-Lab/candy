@@ -34,7 +34,6 @@ pub(crate) fn localize_ring(ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// Convert an SVG paint color string (as captured from a Typst-rendered SVG,
 /// which uses hex like `#0074d9` or `rgb(...)`) into a Typst color expression
 /// that is safe to embed in code mode (e.g. inside `polygon(fill: …, …)`).
-///
 /// Typst's `#` is a code-mode marker, so a raw `#0074d9` would be a syntax
 /// error — we wrap hex colors as `rgb("#0074d9")`, which Typst accepts.
 pub(crate) fn svg_color_to_typst(color: &str) -> String {

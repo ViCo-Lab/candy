@@ -121,7 +121,6 @@ pub struct EncodedVideo {
 }
 
 /// A file-backed encoded video.
-///
 /// During a streaming encode every coded sample is written to `samples_path`
 /// (a temp file) as it is produced, and only the *small* per-sample metadata
 /// (size + keyframe flag) is kept in RAM. This keeps peak memory bounded to
@@ -179,7 +178,6 @@ pub enum Container {
 
 /// Compose `frame` onto a `tw × th` opaque-white canvas, copying the source
 /// pixels to the top-left. Returns a fresh `RenderedFrame`.
-///
 /// On Linux the returned `rgba` buffer is **padded to a page multiple** so the
 /// caller can feed it to ffmpeg via `vmsplice(SPLICE_F_GIFT)` for true
 /// zero-copy (the buffer's physical pages are gifted to the kernel pipe buffer
@@ -521,11 +519,9 @@ impl StreamingVideo {
 }
 
 /// Encode composed RGBA frames into an [`EncodedVideo`] with the chosen codec.
-///
 /// Batch wrapper over [`StreamingVideo`] (no audio, no mux) kept for callers
 /// that already hold every frame in memory (tests, small drafts). The streaming
 /// pipeline in `lib.rs` uses [`StreamingVideo`] directly to avoid that buffering.
-///
 /// `private_metadata` is accepted for pipeline continuity. Metadata embedding
 /// happens at mux time (see [`mux`]), not in the codec encoder.
 pub fn encode_frames(
@@ -615,7 +611,6 @@ pub fn encode_frames(
 }
 
 /// Package an [`EncodedVideo`] (plus optional audio) into a container byte buffer.
-///
 /// `private_metadata` is embedded in the container's metadata area: an
 /// iTunes-style `meta`/`ilst`/`©cmt` entry for MP4, and a `Tags`/`SimpleTag`
 /// element for Matroska (WebM/MKV) — mirroring the metadata embedded in GIF
@@ -770,7 +765,6 @@ impl GifStream {
 }
 
 /// Encode `frames` into an animated GIF written to `path`.
-///
 /// Batch wrapper over [`GifStream`]; the streaming pipeline in `lib.rs` uses
 /// [`GifStream`] directly to avoid buffering every frame's RGBA at once.
 pub fn write_gif(
@@ -797,7 +791,6 @@ pub fn write_gif(
 }
 
 /// Encode a single [`RenderedFrame`] as an RGBA PNG bitmap written to `path`.
-///
 /// Used by the `--format png` target, which exports the animation's final
 /// frame as a static bitmap (the "poster" of the animation). The private
 /// metadata is embedded as a `candy-meta` tEXt chunk.

@@ -101,7 +101,6 @@ const MORPH_MAX_SEGMENT: f64 = 3.0;
 /// an animated render cannot accumulate one `PagedDocument` per frame (that was
 /// the OOM). Static / paused objects keep a stable key and stay resident; the
 /// per-frame churn of moving objects is evicted.
-///
 /// With the whole-document native-Typst path each cached entry is one full-page
 /// `PagedDocument` (the entire scene typeset by Typst), which is a few MB at
 /// HD/4K — far smaller than the old design that parked *N* full-canvas
@@ -227,7 +226,6 @@ pub struct Renderer {
 }
 impl Renderer {
     /// Build a renderer from a parsed [`Scene`].
-    ///
     /// `project_root` is the directory that local `#import "file.typ"`
     /// resolves against — typically the parent directory of the `.tyx`
     /// source. Pass `PathBuf::new()` (current dir) if you don't care.
@@ -331,7 +329,6 @@ impl Renderer {
         }
     }
     /// Compile a Typst source, memoized by the exact source string.
-    ///
     /// This is the unified compile entry point for every object render path
     /// (`render_frame`, `body_largest_shape`, and the whole-document path). It is
     /// behavior-preserving: identical `(source, inputs)` → identical document.
@@ -340,7 +337,6 @@ impl Renderer {
     /// change per frame — morph polygons, `ecval` counter text, `transform`
     /// content swaps — naturally produce a different source each time and
     /// recompile, exactly as before.
-    ///
     /// `inputs` are the per-frame `sys.inputs` values (empty for object /
     /// background compiles that don't consult them). They are folded into the
     /// cache key so two frames with the same source but different inputs map to
@@ -358,7 +354,6 @@ impl Renderer {
     }
     /// Compile the per-page render document for `(sid, page)`, memoized by its
     /// exact source string + `inputs`.
-    ///
     /// This is the render-path twin of [`Renderer::compile_cached`]: each frame
     /// selects exactly one `(scene_id, page_index)` document (the active scene's
     /// active page) and compiles it with that frame's `sys.inputs`. The source
@@ -519,7 +514,6 @@ pub(crate) fn rgba_to_value(c: [u8; 4]) -> Value {
 /// via the compile `world`, so an `E005` can point the user at the exact
 /// `file:line:col` and the offending source line — just like the parser-level
 /// diagnostics (E002 / E004 / …) already do.
-///
 /// The compiled main source is always *detached* (Typst's synthetic `main.typ`
 /// id) so parallel compiles never collide on a `FileId`. When the diagnostic's
 /// span resolves to that detached `main.typ` id, we rewrite the path to the
@@ -573,7 +567,6 @@ pub(crate) fn typst_diag_loc(
 /// Map a Typst error span (in the compiled "main" document) back to the user's
 /// original `.tyx` source so the caret points at their real code, not the
 /// wrapper candy injects around each mobject body.
-///
 /// `artifacts.source` is the user's original `.tyx`; `artifacts.mobject_body`
 /// records each mobject body's byte range within it. The body is embedded
 /// verbatim (modulo `ecval` rewrites, which we skip) inside the compiled

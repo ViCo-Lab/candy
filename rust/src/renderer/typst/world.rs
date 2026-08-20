@@ -121,7 +121,6 @@ impl Downloader for RustlsDownloader {
 /// library). Built once per [`Renderer`](crate::renderer::typst::Renderer) and
 /// reused across every frame compile, so the cost of system font scanning is
 /// paid exactly once.
-///
 /// Mirrors the official `typst` CLI `SystemWorld`: the standard library is
 /// built via [`Library::builder`], fonts are the embedded fallbacks plus all
 /// system fonts, and the current time is captured once at construction so that
@@ -149,7 +148,6 @@ pub(crate) struct WorldState {
     /// already-built AST — this is the "render cache" the per-frame recompiler
     /// relies on. `TypstSource` is `Arc`-backed, so cloning out of the cache is
     /// cheap and shares the parsed tree.
-    ///
     /// Bounded LRU: for animated content every frame's source is unique, so an
     /// unbounded `HashMap` would accumulate one parsed source per frame and OOM.
     /// The LRU evicts that churn while keeping static bodies resident — see
@@ -219,7 +217,6 @@ impl WorldState {
     }
 
     /// Parse `src` into a `TypstSource`, memoized by the exact source text.
-    ///
     /// Consecutive frames that compile the same source (a static / paused
     /// mobject body, the flow-layout probe, a repeated `ecval` value, …)
     /// reuse the already-parsed AST instead of re-parsing — this is what lets
@@ -227,7 +224,6 @@ impl WorldState {
     /// full parse cost on every frame. The `WorldState` (fonts, file resolver,
     /// and standard library) is already shared across frames via `Arc`; this
     /// cache additionally shares the *parsed* source.
-    ///
     /// The source is always *detached* (Typst's synthetic `main.typ` id), so two
     /// documents compiled in parallel never collide on a `FileId` (which would
     /// corrupt Typst's global comemo memoization). The real `.tyx` path is still
@@ -249,7 +245,6 @@ impl WorldState {
     /// `sys.inputs`. Typst 0.15 exposes `sys.inputs` through the `Library`
     /// (via `Library::builder().with_inputs(..)`), not through the `World`
     /// trait, so the per-frame inputs must be baked into the `Library` here.
-    ///
     /// Rebuilding the whole standard library on every frame is expensive, so we
     /// memoize built libraries keyed by a deterministic serialization of the
     /// inputs. Frames that share an inputs set (static / paused content, or a

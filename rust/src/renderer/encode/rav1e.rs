@@ -26,7 +26,6 @@ use rav1e::prelude::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Encode rasterized frames into AV1 and return an [`EncodedVideo`].
-///
 /// Precondition: `frames` is non-empty, `fps` ≥ 1.
 /// Postcondition: on success returns valid AV1 packets + `av1C` codec config.
 /// When the `video` feature is disabled (default build has it on), returns
@@ -70,14 +69,12 @@ pub fn encode(frames: &[RenderedFrame], fps: u32) -> Result<EncodedVideo, CandyE
 }
 
 /// Stateful, frame-by-frame AV1 encoder.
-///
 /// Unlike the batch [`encode`], a `Rav1eStream` keeps the `rav1e` `Context`
 /// alive across [`push`](Self::push) calls and emits one coded sample per
 /// frame. This is what lets the renderer stream frames to the muxer without
 /// holding every RGBA frame in memory at once: each `push` consumes exactly one
 /// frame and produces a small coded sample, so peak memory is bounded by the
 /// (small) coded stream rather than `N × width × height × 4` RGBA.
-///
 /// `all_intra` forces every frame to be a keyframe (disabling inter-prediction
 /// / motion estimation), which sidesteps the `rav1e` 0.8.1 tiling assert that
 /// panics during ME for some frame geometries.
@@ -298,7 +295,6 @@ impl Rav1eStream {
 }
 
 /// Core AV1 encoder (compiled only with the `video` feature).
-///
 /// `all_intra` forces every frame to be a keyframe (disabling inter-prediction
 /// / motion estimation), which sidesteps the `rav1e` 0.8.1 tiling assert that
 /// panics during ME for some frame geometries. It is only set by [`encode`] on
