@@ -108,10 +108,10 @@ pub(crate) fn call_symbol(call: &ast::FuncCall, ctx: &ParseCtx) -> Option<String
         Expr::Ident(id) => {
             let name = id.as_str();
             // Accept both naming conventions: the public API and the Typst
-            // module use underscores (`save_state`, `set_color`,
-            // `ecpause`), while the parser's `CANDY` set uses kebab-case
-            // (`save-state`, `set-color`). Normalize so a call resolves
-            // regardless of which convention the author wrote.
+            // module both use kebab-case (`save-state`, `set-color`,
+            // `ecpause`), but authors may write snake_case for convenience.
+            // Normalize so a call resolves regardless of which convention the
+            // author wrote.
             let norm = name.replace('_', "-");
             ctx.symbol_map
                 .get(&norm)

@@ -449,12 +449,9 @@ pub fn parse_tyx(path: &Path, ignore_version: bool) -> Result<Scene, CandyError>
     // `ecnew`, `scene`, …) all advance the parse cursor and produce slides.
     // If no candy directives were used, `ctx.slides` stays empty — inject a
     // single `pause(duration: 500)` so the whole-document recompiler still
-    // produces one frame and renders the static Typst content.
-    //
-    // Cross-page scenes are handled by the page scheduler (`pages.rs`): when a
-    // scene's content overflows multiple pages, each page gets its own timeline
-    // entry. The parser only needs to guarantee at least one slide exists; the
-    // page scheduler splits it into per-page slides automatically.
+    // produces one frame and renders the static Typst content. Content that
+    // overflows the viewport is warned (W018) and clipped at rasterization;
+    // there is no per-page timeline splitting.
     if ctx.slides.is_empty() {
         ctx.slides.push(Slide {
             start_ms: 0,

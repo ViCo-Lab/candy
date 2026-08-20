@@ -161,7 +161,7 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
 
     match sym.as_str() {
         "track" => process_track(&pos, &named, ctx),
-        "mobject" => process_mobject(&pos, &named, node, raw, ctx),
+        "mobject" => process_mobject(&pos, node, raw, ctx),
         "animate" => process_animate(&pos, &named, node, raw, ctx),
         "pause" => process_pause(&named, ctx),
         "audio" => process_audio(&pos, &named, node, raw, ctx),
@@ -277,7 +277,7 @@ fn record_name_refs(
         // scene-switch: `target:` OR `name:` (no positional form).
         "scene-switch" => named.get("target").or_else(|| named.get("name")),
         // Easing-counter directives: positional OR `name:`.
-        "ecnew" | "ecval" | "ecpause" | "ecresume" | "ecdestroy" | "ecadd" | "ecset" => {
+        "ecnew" | "ecval" | "ecpause" | "ecresume" | "ecdestroy" => {
             pos.first().or_else(|| named.get("name"))
         }
         // Declarations / no name argument — never a usage site, skip.
@@ -312,14 +312,8 @@ fn find_str_loc(node: &LinkedNode, name: &str, ctx: &ParseCtx) -> Option<SourceL
 
 /// `mobject(label, body)`: register `items[label] = body` (raw source) with a
 /// default frame-0 state (opacity 1). Position is left to the renderer.
-fn process_mobject(
-    pos: &[Expr],
-    named: &std::collections::HashMap<String, Expr>,
-    node: &LinkedNode,
-    raw: &str,
-    ctx: &mut ParseCtx,
-) {
-    let label_expr = pos.first().or_else(|| named.get("label"));
+fn process_mobject(pos: &[Expr], node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
+    let label_expr = pos.first();
     let Some(label_str) = label_expr.and_then(|e| expr_to_key(e)) else {
         if let Some(e) = label_expr {
             ctx.pending_error = Some(CandyError::InvalidKey {
@@ -343,7 +337,7 @@ fn process_mobject(
         }
         return;
     }
-    let body_expr = pos.get(1).or_else(|| named.get("body"));
+    let body_expr = pos.get(1);
     let Some(body_expr) = body_expr else { return };
     let body = expr_src(raw, node, body_expr).to_string();
     // Record the body's absolute source range so the per-frame whole-document
@@ -426,27 +420,7 @@ fn process_animate(
         .unwrap_or(500.0)
         .max(1.0) as u32;
 
-    let easing = match named.get("easing") {
-        Some(Expr::Str(s)) => {
-            let name = s.get();
-            match Easing::from_str(name.as_str()) {
-                Some(e) => e,
-                None => {
-                    let loc = ctx
-                        .current_directive_loc
-                        .clone()
-                        .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
-                    warn!(CandyWarn::UnknownEasing(
-                        format!("'{name}' for @{}", label.0),
-                        loc
-                    ));
-                    Easing::Linear
-                }
-            }
-        }
-        // Missing or non-string easing → "smooth" (the Typst `animate` default).
-        _ => Easing::Smooth,
-    };
+    let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
 
     let mut actions = Vec::new();
     // Absolute move: `to: (x, y)`.
@@ -823,10 +797,7 @@ fn process_set_color(
     // verbatim for the Rust-only parse path that skips Typst validation.
     let color = named
         .get("color")
-        .map(|e| match e {
-            Expr::Str(s) => s.get().to_string(),
-            _ => expr_src(raw, node, e).to_string(),
-        })
+        .map(|e| expr_src(raw, node, e).to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "black".to_string());
     let duration = named
@@ -1215,10 +1186,7 @@ fn process_camera(
         .and_then(expr_to_f64)
         .unwrap_or(1000.0)
         .max(1.0) as u32;
-    let easing = match named.get("easing") {
-        Some(Expr::Str(s)) => Easing::from_str(s.get().as_str()).unwrap_or(Easing::Linear),
-        _ => Easing::Smooth,
-    };
+    let easing = resolve_easing(named, &Label("__camera__".into()), Easing::Smooth, ctx);
     let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
     let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
     let zoom = ratio_arg(named, "zoom", ctx).unwrap_or(1.0).max(1e-3);
@@ -2201,16 +2169,7 @@ fn process_scene_switch(
         .unwrap_or(0.0)
         .max(0.0) as u32;
 
-    let easing = match named.get("easing") {
-        Some(Expr::Str(s)) => {
-            let name = s.get();
-            match Easing::from_str(name.as_str()) {
-                Some(e) => e,
-                None => Easing::Linear,
-            }
-        }
-        _ => Easing::Smooth,
-    };
+    let easing = resolve_easing(named, &Label(target.clone()), Easing::Smooth, ctx);
 
     // SceneSwitch is instantaneous by default (0 duration). Emit a 1 ms slide
     // so the scheduler sees the action.

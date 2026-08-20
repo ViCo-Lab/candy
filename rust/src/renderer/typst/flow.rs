@@ -215,11 +215,6 @@ impl Renderer {
                 tmp_to_target.insert(p.from.clone(), p.to.clone());
             }
         }
-        // Number of pages each scene's flow layout spilled onto. A scene that
-        // overflows its single page becomes a *cross-page scene*: its mobjects
-        // stay in ONE scene (data shared) but are laid out across several pages,
-        // and the renderer plays the pages in sequence (see [`pages`]).
-
         // The *actual* (measured) canvas size per scene, read back from the
         // compiled measurement document — the authoritative size, since the
         // Typst-side `scene()` default (16cm × 9cm) can differ from the
@@ -234,8 +229,13 @@ impl Renderer {
         let has_explicit_scenes = !self.scene.artifacts.scene_call.is_empty();
         // The implicit whole-document scene id, used only in the bare-root case.
         let root_id = 0usize;
-        // label -> the page (0-based) its flow layout landed on. Fed to the
-        // page scheduler so it can partition each scene's timeline by page.
+        // label -> the page index (0-based) its flow layout landed on. Typst lays
+        // each page out from the top independently, so `page_idx * ph_pt` rebases
+        // an in-page relative y-coordinate into the scene's continuous absolute
+        // flow coordinate. This is NOT a per-page render split — the renderer
+        // keeps every mobject on one (tall enough) compile page and clips at the
+        // fixed viewport `viewBox`. The page index only feeds `doc_h` so the
+        // compile page is tall enough to hold all identity-positioned mobjects.
         let mut page_of: HashMap<Label, usize> = HashMap::new();
         // Compile once per scene with that scene active (nested scenes render
         // only while active) and all transforms at identity, then introspect
@@ -252,10 +252,10 @@ impl Renderer {
             }
             let doc = self.compile(&self.param_source, &inputs)?;
 
-            // Page height (pt) of this scene's canvas — used to convert the
-            // continuous-flow introspector position into a *per-page* (in-page)
-            // flow position, since each page is laid out independently from the
-            // top in the per-page render path.
+            // Page height (pt) of this scene's canvas — used to rebase each
+            // mobject's in-page introspector y-coordinate (Typst lays every page
+            // out from the top) into the scene's continuous absolute flow
+            // coordinate via `page_idx * ph_pt`.
             let ph_pt = if self.scene.scenes.is_empty() {
                 self.page_h
             } else {
@@ -317,17 +317,18 @@ impl Renderer {
                 page_of.insert(label.clone(), page_idx);
                 first_label_page = Some(first_label_page.map_or(page_idx, |p| p.min(page_idx)));
             }
-            // Reassign each mobject's *page* from its FINAL animated position
+            // Reassign each mobject's page index from its FINAL animated position
             // rather than its initial flow position. Mobjects placed via
             // `#animate(to: …)` / `#track` / `#move-along-path` (the normal case
             // for animation scenes) end up where the author put them — almost
-            // always all on the single canvas (page 0). Tying the page to the
-            // *initial* flow position wrongly splits such a scene across pages
-            // whenever the bare mobjects happen to stack past the page height in
-            // the identity layout; the renderer then plays the pages in sequence
-            // and hides the other pages' objects during each window, producing
-            // blank / sparse frames (e.g. at a scene's tail). Rebasing the flow
-            // position to the new page keeps the `move` delta consistent.
+            // always all on the single canvas (page index 0). Tying the page
+            // index to the *initial* flow position would inflate `true_pages`
+            // (and thus `doc_h`) whenever bare mobjects happen to stack past the
+            // page height in the identity layout, even though they all animate
+            // onto the one visible canvas. Using the final position keeps the
+            // `doc_h` estimate tight while still covering every mobject's identity
+            // layout. The rebased flow coordinate (`page_idx * ph_pt`) keeps the
+            // `move` delta consistent with the continuous absolute coordinate.
             let ph_cm = ph_pt / PT_PER_CM;
             for label in &labels {
                 if tmp_to_target.contains_key(label) {
@@ -394,13 +395,13 @@ impl Renderer {
                     page_of.insert(label.clone(), new_p);
                 }
             }
-            // The scene's true page count follows the mobjects' (now corrected)
+            // The scene's page-count estimate follows the mobjects' (now corrected)
             // page assignment. Absolutely-positioned mobjects that all land on
             // page 0 collapse the phantom flow overflow to a single page. Any
             // content that lands beyond page 0 overflows the fixed viewport and
             // is *rendered but clipped at rasterization* by the viewport's
-            // `viewBox` — it is no longer dropped. The warning is emitted when
-            // the flow spills past the first page.
+            // `viewBox`. The warning is emitted when the flow spills past the
+            // first page.
             let true_pages = labels
                 .iter()
                 .filter_map(|l| page_of.get(l))
