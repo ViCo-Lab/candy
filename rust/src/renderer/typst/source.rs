@@ -648,14 +648,12 @@ impl Renderer {
         if !is_ecval {
             return None;
         }
-        // The first positional argument is the counter name. A leading named
-        // argument means this isn't the canonical read form → bail.
+        // The first positional argument is the counter name, written as a string
+        // literal (the canonical `ecval("name")` form). Legacy bare-ident forms
+        // such as `ecval(name)` are no longer accepted — pass the name as a
+        // string so the read is unambiguous.
         match call.args().items().next() {
-            Some(ast::Arg::Pos(p)) => match p {
-                Expr::Str(s) => Some(s.get().to_string()),
-                Expr::Ident(i) => Some(i.as_str().to_string()),
-                _ => None,
-            },
+            Some(ast::Arg::Pos(Expr::Str(s))) => Some(s.get().to_string()),
             _ => None,
         }
     }
@@ -674,11 +672,7 @@ impl Renderer {
             return None;
         }
         match call.args().items().next() {
-            Some(ast::Arg::Pos(p)) => match p {
-                Expr::Str(s) => Some(s.get().to_string()),
-                Expr::Ident(i) => Some(i.as_str().to_string()),
-                _ => None,
-            },
+            Some(ast::Arg::Pos(Expr::Str(s))) => Some(s.get().to_string()),
             _ => None,
         }
     }

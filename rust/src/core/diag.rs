@@ -500,11 +500,19 @@ impl CandyError {
             CandyError::UnknownKey(_, _, _) => {
                 Some("declare the key with #mobject / #ecnew, or check the name for a typo")
             }
-            CandyError::InvalidKey { not_ident, .. } => {
+            CandyError::InvalidKey {
+                not_ident, what, ..
+            } => {
                 if *not_ident {
                     Some(
                         "use a valid Typst identifier: start with a letter or `_`, and only \
                          letters, digits, `_`, or `-` (no spaces, no leading digit or `-`)",
+                    )
+                } else if what.contains("must be a ratio") {
+                    Some("use a Typst ratio literal such as `50%` (a bare number is not a ratio)")
+                } else if what.contains("must be an angle") {
+                    Some(
+                        "use a Typst angle literal such as `90deg` or `1.5rad` (a bare number is not an angle)",
                     )
                 } else {
                     Some("wrap the value in quotes or use a string literal")

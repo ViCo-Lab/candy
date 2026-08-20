@@ -81,6 +81,57 @@ fn register_label(ctx: &mut ParseCtx, label: Label, scene: usize) {
     ctx.label_scene.insert(label, scene);
 }
 
+/// Resolve a named ratio argument (e.g. `opacity: 50%`).
+///
+/// Returns `None` when the argument is absent. When the argument *is* present
+/// but is not a valid Typst `ratio` literal (Typst does not treat a bare number
+/// as a ratio), an `E007 InvalidKey` is raised so the mistake is reported up
+/// front here, instead of being silently coerced or surfacing as a confusing
+/// Typst panic at compile time.
+fn ratio_arg(
+    named: &std::collections::HashMap<String, Expr>,
+    key: &str,
+    ctx: &mut ParseCtx,
+) -> Option<f64> {
+    let e = named.get(key)?;
+    match expr_to_ratio(e) {
+        Some(v) => Some(v),
+        None => {
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: format!("`{key}` (must be a ratio, e.g. `50%`)"),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: ctx.current_directive_loc.clone(),
+            });
+            None
+        }
+    }
+}
+
+/// Resolve a named angle argument (e.g. `rotate: 90deg`).
+///
+/// See [`ratio_arg`] for the error-handling contract; a bare number is *not* an
+/// angle in Typst.
+fn angle_arg(
+    named: &std::collections::HashMap<String, Expr>,
+    key: &str,
+    ctx: &mut ParseCtx,
+) -> Option<f64> {
+    let e = named.get(key)?;
+    match expr_to_angle(e) {
+        Some(v) => Some(v),
+        None => {
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: format!("`{key}` (must be an angle, e.g. `90deg`)"),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: ctx.current_directive_loc.clone(),
+            });
+            None
+        }
+    }
+}
+
 /// Resolve and dispatch a single Candy function call.
 pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     let Some(sym) = call_symbol(&call, ctx) else {
@@ -422,7 +473,7 @@ fn process_animate(
         });
     }
     // Absolute scale: `scale: 150%` (a ratio, e.g. `150%` = 1.5×).
-    if let Some(s) = named.get("scale").and_then(expr_to_ratio) {
+    if let Some(s) = ratio_arg(named, "scale", ctx) {
         actions.push(Action::Scale {
             target: label.clone(),
             to: s,
@@ -430,7 +481,7 @@ fn process_animate(
         });
     }
     // Relative scale: `scale-by: 130%` (a ratio; multiplies current scale).
-    if let Some(f) = named.get("scale-by").and_then(expr_to_ratio) {
+    if let Some(f) = ratio_arg(named, "scale-by", ctx) {
         actions.push(Action::ScaleBy {
             target: label.clone(),
             factor: f,
@@ -438,7 +489,7 @@ fn process_animate(
         });
     }
     // Absolute rotate: `rotate: 90deg` (degrees).
-    if let Some(deg) = named.get("rotate").and_then(expr_to_angle) {
+    if let Some(deg) = angle_arg(named, "rotate", ctx) {
         actions.push(Action::Rotate {
             target: label.clone(),
             degrees: deg,
@@ -446,14 +497,14 @@ fn process_animate(
         });
     }
     // Relative rotate: `rotate-by: 15deg` (add to current rotation, degrees).
-    if let Some(d) = named.get("rotate-by").and_then(expr_to_angle) {
+    if let Some(d) = angle_arg(named, "rotate-by", ctx) {
         actions.push(Action::RotateBy {
             target: label.clone(),
             delta_degrees: d,
             easing: easing.clone(),
         });
     }
-    if let Some(o) = named.get("opacity").and_then(expr_to_ratio) {
+    if let Some(o) = ratio_arg(named, "opacity", ctx) {
         actions.push(Action::FadeTo {
             target: label.clone(),
             opacity: o.clamp(0.0, 1.0),
@@ -649,7 +700,7 @@ fn process_indicate(
         .and_then(expr_to_f64)
         .unwrap_or(300.0)
         .max(1.0) as u32;
-    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(1.1);
+    let factor = ratio_arg(named, "factor", ctx).unwrap_or(1.1);
     let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
     let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
     let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
@@ -683,7 +734,7 @@ fn process_flash(
         .and_then(expr_to_f64)
         .unwrap_or(200.0)
         .max(1.0) as u32;
-    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(2.0);
+    let factor = ratio_arg(named, "factor", ctx).unwrap_or(2.0);
     let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
@@ -713,7 +764,7 @@ fn process_wiggle(
         .and_then(expr_to_f64)
         .unwrap_or(500.0)
         .max(1.0) as u32;
-    let degrees = named.get("degrees").and_then(expr_to_angle).unwrap_or(15.0);
+    let degrees = angle_arg(named, "degrees", ctx).unwrap_or(15.0);
     let easing = resolve_easing(named, &label, Easing::Wiggle, ctx);
     emit_slide(
         ctx,
@@ -859,8 +910,8 @@ fn process_spiral_in(
     let Some(label) = target_arg(pos, named) else {
         return;
     };
-    let scale = named.get("scale").and_then(expr_to_ratio).unwrap_or(3.0);
-    let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(360.0);
+    let scale = ratio_arg(named, "scale", ctx).unwrap_or(3.0);
+    let rotate = angle_arg(named, "rotate", ctx).unwrap_or(360.0);
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -927,7 +978,7 @@ fn process_focus_on(
     let Some(label) = target_arg(pos, named) else {
         return;
     };
-    let factor = named.get("factor").and_then(expr_to_ratio).unwrap_or(1.25);
+    let factor = ratio_arg(named, "factor", ctx).unwrap_or(1.25);
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -1170,12 +1221,8 @@ fn process_camera(
     };
     let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
     let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
-    let zoom = named
-        .get("zoom")
-        .and_then(expr_to_ratio)
-        .unwrap_or(1.0)
-        .max(1e-3);
-    let rotate = named.get("rotate").and_then(expr_to_angle).unwrap_or(0.0);
+    let zoom = ratio_arg(named, "zoom", ctx).unwrap_or(1.0).max(1e-3);
+    let rotate = angle_arg(named, "rotate", ctx).unwrap_or(0.0);
 
     let cam = Label("__camera__".into());
     register_synthetic_mobject(ctx, &cam, "none");

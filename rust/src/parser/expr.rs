@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use typst_library::layout::Abs;
 use typst_syntax::LinkedNode;
 use typst_syntax::SyntaxNode;
 use typst_syntax::ast::{self, AstNode, Expr};
@@ -268,14 +269,17 @@ pub(crate) fn expr_length_cm(e: &Expr) -> Option<f64> {
 }
 
 /// Convert a `(value, unit)` pair from Typst's `Numeric` node to centimeters.
+/// Delegates to typst_library's `Abs` so the unit definitions always match
+/// Typst's own; no hand-rolled coefficients that could drift from Typst.
 pub(crate) fn unit_to_cm(val: f64, unit: ast::Unit) -> Option<f64> {
-    match unit {
-        ast::Unit::Cm => Some(val),
-        ast::Unit::Mm => Some(val * 0.1),
-        ast::Unit::Pt => Some(val / crate::core::ast::PT_PER_CM),
-        ast::Unit::In => Some(val * 2.54),
-        _ => None,
-    }
+    let abs = match unit {
+        ast::Unit::Cm => Abs::cm(val),
+        ast::Unit::Mm => Abs::mm(val),
+        ast::Unit::Pt => Abs::pt(val),
+        ast::Unit::In => Abs::inches(val),
+        _ => return None,
+    };
+    Some(abs.to_cm())
 }
 
 /// Evaluate a unitless numeric expression to `f64`.
@@ -301,16 +305,15 @@ pub(crate) fn expr_to_f64(e: &Expr) -> Option<f64> {
 
 /// Evaluate an opacity-style ratio expression to `f64` in `[0, 1]`.
 ///
-/// Accepts a Typst `ratio` literal such as `50%` (→ `0.5`). For the Rust-only
-/// parse path that bypasses the Typst compile-time validation (the candy
-/// toolchain parses `.tyx` directly, so it never sees the Typst `_assert_ratio`
-/// panic), a bare unitless number is also accepted and treated as a fraction
-/// (`0.5` → `0.5`) so legacy `.tyx` files keep working. Lengths and angles are
-/// rejected (`None`) because they are not valid opacity values.
+/// Accepts a Typst `ratio` literal such as `50%` (→ `0.5`). Nothing else is
+/// accepted: lengths and angles are rejected (`None`) because they are not
+/// valid opacity values. A bare unitless number is intentionally **not**
+/// accepted — Typst does not treat a bare number as a ratio, and the candy
+/// toolchain relies on Typst's own `_assert_ratio` (in `validation.typ`) to
+/// surface a clear compile-time error for misuse rather than silently
+/// coercing it.
 pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
     match e {
-        Expr::Int(i) => Some(i.get() as f64),
-        Expr::Float(f) => Some(f.get()),
         Expr::Numeric(n) => {
             let (val, unit) = n.get();
             match unit {
@@ -333,16 +336,13 @@ pub(crate) fn expr_to_ratio(e: &Expr) -> Option<f64> {
 /// Evaluate an angle expression to degrees (`f64`).
 ///
 /// Accepts a Typst `angle` literal such as `90deg` (→ `90.0`) or `1.5rad`
-/// (→ `≈85.94`). For the Rust-only parse path that bypasses the Typst
-/// compile-time validation (the candy toolchain parses `.tyx` directly, so it
-/// never sees the Typst `_assert_angle` panic), a bare unitless number is also
-/// accepted and treated as degrees (`90` → `90.0`) so legacy `.tyx` files keep
-/// working. Lengths, ratios, and other units are rejected (`None`) because they
-/// are not valid angle values.
+/// (→ `≈85.94`). Nothing else is accepted: lengths, ratios, and other units
+/// are rejected (`None`). A bare unitless number is intentionally **not**
+/// accepted — Typst does not treat a bare number as an angle, and candy relies
+/// on Typst's own `_assert_angle` (in `validation.typ`) to reject misuse at
+/// compile time instead of silently coercing it.
 pub(crate) fn expr_to_angle(e: &Expr) -> Option<f64> {
     match e {
-        Expr::Int(i) => Some(i.get() as f64),
-        Expr::Float(f) => Some(f.get()),
         Expr::Numeric(n) => {
             let (val, unit) = n.get();
             match unit {

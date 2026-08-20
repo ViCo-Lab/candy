@@ -190,33 +190,6 @@ fn collect_include_edits(
             include_file(&rel, call_range, file_path, depth, source, edits, chain)?;
         }
     }
-    // Legacy: a literal `FuncCall` named `include` (e.g. an aliased import
-    // like `candy.include(…)`), kept for robustness.
-    if let Some(call) = node.get().cast::<ast::FuncCall>() {
-        if let Expr::Ident(id) = call.callee() {
-            if id.as_str() == "include" {
-                'args: for args_node in node.children() {
-                    if args_node.get().cast::<ast::Args>().is_none() {
-                        continue;
-                    }
-                    for arg in args_node.children() {
-                        if let Some(ast::Arg::Pos(Expr::Str(s))) = arg.get().cast::<ast::Arg>() {
-                            include_file(
-                                s.get().as_str(),
-                                node.range(),
-                                file_path,
-                                depth,
-                                source,
-                                edits,
-                                chain,
-                            )?;
-                            break 'args;
-                        }
-                    }
-                }
-            }
-        }
-    }
     for child in node.children() {
         collect_include_edits(&child, file_path, depth, source, edits, chain)?;
     }
@@ -1736,7 +1709,7 @@ mod tests {
             r#"
 #import "candy": *
 #mobject("sq", rect(width: 2cm, height: 2cm))
-#animate("sq", rotate: 90, opacity: 30%, duration: 25, easing: "cubic-in-out")
+#animate("sq", rotate: 90deg, opacity: 30%, duration: 25, easing: "cubic-in-out")
 "#,
         );
         let tmp = std::env::temp_dir().join("candy_test_rotate.tyx");
@@ -1772,8 +1745,8 @@ mod tests {
 #animate("dot", to: (4cm, 0pt), duration: 20)
 #restore("dot", slot: "home", duration: 20, easing: "smooth")
 #indicate("dot", factor: 120%, duration: 18)
-#flash("dot", factor: 1.8, duration: 12)
-#wiggle("dot", degrees: 12, duration: 16)
+#flash("dot", factor: 180%, duration: 12)
+#wiggle("dot", degrees: 12deg, duration: 16)
 #disappear("dot")
 #appear("dot")
 #set_color("dot", color: red, duration: 1)

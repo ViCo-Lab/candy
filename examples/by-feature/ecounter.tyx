@@ -7,6 +7,6 @@
 // time, shaped by `easing`.
 #scene()[
   #let n = ecnew("n", seed: 1, step: 1, duration: 2000, easing: "linear")
-  #mobject("dot", circle(radius: ecval(n) * 1pt + 1cm, fill: blue))
+  #mobject("dot", circle(radius: ecval("n") * 1pt + 1cm, fill: blue))
   #animate("dot", to: (0cm, 5cm), duration: 2000, easing: "smooth")
 ]
