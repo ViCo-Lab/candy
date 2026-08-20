@@ -22,9 +22,10 @@ use crate::warn;
 
 use crate::parser::ast_walk::ParseCtx;
 use crate::parser::expr::{
-    call_symbol, current_scope, expr_key_desc, expr_src, expr_to_angle, expr_to_bool, expr_to_f64,
-    expr_to_i64, expr_to_key, expr_to_ratio, is_valid_typst_ident, parse_sub_pos, range_of,
-    resolve_easing, strip_string_literal, target_arg, track_key_from_expr, tuple_cm,
+    call_symbol, current_scope, expr_key_desc, expr_length_cm, expr_src, expr_to_angle,
+    expr_to_bool, expr_to_f64, expr_to_i64, expr_to_key, expr_to_ratio, is_valid_typst_ident,
+    parse_sub_pos, range_of, resolve_easing, strip_string_literal, target_arg, track_key_from_expr,
+    tuple_cm,
 };
 
 /// Parse the `timing` named argument. Returns `None` when absent (the caller
@@ -123,6 +124,31 @@ fn angle_arg(
         None => {
             ctx.pending_error = Some(CandyError::InvalidKey {
                 what: format!("`{key}` (must be an angle, e.g. `90deg`)"),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: ctx.current_directive_loc.clone(),
+            });
+            None
+        }
+    }
+}
+
+/// Resolve a named length argument (e.g. `dx: 2cm`, `dy: -1.5cm`).
+///
+/// Accepts Typst length literals (`4cm`, `3in`, `5pt`) and bare unitless numbers
+/// (treated as cm). Rejects ratios, angles, and other types with E007 so the
+/// user gets a clear error instead of the value being silently dropped.
+fn length_arg(
+    named: &std::collections::HashMap<String, Expr>,
+    key: &str,
+    ctx: &mut ParseCtx,
+) -> Option<f64> {
+    let e = named.get(key)?;
+    match expr_length_cm(e) {
+        Some(v) => Some(v),
+        None => {
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: format!("`{key}` (must be a length, e.g. `2cm`)"),
                 value: expr_key_desc(e),
                 not_ident: false,
                 loc: ctx.current_directive_loc.clone(),
@@ -265,7 +291,15 @@ pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ct
                 .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
             warn!(CandyWarn::CallingPrivate(sym.to_string(), loc));
         }
-        _ => {}
+        // Unknown directive name: previously silently ignored. Now warn so the
+        // user knows their typo or stale call is doing nothing.
+        sym => {
+            let loc = ctx
+                .current_directive_loc
+                .clone()
+                .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+            warn!(CandyWarn::UnknownDirective(sym.to_string(), loc));
+        }
     }
 }
 
@@ -462,8 +496,8 @@ fn process_animate(
     // `animate` signature declared in the Typst package (`typst/src/core.typ`).
     // The Rust parser must accept exactly the named arguments the Typst
     // signature declares; it does not invent extra aliases.
-    let dx = named.get("dx").and_then(expr_to_f64);
-    let dy = named.get("dy").and_then(expr_to_f64);
+    let dx = length_arg(named, "dx", ctx);
+    let dy = length_arg(named, "dy", ctx);
     if dx.is_some() || dy.is_some() {
         actions.push(Action::MoveBy {
             target: label.clone(),
@@ -700,8 +734,8 @@ fn process_indicate(
         .unwrap_or(300.0)
         .max(1.0) as u32;
     let factor = ratio_arg(named, "factor", ctx).unwrap_or(1.1);
-    let dx = named.get("dx").and_then(expr_to_f64).unwrap_or(0.0);
-    let dy = named.get("dy").and_then(expr_to_f64).unwrap_or(0.0);
+    let dx = length_arg(named, "dx", ctx).unwrap_or(0.0);
+    let dy = length_arg(named, "dy", ctx).unwrap_or(0.0);
     let easing = resolve_easing(named, &label, Easing::Smooth, ctx);
     emit_slide(
         ctx,
@@ -1212,8 +1246,8 @@ fn process_camera(
         .unwrap_or(1000.0)
         .max(1.0) as u32;
     let easing = resolve_easing(named, &Label("__camera__".into()), Easing::Smooth, ctx);
-    let x = named.get("x").and_then(expr_to_f64).unwrap_or(0.0);
-    let y = named.get("y").and_then(expr_to_f64).unwrap_or(0.0);
+    let x = length_arg(named, "x", ctx).unwrap_or(0.0);
+    let y = length_arg(named, "y", ctx).unwrap_or(0.0);
     let zoom = ratio_arg(named, "zoom", ctx).unwrap_or(1.0).max(1e-3);
     let rotate = angle_arg(named, "rotate", ctx).unwrap_or(0.0);
 
@@ -1531,11 +1565,35 @@ fn process_transform(
 
     // `to` may be the 2nd positional arg or the `to:` named arg.
     let to_expr = pos.get(1).or_else(|| named.get("to"));
-    let Some(to_expr) = to_expr else { return };
-    let new_body = expr_src(raw, node, to_expr).to_string();
+    let Some(to_expr) = to_expr else {
+        // Missing `to` is a required-argument error, not a silent skip.
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`to` (new content to transform into)".into(),
+            value: "missing — #transform requires a `to:` argument".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
+        return;
+    };
+    let new_body = expr_src(raw, node, to_expr);
     if new_body.is_empty() {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`to`".into(),
+            value: "empty body".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
         return;
     }
+    let new_body = new_body.to_string();
 
     let duration = named
         .get("duration")

@@ -684,6 +684,12 @@ pub enum CandyWarn {
     /// offending `kcpush` is effectively repositioned rather than errored.
     KeyframeOffsetClamp(String, SourceLoc),
 
+    /// W019 — The user called an unknown Candy directive (a name that is not in
+    /// the `CANDY` registry). Previously such calls were silently ignored; now
+    /// they emit a warning so the user knows their typo or stale call is doing
+    /// nothing.
+    UnknownDirective(String, SourceLoc),
+
     /// W018 — A scene's content overflowed the single-page viewport: the flow
     /// layout spilled past the declared/page height. The overflow content is
     /// still rendered, but clipped at rasterization by the fixed viewport
@@ -717,6 +723,7 @@ impl CandyWarn {
             CandyWarn::Interpolation(_) => "W016",
             CandyWarn::KeyframeOffsetClamp(_, _) => "W017",
             CandyWarn::ContentOverflow(_) => "W018",
+            CandyWarn::UnknownDirective(_, _) => "W019",
         }
     }
 
@@ -791,6 +798,9 @@ impl CandyWarn {
                      isn't shown"
                 )
             }
+            CandyWarn::UnknownDirective(name, _) => {
+                format!("parse: unknown directive `#{name}`; candy does not recognize this name")
+            }
         }
     }
 
@@ -803,6 +813,7 @@ impl CandyWarn {
             CandyWarn::UnknownEasing(_, l) => Some(l),
             CandyWarn::RevealFallback(_, l) => Some(l),
             CandyWarn::KeyframeOffsetClamp(_, l) => Some(l),
+            CandyWarn::UnknownDirective(_, l) => Some(l),
             _ => None,
         }
     }
@@ -831,6 +842,10 @@ impl CandyWarn {
             CandyWarn::ContentOverflow(_) => Some(
                 "shrink the content or position mobjects with absolute `to:` coordinates so it \
                 fits the viewport, or split it into multiple #scene blocks",
+            ),
+            CandyWarn::UnknownDirective(_, _) => Some(
+                "check the spelling — candy directives use kebab-case (e.g. `save-state`, \
+                 `set-color`, `fade-transform`); see the docs for the full list",
             ),
             _ => None,
         }
