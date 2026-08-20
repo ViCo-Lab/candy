@@ -28,8 +28,9 @@ impl Renderer {
     /// group parent chain (cycle-guarded) and composing each ancestor.
     fn effective_state(&self, label: &Label, states: &HashMap<Label, FrameData>) -> FrameData {
         // Build the ancestor chain root → … → immediate parent → label.
-        let mut chain = vec![label.clone()];
-        let mut seen = std::collections::HashSet::new();
+        let mut chain = Vec::with_capacity(8); // most groups are shallow
+        chain.push(label.clone());
+        let mut seen = std::collections::HashSet::with_capacity(4);
         let mut cur = label.clone();
         while let Some(p) = self.scene.groups.get(&cur) {
             if !seen.insert(p.clone()) {
@@ -66,7 +67,9 @@ impl Renderer {
         // gives us the index of the first frame with time_ms > time_ms.
         // We only iterate frames[0..idx] — O(T·log N) instead of O(N·T).
         let idx = all_frames.partition_point(|f| f.time_ms <= time_ms);
-        let mut states: HashMap<Label, FrameData> = HashMap::new();
+        // Pre-allocate to avoid rehashing as we insert keyframes + static items.
+        let reserve = idx + self.scene.items.len();
+        let mut states: HashMap<Label, FrameData> = HashMap::with_capacity(reserve);
         for f in &all_frames[..idx] {
             states
                 .entry(f.target.clone())

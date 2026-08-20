@@ -183,6 +183,27 @@ fn int_arg(
     }
 }
 
+/// Emit an E007 error when a required named or positional argument is missing.
+/// `expr_hint` is an optional expression that helps pinpoint the error location;
+/// if omitted, `ctx.current_directive_loc` is used.
+fn missing_required_arg(
+    key: &str,
+    expr_hint: Option<&Expr>,
+    node: &LinkedNode,
+    ctx: &mut ParseCtx,
+) {
+    let loc = expr_hint
+        .map(|e| ctx.loc(range_of(node, e.to_untyped()).unwrap_or_else(|| node.range())))
+        .or_else(|| ctx.current_directive_loc.clone())
+        .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+    ctx.pending_error = Some(CandyError::InvalidKey {
+        what: format!("`{key}` (required)"),
+        value: "missing".into(),
+        not_ident: false,
+        loc: Some(loc),
+    });
+}
+
 /// Resolve and dispatch a single Candy function call.
 pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     let Some(sym) = call_symbol(&call, ctx) else {
@@ -397,7 +418,19 @@ fn process_mobject(pos: &[Expr], node: &LinkedNode, raw: &str, ctx: &mut ParseCt
         return;
     }
     let body_expr = pos.get(1);
-    let Some(body_expr) = body_expr else { return };
+    let Some(body_expr) = body_expr else {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`body` (required)".into(),
+            value: "missing — #mobject requires a body argument".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
+        return;
+    };
     let body = expr_src(raw, node, body_expr).to_string();
     // Record the body's absolute source range so the per-frame whole-document
     // recompiler (Phase 2) can splice the wrapped body back into the source.
@@ -602,7 +635,10 @@ fn process_play(
     ctx: &mut ParseCtx,
 ) {
     let body_expr = pos.first().or_else(|| named.get("body"));
-    let Some(body_expr) = body_expr else { return };
+    let Some(body_expr) = body_expr else {
+        missing_required_arg("body", None, node, ctx);
+        return;
+    };
     let body = expr_src(raw, node, body_expr).to_string();
     let duration = named
         .get("duration")
@@ -1052,9 +1088,21 @@ fn process_fade_transform(
             Expr::Str(s) => Some(Label(s.get().to_string())),
             _ => None,
         });
-    let (Some(from), Some(to)) = (from, to) else {
+    if from.is_none() || to.is_none() {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`from` and `to` (both required)".into(),
+            value: "missing — #fade-transform requires two label arguments".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
         return;
-    };
+    }
+    let from = from.unwrap();
+    let to = to.unwrap();
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -1420,13 +1468,14 @@ fn process_reveal(
 /// empty body, without overwriting an existing one.
 fn register_synthetic_mobject(ctx: &mut ParseCtx, label: &Label, body: &str) {
     if !ctx.items.contains_key(label) {
-        ctx.items.insert(label.clone(), body.to_string());
-        register_label(ctx, label.clone(), ctx.current_scene);
+        let label_owned = label.clone();
+        ctx.items.insert(label_owned.clone(), body.to_string());
+        register_label(ctx, label_owned.clone(), ctx.current_scene);
         ctx.initial.insert(
-            label.clone(),
+            label_owned.clone(),
             FrameData {
                 time_ms: 0,
-                target: label.clone(),
+                target: label_owned,
                 x: 0.0,
                 y: 0.0,
                 scale: 1.0,
@@ -1455,9 +1504,21 @@ fn process_morph(
         Expr::Str(s) => Some(Label(s.get().to_string())),
         _ => None,
     });
-    let (Some(from), Some(to)) = (from, to) else {
+    if from.is_none() || to.is_none() {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`from` and `to` (both required)".into(),
+            value: "missing — #morph requires two label arguments".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
         return;
-    };
+    }
+    let from = from.unwrap();
+    let to = to.unwrap();
     let duration = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -1561,7 +1622,19 @@ fn process_transform(
     ctx: &mut ParseCtx,
 ) {
     let label = target_arg(pos, named);
-    let Some(label) = label else { return };
+    let Some(label) = label else {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`target` (first positional argument)".into(),
+            value: "missing — #transform requires a label argument".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
+        return;
+    };
 
     // `to` may be the 2nd positional arg or the `to:` named arg.
     let to_expr = pos.get(1).or_else(|| named.get("to"));
@@ -1744,9 +1817,22 @@ fn process_subtitle(
     ctx: &mut ParseCtx,
 ) {
     let body_expr = pos.first().or_else(|| named.get("body"));
-    let Some(body_expr) = body_expr else { return };
+    let Some(body_expr) = body_expr else {
+        missing_required_arg("body", None, node, ctx);
+        return;
+    };
     let body = expr_src(raw, node, body_expr).to_string();
     if body.is_empty() {
+        let loc = ctx
+            .current_directive_loc
+            .clone()
+            .unwrap_or_else(|| SourceLoc::at(&ctx.file_path, &ctx.source, 0..0));
+        ctx.pending_error = Some(CandyError::InvalidKey {
+            what: "`body`".into(),
+            value: "empty".into(),
+            not_ident: false,
+            loc: Some(loc),
+        });
         return;
     }
     let duration = named
@@ -2049,7 +2135,11 @@ fn process_kcpush(
         .get("value")
         .or_else(|| pos.get(1))
         .and_then(expr_to_i64);
-    let Some(value) = value else { return };
+    let Some(value) = value else {
+        let expr_hint = named.get("value").or_else(|| pos.get(1));
+        missing_required_arg("value", expr_hint, node, ctx);
+        return;
+    };
     let offset = named
         .get("offset")
         .or_else(|| pos.get(2))
