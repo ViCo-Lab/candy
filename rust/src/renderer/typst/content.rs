@@ -10,7 +10,7 @@ use typst_svg::{SvgOptions, svg};
 use typst_syntax::ast::{self, Expr};
 use typst_syntax::{LinkedNode, parse_code};
 
-use crate::core::ast::{Label, Scene, SubPos, Subtitle};
+use crate::core::ast::{Scene, SubPos, Subtitle};
 use crate::core::diag::CandyError;
 
 use super::world::{CandyWorld, WorldState};
@@ -30,37 +30,6 @@ pub(crate) fn imports_preamble(scene: &Scene) -> String {
         }
         s
     }
-}
-
-/// Resolve the Typst body for `label` at frame time `time_ms`.
-/// A `transform` records content switches on `Scene.content_timeline` as
-/// `(time_ms, new_body)` pairs. For a given frame we use the latest switch
-/// whose `time_ms <= frame`, falling back to `items[label]` (the original
-/// body) before any transform. This lets a single label render different
-/// content before/after a `transform` without corrupting earlier slides.
-pub(crate) fn content_for(
-    scene: &Scene,
-    label: &Label,
-    time_ms: u32,
-) -> (String, Vec<String>, Vec<String>) {
-    let body = if let Some(timeline) = scene.content_timeline.get(label) {
-        let mut chosen: Option<&String> = None;
-        for (t, body) in timeline {
-            if *t <= time_ms {
-                chosen = Some(body);
-            }
-        }
-        if let Some(b) = chosen {
-            b.clone()
-        } else {
-            scene.items.get(label).cloned().unwrap_or_default()
-        }
-    } else {
-        scene.items.get(label).cloned().unwrap_or_default()
-    };
-    // Substitute `ecval(name)` / `kcval(name)` counter references with their
-    // integer value at this frame (honoring shadowing + lifecycle).
-    substitute_counters(scene, &body, time_ms)
 }
 
 /// Replace every `ecval("name")` / `kcval("name")` counter reference in `body`

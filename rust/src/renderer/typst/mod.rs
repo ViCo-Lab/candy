@@ -22,8 +22,8 @@
 //! * [`world`] — the in-process Typst [`World`](typst::World) implementation
 //!   (`WorldState` + `CandyWorld`, plus the package downloader).
 //! * [`content`] — per-frame source assembly: preamble re-declaration, the
-//!   content timeline (`content_for`), AST-driven `ecval(...)` counter
-//!   substitution, and subtitle placement / compilation.
+//!   content timeline, AST-driven `ecval(...)` counter substitution, and
+//!   subtitle placement / compilation.
 //! * [`svg`] — SVG geometry parsing (bounding boxes, path tokenization,
 //!   attribute extraction) for the native-layout pass and formula fragments.
 //! * [`camera`] — the global `#camera` pan/zoom/rotate SVG transform.
@@ -329,8 +329,8 @@ impl Renderer {
         }
     }
     /// Compile a Typst source, memoized by the exact source string.
-    /// This is the unified compile entry point for every object render path
-    /// (`render_frame`, `body_largest_shape`, and the whole-document path). It is
+    /// This is the unified compile entry point for every render path
+    /// (`body_largest_shape` and the whole-document path). It is
     /// behavior-preserving: identical `(source, inputs)` → identical document.
     /// The win is that frames sharing a source (static / paused objects, or a
     /// counter value that repeats) skip a redundant Typst compile. Bodies that
@@ -419,16 +419,9 @@ impl Renderer {
         let h = (ph * pixel_per_pt as f64).round().max(1.0) as usize;
         (w, h)
     }
-    /// Resolve the Typst body for `label` at frame time `time_ms`, choosing the
-    /// SAME source for every render path (SVG, pixels, isolated). During an
-    /// active `#morph` window the morphed polygon wins; otherwise the label's
-    /// (possibly `transform`-swapped, `ecval`-substituted) body is used. This
-    /// is the single source of truth that keeps the three render modes unified
-    /// — previously the isolated `render_frame` path skipped the morph branch.
-    fn resolve_body(&self, label: &Label, time_ms: u32) -> (String, Vec<String>, Vec<String>) {
-        self.morph_body_for(label, time_ms)
-            .unwrap_or_else(|| content_for(&self.scene, label, time_ms))
-    }
+    /// Resolve the Typst body for `label` at frame time `time_ms`.
+    /// During an active `#morph` window the morphed polygon wins; otherwise the
+    /// label's (possibly `transform`-swapped, `ecval`-substituted) body is used.
     /// Resolve a Typst color expression (`red`, `rgb(0,255,0)`, `luma(50)`,
     /// `rgb("#7fe3ff")`, …) to its `[r, g, b, a]` bytes (0–255), using the real
     /// Typst compiler (returning raw RGBA so the `#set-color` path can lerp
@@ -1162,84 +1155,6 @@ fn subtitle_stays_in_viewport() {
         max_y <= page_h + 1.0,
         "subtitle overflows viewport: max translate y = {max_y} > page_h {page_h}"
     );
-}
-/// Verify the performance-first morph path: the renderer precomputes a
-/// `MorphPlan` and, during the pair window, returns the `to` object's body as
-/// an interpolated `polygon(...)` (a real shape morph, not a plain crossfade).
-/// Outside the window it falls back to the normal body (seamless hand-off).
-#[test]
-fn morph_renders_interpolated_polygon() {
-    use crate::core::ast::{MorphPair, Slide};
-    use crate::core::easing::Easing;
-    use crate::core::meta::PrivateMeta;
-    use std::collections::HashMap;
-    let mut items = HashMap::new();
-    items.insert(Label("a".into()), "circle(radius: 1cm, fill: blue)".into());
-    items.insert(Label("b".into()), "square(size: 2cm, fill: red)".into());
-    let morph_pairs = vec![MorphPair {
-        from: Label("a".into()),
-        to: Label("b".into()),
-        to_body: None,
-        start_ms: 0,
-        end_ms: 100,
-        easing: Easing::Linear,
-    }];
-    let scene = Scene {
-        slides: vec![Slide {
-            start_ms: 0,
-            duration_ms: 100,
-            actions: vec![],
-            loc: None,
-        }],
-        items,
-        content_timeline: HashMap::new(),
-        morph_pairs,
-        transform_plans: Vec::new(),
-        initial: HashMap::new(),
-        audio: Vec::new(),
-        imports: Vec::new(),
-        page_size: None,
-        subtitles: Vec::new(),
-        counters: Vec::new(),
-        counter_events: Vec::new(),
-        kcdefs: Vec::new(),
-        kc_events: Vec::new(),
-        scopes: Vec::new(),
-        scenes: Vec::new(),
-        groups: HashMap::new(),
-        artifacts: ParseArtifacts::default(),
-        private_metadata: PrivateMeta::default(),
-    };
-    let mut r = Renderer::with_root(scene, PathBuf::new()).unwrap();
-    r.ensure_flow_public().unwrap();
-    // Before the window: normal body (b is just a square).
-    assert!(
-        r.morph_body_for(&Label("b".into()), 101).is_none(),
-        "after the morph window, the object renders its normal body"
-    );
-    // At the start of the window: a polygon shaped like the *source* (circle).
-    let body0 = r
-        .morph_body_for(&Label("b".into()), 0)
-        .expect("expected a morphed polygon at t=0");
-    assert!(
-        body0.0.starts_with("polygon("),
-        "morph body must be a polygon"
-    );
-    // Mid-window: still a polygon (interpolated shape).
-    assert!(
-        r.morph_body_for(&Label("b".into()), 50)
-            .unwrap()
-            .0
-            .starts_with("polygon(")
-    );
-    // At the end of the window: polygon shaped like the *target* (square) — and
-    // visually identical to rendering `b` normally (seamless hand-off).
-    let body_end = r
-        .morph_body_for(&Label("b".into()), 100)
-        .expect("expected a morphed polygon at t=end");
-    assert!(body_end.0.starts_with("polygon("));
-    // The plan was actually precomputed (not empty).
-    assert!(!r.morph_cache.is_empty(), "morph plan should be cached");
 }
 /// Regression test for declaration-order preservation: mobjects must keep
 /// their declaration order top-to-bottom. The labels below are deliberately

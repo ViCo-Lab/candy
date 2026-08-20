@@ -391,75 +391,6 @@ impl Renderer {
             ba[i + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
         }
     }
-    /// Render a single target's frame as an isolated SVG (spec §4.4 style).
-    pub fn render_frame(&mut self, frame: &FrameData) -> Result<String, CandyError> {
-        if !self.scene.items.contains_key(&frame.target)
-            && !self.scene.content_timeline.contains_key(&frame.target)
-        {
-            return Err(CandyError::LabelNotFound(
-                frame.target.clone(),
-                self.scene
-                    .artifacts
-                    .name_ref_locs
-                    .get(&frame.target.0)
-                    .cloned(),
-            ));
-        }
-        self.ensure_flow()?;
-        let source = self.object_source(frame, frame.time_ms)?;
-        let doc = self.compile_cached(&source, &Dict::new())?;
-        let page = doc
-            .pages()
-            .first()
-            .ok_or_else(|| CandyError::Typst("document produced no pages".into(), None))?;
-        let svg = typst_svg::svg(page, &SvgOptions::default());
-        Ok(svg)
-    }
-    /// Build the isolated per-object source for a single target.
-    fn object_source(&self, st: &FrameData, time_ms: u32) -> Result<String, CandyError> {
-        let flow_pos = self.flow_pos.get(&st.target).cloned().unwrap_or((0.0, 0.0));
-        let nat_cm = (flow_pos.0 / PT_PER_CM, flow_pos.1 / PT_PER_CM);
-        let abs_x_cm = nat_cm.0 + st.x;
-        let abs_y_cm = nat_cm.1 + st.y;
-        let scale_pct = st.scale * 100.0;
-        let (body, unknown_ec, unknown_kc) = self.resolve_body(&st.target, time_ms);
-
-        // Report E006 errors for any unknown counters found during rendering.
-        if let Some(counter_name) = unknown_ec.first() {
-            return Err(CandyError::UnknownKey(
-                "ecnew".to_string(),
-                counter_name.clone(),
-                self.scene
-                    .artifacts
-                    .name_ref_locs
-                    .get(counter_name)
-                    .cloned(),
-            ));
-        }
-        if let Some(counter_name) = unknown_kc.first() {
-            return Err(CandyError::UnknownKey(
-                "kcnew".to_string(),
-                counter_name.clone(),
-                self.scene
-                    .artifacts
-                    .name_ref_locs
-                    .get(counter_name)
-                    .cloned(),
-            ));
-        }
-
-        let preamble = imports_preamble(&self.scene);
-        Ok(place_source(
-            self.page_w,
-            self.page_h,
-            abs_x_cm,
-            abs_y_cm,
-            scale_pct,
-            st.rotation,
-            &body,
-            &preamble,
-        ))
-    }
     /// Render a subtitle to an SVG string using the scene's page size.
     fn render_subtitle_svg(&self, sub: &Subtitle, time_ms: u32) -> Result<String, CandyError> {
         render_subtitle_svg_impl(
@@ -510,40 +441,6 @@ impl Renderer {
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|s| (s.ring, s.fill, s.stroke)))
-    }
-    /// If `label` is the `to` target of an active `#morph` pair at `time_ms`,
-    /// return the morphed shape as a Typst `polygon(...)` body (without a
-    /// leading `#` — the caller's `place_source` prepends it). Outside the pair
-    /// window `None` is returned so the object renders its normal body (this
-    /// also makes the hand-off at `end_ms` seamless: at `t = end_ms` the morphed
-    /// polygon equals the `to` body's own outline).
-    pub(crate) fn morph_body_for(
-        &self,
-        label: &Label,
-        time_ms: u32,
-    ) -> Option<(String, Vec<String>, Vec<String>)> {
-        for pair in &self.scene.morph_pairs {
-            if &pair.to != label {
-                continue;
-            }
-            if time_ms < pair.start_ms || time_ms > pair.end_ms {
-                return None;
-            }
-            let key = (pair.from.clone(), pair.to.clone());
-            let plan = self.morph_cache.get(&key)?;
-            let denom = (pair.end_ms - pair.start_ms).max(1) as f64;
-            let p = (((time_ms - pair.start_ms) as f64) / denom).clamp(0.0, 1.0);
-            let ring = plan.at(p);
-            if ring.is_empty() {
-                return None;
-            }
-            return Some((
-                polygon_svg(&ring, &plan.fill, &plan.stroke),
-                Vec::new(),
-                Vec::new(),
-            ));
-        }
-        None
     }
 }
 

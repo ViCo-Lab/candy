@@ -298,9 +298,9 @@ pub fn build_scene_with_gpu(
     // usually *not* on the `i * 1000/fps` grid. Without this, the final in-window
     // frame renders at eased progress < 1 and the animation's last frame is an
     // intermediate (non-target) morph state instead of the target formula. The
-    // renderer draws the exact target at `end_ms` (see `transform_progress` /
-    // `morph_body_for`), so pinning a frame there fixes the "last frame is not
-    // the target formula" bug.
+    // renderer draws the exact target at `end_ms` (see `transform_progress`),
+    // so pinning a frame there fixes the "last frame is not the target
+    // formula" bug.
     for end_ms in scene
         .transform_plans
         .iter()

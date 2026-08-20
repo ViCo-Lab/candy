@@ -744,11 +744,10 @@ impl Renderer {
     /// the base document would freeze on the original body and the formula would
     /// snap back to its pre-transform state at the end of every `#transform`
     /// (and, for chained transforms, the intermediate steps would never persist).
-    /// The selection mirrors [`crate::renderer::typst::content::content_for`]:
-    /// the latest timeline entry with `t <= frame` wins. Each branch gets the
-    /// `ecval(..)` → input rewrite so counter reads work inside swapped bodies
-    /// too. Returns `None` (leaving `inner` untouched) when the label has no
-    /// timeline entries.
+    /// The selection is the latest timeline entry with `t <= frame`. Each branch
+    /// gets the `ecval(..)` → input rewrite so counter reads work inside
+    /// swapped bodies too. Returns `None` (leaving `inner` untouched) when the
+    /// label has no timeline entries.
     fn content_selection_body(label: &Label, original: &str, scene: &Scene) -> Option<String> {
         let timeline = scene.content_timeline.get(label)?;
         if timeline.is_empty() {
@@ -1091,8 +1090,8 @@ impl Renderer {
     /// The active `content_timeline` index for `label` at `time_ms`: `0` = the
     /// original body, `1` = the first swap, … (the count of timeline entries
     /// with `t <= time_ms`). Uses the latest-wins selection so the body index
-    /// stays consistent with how [`crate::renderer::typst::content::content_for`]
-    /// resolves the current body.
+    /// uses the same latest-wins selection as the body resolution in
+    /// [`body_idx_at`].
     fn body_idx_at(scene: &Scene, label: &Label, time_ms: u32) -> usize {
         let mut idx = 0usize;
         if let Some(timeline) = scene.content_timeline.get(label) {

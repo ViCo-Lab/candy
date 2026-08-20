@@ -1433,11 +1433,11 @@ fn process_reveal(
     tl.push((start + duration, format!("\"{inner}\"")));
 
     // A `reveal`/`typewriter` is supposed to *introduce* the text from nothing.
-    // By default `content_for` falls back to the mobject's original (full) body
-    // for any frame *before* the first timeline entry, so the complete string
-    // would flash on screen and only then get "revealed" (full → partial →
-    // full) — which looks broken. Hide the target from the very start of the
-    // timeline unless something already controls its content or visibility
+    // Before the first timeline entry the mobject keeps its original (full)
+    // body, so the complete string would flash on screen and only then get
+    // "revealed" (full → partial → full) — which looks broken. Hide the target
+    // from the very start of the timeline unless something already controls its
+    // content or visibility
     // earlier (a prior `reveal`/`transform` on the same label, or any earlier
     // action such as `appear`/`animate` targeting it).
     let controlled_earlier = tl.iter().any(|(t, _)| *t < start);
