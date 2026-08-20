@@ -645,7 +645,7 @@ pub struct Scene {
 /// Re-derivable parse artifacts for the per-frame whole-document recompiler.
 /// See `Scene::artifacts`. All fields are default-empty so a `Scene` built
 /// without parsing (e.g. unit tests) carries no artifacts and the renderer
-/// transparently falls back to its legacy per-object compositing path.
+/// transparently uses the per-object compositing path when rendering.
 /// A region of the **expanded** source (the single flat document produced by
 /// recursively inlining `#include "rel"` statements) that came from an *included*
 /// file. When a diagnostic byte offset lands inside `[start, end)`, the deepest

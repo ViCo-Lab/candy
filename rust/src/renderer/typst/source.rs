@@ -56,8 +56,7 @@ impl Renderer {
     /// the *per-page* render documents: [`Renderer::assemble_page_doc`] stitches
     /// the wrapped bodies of a single (scene, page) into a standalone Typst
     /// document that is laid out from the top in raw flow ("裸排") and compiled
-    /// independently — this is the replacement for the old whole-document
-    /// render path.
+    /// independently.
     pub(crate) fn build_parameterized_source(scene: &Scene) -> (String, HashMap<Label, String>) {
         let src = &scene.artifacts.source;
         let chars: Vec<char> = src.chars().collect();
@@ -207,12 +206,11 @@ impl Renderer {
 
     /// Build, for every scene, the **Typst context** that the scene's mobjects
     /// must see when rendered as a standalone per-scene document.
-    /// In the old whole-document path the full `.tyx` source was compiled, so a
-    /// scene's mobjects naturally inherited every `#import`, `#set` / `#show`
-    /// rule, helper `#let` definition, and top-level content established at the
-    /// document root. The per-scene path compiles a *standalone* document
-    /// containing only that scene's `#mobject` calls, so all of that context
-    /// would otherwise be lost. This function extracts it by walking the parse
+    /// Each per-scene document is compiled in isolation (only that scene's
+    /// `#mobject` calls), so all module-level declarations — `#import`,
+    /// `#set` / `#show` rules, helper `#let` definitions, and top-level
+    /// content — would be invisible unless injected explicitly.
+    /// This function extracts them by walking the parse
     /// tree and keeping, for scene `sid`:
     /// * the document-root context (everything outside any `#scene` call), minus
     ///   `#mobject` / `#subtitle` calls (those are re-emitted per scene) and
@@ -543,10 +541,10 @@ impl Renderer {
             let Some(wrapped) = self.wrapped_bodies.get(label) else {
                 continue;
             };
-            // `#play` blocks are no longer appended here: they are rewritten
-            // inline (at their `#play` call site) in the scene context by
-            // `collect_skipped`, so re-emitting them would duplicate the
-            // content and drift it back to the page end ("play 遮罩和内容错位").
+            // `#play` blocks are rewritten inline (at their `#play` call site)
+            // in the scene context by `collect_skipped`; they must not be
+            // appended here or the content duplicates and drifts to the page
+            // end ("play 遮罩和内容错位").
             if label.0.starts_with("__block_") {
                 continue;
             }
@@ -569,8 +567,8 @@ impl Renderer {
     /// AST-driven (like [`crate::renderer::typst::content::substitute_counters`])
     /// so it never rewrites a substring that merely *looks* like the call (inside
     /// a string / comment). Only counters actually declared in the scene are
-    /// rewritten; an undeclared `ecval` is left untouched (and resolves to `0`
-    /// via the `default`, matching the legacy behaviour).
+    /// rewritten; an undeclared `ecval` is left untouched and resolves to `0`
+    /// via the `default`.
     fn ecval_to_inputs(body: &str) -> String {
         if !body.contains("ecval") && !body.contains("kcval") {
             return body.to_string();
@@ -607,9 +605,8 @@ impl Renderer {
     }
 
     /// Collect `(source range → input reference)` edits for every `ecval(name)`
-    /// call in `node`. (We rewrite every `ecval` read unconditionally — the
-    /// `default: 0` fallback matches the legacy behaviour for undeclared
-    /// counters, and declared ones get their live value via `build_frame_inputs`.)
+    /// call in `node`. Declared counters get their live value from
+    /// `build_frame_inputs`; undeclared ones fall through to `default: 0`.
     fn collect_ecval_input_edits(
         node: &LinkedNode,
         edits: &mut Vec<(std::ops::Range<usize>, String)>,
@@ -634,9 +631,8 @@ impl Renderer {
         }
     }
 
-    /// If `call` is an `ecval(..)` read, return the counter name it references
-    /// (the canonical `ecval("name")` string form, or the bare-ident `ecval(name)`
-    /// form for backwards compatibility).
+    /// If `call` is an `ecval(..)` read, return the counter name it references.
+    /// Only the canonical `ecval("name")` string form is accepted.
     fn ecval_input_name(call: &ast::FuncCall) -> Option<String> {
         let is_ecval = match call.callee() {
             Expr::Ident(id) => id.as_str() == "ecval",
@@ -647,9 +643,8 @@ impl Renderer {
             return None;
         }
         // The first positional argument is the counter name, written as a string
-        // literal (the canonical `ecval("name")` form). Legacy bare-ident forms
-        // such as `ecval(name)` are no longer accepted — pass the name as a
-        // string so the read is unambiguous.
+        // literal (the canonical `ecval("name")` form). A bare-ident argument is
+        // rejected — passing the name as a string makes the read unambiguous.
         match call.args().items().next() {
             Some(ast::Arg::Pos(Expr::Str(s))) => Some(s.get().to_string()),
             _ => None,
@@ -1068,9 +1063,9 @@ impl Renderer {
 
     /// Resolve the revealed character count of a `reveal`/`typewriter` target at
     /// `time_ms`, following its `content_timeline` (`(t, "prefix")` entries).
-    /// Mirrors the legacy `content_for` fallback: the latest timeline entry with
-    /// `t <= time_ms` wins; `"none"` → `0` (hidden), otherwise the prefix's char
-    /// length. Before any timeline entry the original (full) body length is used.
+    /// The latest timeline entry with `t <= time_ms` wins; `"none"` → `0`
+    /// (hidden), otherwise the prefix's char length. Before any timeline entry
+    /// the original (full) body length is used.
     fn reveal_len_at(scene: &Scene, label: &Label, time_ms: u32, full_len: usize) -> usize {
         let Some(timeline) = scene.content_timeline.get(label) else {
             return full_len;
@@ -1095,9 +1090,9 @@ impl Renderer {
 
     /// The active `content_timeline` index for `label` at `time_ms`: `0` = the
     /// original body, `1` = the first swap, … (the count of timeline entries
-    /// with `t <= time_ms`). Mirrors the latest-wins selection in
-    /// [`crate::renderer::typst::content::content_for`] so the whole-document
-    /// path and the legacy path agree on which body is current.
+    /// with `t <= time_ms`). Uses the latest-wins selection so the body index
+    /// stays consistent with how [`crate::renderer::typst::content::content_for`]
+    /// resolves the current body.
     fn body_idx_at(scene: &Scene, label: &Label, time_ms: u32) -> usize {
         let mut idx = 0usize;
         if let Some(timeline) = scene.content_timeline.get(label) {
@@ -1124,10 +1119,10 @@ impl Renderer {
         let v = crate::CANDY_VERSION;
         let mut src = format!("#import \"@preview/candy:{v}\": *\n\n");
         // Size the page explicitly so the introspector positions match the
-        // renderer's canvas. `#scene` no longer sizes anything — the page owns
-        // its size and background — so we emit a `#set page(...)` and then wrap
-        // the mobjects in a plain `#scene(...)`. Without this, Typst's default
-        // page (A4 with margins) would be used.
+        // renderer's canvas. The page owns its size and background; `#scene`
+        // is just a context wrapper, so we emit a `#set page(...)` and then
+        // wrap the mobjects in a plain `#scene(...)`. Without this, Typst's
+        // default page (A4 with margins) would be used.
         let (pw_cm, ph_cm) = scene
             .page_size
             .map(|(w, h)| (w / PT_PER_CM, h / PT_PER_CM))

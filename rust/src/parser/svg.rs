@@ -104,10 +104,10 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// Old JSON without the `easing` field (candy v0.1 format) must still
-    /// deserialize — `#[serde(default)]` on FrameData.easing handles it, and
-    /// Action's easing field is required, so this test uses a manual JSON
-    /// payload that omits easing to verify backward compatibility.
+    /// JSON without the `easing` field must still deserialize — `#[serde(
+    /// default)]` on FrameData.easing handles the missing field, and Action's
+    /// easing field is required, so this test uses a manual JSON payload that
+    /// omits easing to verify the fallback.
     #[test]
     fn old_json_without_easing_falls_back_to_linear() {
         // Construct JSON by hand to simulate a v0.1 Scene. We strip the

@@ -553,9 +553,9 @@ pub fn schedule(scene: &Scene) -> Result<Vec<FrameData>, CandyError> {
                     // per-glyph transform overlay (`transform_overlay_svg`) reads
                     // the target's scale to size its fragments, so shrinking it
                     // here would shrink the overlay formula and make it drift off
-                    // the base content ("transform 遮罩和内容不对齐"). The legacy
-                    // non-inline crossfade keeps its shrink via the `old` mobject
-                    // below; the target itself only needs the opacity crossfade.
+                    // the base content ("transform 遮罩和内容不对齐"). The
+                    // opacity crossfade is applied to the target alone; the
+                    // shrink is handled via the `old` mobject below.
                     per_item.entry(target.clone()).or_default().push(FrameData {
                         time_ms: start_t,
                         target: target.clone(),

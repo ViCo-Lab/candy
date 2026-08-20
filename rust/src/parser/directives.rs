@@ -883,8 +883,8 @@ fn process_set_color(
     };
     // The Typst contract requires a *native* color value (e.g. `red`,
     // `rgb(255,0,0)`, `luma(50)`), not a string. Recover the source text of
-    // whatever color expression was passed; legacy string literals are kept
-    // verbatim for the Rust-only parse path that skips Typst validation.
+    // whatever color expression was passed; the raw source text is preserved
+    // for the Rust-only parse path that skips Typst validation.
     let color = named
         .get("color")
         .map(|e| expr_src(raw, node, e).to_string())

@@ -125,9 +125,9 @@ pub struct EncodedVideo {
 /// (a temp file) as it is produced, and only the *small* per-sample metadata
 /// (size + keyframe flag) is kept in RAM. This keeps peak memory bounded to
 /// that metadata regardless of video length / resolution — a long HD/high-FPS
-/// render can no longer OOM on the coded stream (the old design accumulated
-/// every sample in `EncodedVideo::frames: Vec<Vec<u8>>` and then built the
-/// whole container in RAM).
+/// render can no longer OOM on the coded stream (samples are written to a
+/// temp file as they are produced; only the small per-sample metadata
+/// (size + keyframe flag) is kept in RAM).
 pub(crate) struct EncodedVideoFile {
     /// Encoded width in pixels.
     pub width: u32,

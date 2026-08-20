@@ -837,8 +837,8 @@ impl StreamEncoder {
 /// (a single linear scan over `sample_times`); computed once in
 /// [`build_input_with_gpu`] and threaded into the streaming encoder.
 struct EncodeProgress {
-    /// Number of scenes in the document (the `scene.scenes` vector length, or 1
-    /// for a legacy single-scene document).
+    /// Number of scenes in the document (the `scene.scenes` vector length;
+    /// single-scene documents have length 1).
     n_scenes: usize,
     /// For each frame (index parallel to `sample_times`), the index of the scene
     /// it belongs to.

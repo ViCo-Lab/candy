@@ -253,8 +253,8 @@ impl Renderer {
     /// style): surviving units glide smoothly to their nearest same-shaped
     /// counterpart (smart positioning), deleted units fade out into the nearest
     /// survivor, inserted units fade in from the nearest survivor. Returns
-    /// `None` (leaving the legacy crossfade intact) if either body yields no
-    /// extractable units.
+    /// `None` (falling back to a simple opacity crossfade) if either body
+    /// yields no extractable units.
     pub(crate) fn build_transform_fragments(
         &self,
         plan: &crate::core::ast::TransformPlan,

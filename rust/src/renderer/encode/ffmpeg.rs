@@ -363,8 +363,8 @@ pub(crate) fn spawn_ffmpeg(
 
 /// Spawn an ffmpeg child on Linux that reads raw RGBA frames from a **pipe**.
 /// # Why a pipe, not a memfd
-/// A previous version used a `memfd` for frame input and told ffmpeg to read
-/// from `/proc/self/fd/N`. That approach has a fundamental race: ffmpeg opens
+/// Using a memfd for frame input and telling ffmpeg to read from
+/// `/proc/self/fd/N` has a fundamental race: ffmpeg opens
 /// the memfd as a *regular file* and its `read()` returns 0 (EOF) the instant
 /// its read offset catches up to the file size — it does **not** block waiting
 /// for the producer to append more data (unlike a pipe, whose `read()` blocks
@@ -400,9 +400,9 @@ pub(crate) fn spawn_ffmpeg(
 /// power of two and may round up; on systems where the unprivileged pipe size
 /// cap (`/proc/sys/fs/pipe-max-size`) is too low the `F_SETPIPE_SZ` call fails
 /// and we fall back to a plain `write()` — still correct, just not zero-copy.
-/// # Why we still use memfds elsewhere
+/// # Why the output sink uses memfds
 /// The mux **output** sink (see [`make_mux_sink`]) and the stderr redirection
-/// (see [`make_err_log`]) still use memfds, and that is correct: ffmpeg writes
+/// (see [`make_err_log`]) use memfds: ffmpeg writes
 /// the whole container to the output sink and seeks back for the `faststart`
 /// moov rewrite, so it needs a *seekable* file (a pipe would not work). The
 /// stderr sink needs an unbounded buffer so a long encode cannot deadlock on a

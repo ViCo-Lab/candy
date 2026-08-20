@@ -75,8 +75,8 @@ pub(crate) fn content_for(
 /// valid AST node that composes like any other Typst expression (e.g. inside
 /// `rect(width: kcval("n") * 1cm)`) and avoids rewriting substrings that merely
 /// *look* like the call (inside strings, comments, …). The canonical call form
-/// is `ecval("name")` / `kcval("name")` (a quoted string); the bare-ident form
-/// is also accepted for backwards compatibility with existing `.tyx` sources.
+/// is `ecval("name")` / `kcval("name")` (a quoted string). A bare-ident argument
+/// is rejected — the string form is the only accepted syntax.
 pub(crate) fn substitute_counters(
     scene: &Scene,
     body: &str,

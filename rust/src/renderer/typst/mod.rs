@@ -214,9 +214,9 @@ pub struct Renderer {
     /// `(scene_id, page_index)` and is a standalone Typst document containing
     /// only that scene/page's mobjects, laid out from the top in raw flow
     /// ("裸排"), with the scene's runtime context injected via its preamble.
-    /// This replaces the old whole-document render path: each frame compiles
-    /// exactly one of these documents (the active scene's active page) instead
-    /// of recompiling the entire document and extracting a page.
+    /// Each frame compiles exactly one of these documents (the active scene's
+    /// active page) instead of recompiling the entire document and extracting a
+    /// page.
     param_sources: HashMap<usize, Arc<str>>,
     /// Absolute path of the original `.tyx` source file, if known (empty for
     /// hand-built / programmatic `Scene`s). Used to give the compiled Typst
@@ -359,8 +359,7 @@ impl Renderer {
     /// active page) and compiles it with that frame's `sys.inputs`. The source
     /// string is the standalone per-page document assembled in
     /// [`Renderer::assemble_page_doc`], so only the active page's mobjects are
-    /// typeset — replacing the old whole-document recompile-and-extract-page
-    /// approach. Falls back to page 0 of the same scene, then to the
+    /// typeset. Falls back to page 0 of the same scene, then to the
     /// whole-document `param_source`, if a specific page document is missing.
     /// End of the single-page content timeline in milliseconds (`scene.total_ms`).
     /// Used as the global end when clamping overshoot sample times.
@@ -402,9 +401,8 @@ impl Renderer {
     /// the largest scene page (or the document page when there are no scenes)
     /// scaled by `pixel_per_pt`. The streaming encoder composes each frame onto
     /// this fixed size so per-scene page-size variation never produces mismatched
-    /// frame dimensions. Mirrors the `max(…)` the legacy `compose` used, but
-    /// derived cheaply from scene metadata instead of from already-rendered
-    /// frames (so it is known *before* any frame is rasterized).
+    /// frame dimensions. Derived from scene metadata rather than from already-
+    /// rendered frames (so it is known *before* any frame is rasterized).
     pub(crate) fn uniform_canvas(&self, pixel_per_pt: f32) -> (usize, usize) {
         let (pw, ph) = if self.scene.scenes.is_empty() {
             (self.page_w, self.page_h)

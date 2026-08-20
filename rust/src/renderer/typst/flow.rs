@@ -94,7 +94,7 @@ impl Renderer {
         // later scenes (which would shift/scale/rotate content that should sit
         // at its plain-Typst position). This mirrors the per-scene reset used
         // for every other animated property. With no scene tree the camera
-        // applies globally (legacy behaviour).
+        // applies globally.
         // The camera's "home scene" is the scene active at the camera's *first*
         // keyframe (the directive's start). We apply the camera only while the
         // current frame's active scene is that same home scene. (The scheduler
@@ -475,13 +475,11 @@ impl Renderer {
         }
         self.flow_pos = flow_pos;
         // Build per-scene canvas sizes + label→scene ownership for auto-hide.
-        // When `scenes` is empty (legacy single-scene document) we fall back to
-        // the whole document as one scene (id 0) — behavior identical to v0.1.
         self.label_scene = self.scene.label_scene_map();
         let mut sp: HashMap<usize, (f64, f64)> = HashMap::new();
         if self.scene.scenes.is_empty() {
-            // Legacy single-scene document: the whole document is one scene
-            // (id 0). The canvas is a *single* page — overflowing content does
+            // No-scene document: the whole document is one scene (id 0).
+            // The canvas is a *single* page — overflowing content does
             // NOT grow the canvas; it becomes additional pages that play in
             // sequence (see `page_schedules`).
             sp.insert(0, (self.page_w, self.page_h));
@@ -510,8 +508,7 @@ impl Renderer {
         // Assemble the per-page render documents: one standalone Typst document
         // per (scene, page), each containing only that page's mobjects laid out
         // from the top in raw flow ("裸排"), with the scene's runtime context
-        // injected via its preamble. This replaces the old whole-document
-        // recompile-and-extract-page render path.
+        // injected via its preamble.
         let mut param_sources: HashMap<usize, Arc<str>> = HashMap::new();
         let assembly_ids: Vec<usize> = if self.scene.scenes.is_empty() {
             vec![0]
@@ -572,7 +569,7 @@ impl Renderer {
         for plan in &plans {
             // Render the whole old/new formulas and extract each glyph /
             // decoration as a positioned fragment (Typst's own layout). On
-            // failure we keep the legacy crossfade intact.
+            // failure we fall back to a simple opacity crossfade.
             if let Some(tf) = self.build_transform_fragments(plan) {
                 self.transform_fragments.push(tf);
             }

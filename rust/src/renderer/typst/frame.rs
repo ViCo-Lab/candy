@@ -19,9 +19,7 @@ impl Renderer {
     // a single standard SVG (`render_frame_at`), rasterized once by the `raster`
     // module — never a per-object pixel composite.
 
-    /// Whole-document native-Typst SVG draft (compatible standard Typst SVG,
-    /// not the hand-rolled composite the old path emitted — so it opens in any
-    /// viewer, not just Inkscape). Delegates to [`render_frame_svg`].
+    /// Whole-document native-Typst SVG draft. Delegates to [`render_frame_svg`].
     fn render_frame_at_whole_doc(
         &self,
         time_ms: u32,
@@ -156,10 +154,9 @@ impl Renderer {
                 // page-fill background (or `split_background` couldn't bound it),
                 // draw the canvas background ourselves so the frame is never
                 // transparent. `bg_hex` honors the active scene's `bg`
-                // (inheriting from a parent scene) and defaults to opaque white —
-                // exactly what the removed legacy path did with its explicit
-                // `<rect fill=bg_hex>`. Skipped entirely for the per-object
-                // opacity layers, which must stay transparent.
+                // (inheriting from a parent scene) and defaults to opaque white.
+                // Skipped entirely for the per-object opacity layers, which
+                // must stay transparent.
                 out.push_str(&format!(
                     "<rect x=\"0\" y=\"0\" width=\"{pw}\" height=\"{ph}\" fill=\"{bg_hex}\"/>\n",
                     pw = pw,
@@ -267,11 +264,10 @@ impl Renderer {
     /// **Precondition:** `ensure_flow()` must have been called once before
     /// any parallel call (it initializes `nat`/`page_w`/`page_h`). The
     /// [`Renderer::ensure_flow_public`] method exposes this.
-    /// The renderer has a single code path now: the whole-document native-Typst
-    /// SVG path (`render_frame_at_whole_doc`). The old hand-composed per-object
-    /// SVG path was removed — the whole-document path is the single source of
-    /// truth and the only one that keeps static + dynamic content, Z-order and
-    /// typesetting faithful to native Typst.
+    /// The renderer uses the whole-document native-Typst SVG path
+    /// (`render_frame_at_whole_doc`). It is the single source of truth and the
+    /// only path that keeps static + dynamic content, Z-order and typesetting
+    /// faithful to native Typst.
     pub(crate) fn render_frame_at_par(
         &self,
         time_ms: u32,
