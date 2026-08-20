@@ -132,6 +132,31 @@ fn angle_arg(
     }
 }
 
+/// Resolve a named integer argument (e.g. `seed: 42`, `step: 1`).
+///
+/// Only accepts integer literals (`Expr::Int`). Floats and lengths are rejected
+/// with E007 InvalidKey so the user sees a clear error rather than the value
+/// being silently dropped and replaced by a default.
+fn int_arg(
+    named: &std::collections::HashMap<String, Expr>,
+    key: &str,
+    ctx: &mut ParseCtx,
+) -> Option<i64> {
+    let e = named.get(key)?;
+    match expr_to_i64(e) {
+        Some(v) => Some(v),
+        None => {
+            ctx.pending_error = Some(CandyError::InvalidKey {
+                what: format!("`{key}` (must be an integer)"),
+                value: expr_key_desc(e),
+                not_ident: false,
+                loc: ctx.current_directive_loc.clone(),
+            });
+            None
+        }
+    }
+}
+
 /// Resolve and dispatch a single Candy function call.
 pub(crate) fn process_call(call: ast::FuncCall, node: &LinkedNode, raw: &str, ctx: &mut ParseCtx) {
     let Some(sym) = call_symbol(&call, ctx) else {
@@ -1732,8 +1757,8 @@ fn process_ecnew(
         }
         return;
     }
-    let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
-    let step = named.get("step").and_then(expr_to_i64).unwrap_or(1);
+    let seed = int_arg(named, "seed", ctx).unwrap_or(0);
+    let step = int_arg(named, "step", ctx).unwrap_or(1);
     let duration_ms = named
         .get("duration")
         .and_then(expr_to_f64)
@@ -1886,7 +1911,7 @@ fn process_kcnew(
         }
         return;
     }
-    let seed = named.get("seed").and_then(expr_to_i64).unwrap_or(0);
+    let seed = int_arg(named, "seed", ctx).unwrap_or(0);
     let easing = resolve_easing(named, &Label(format!("kc:{name}")), Easing::Linear, ctx);
     let scope = current_scope(ctx);
     let loc = ctx.loc(node.range());

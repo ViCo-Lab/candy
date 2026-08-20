@@ -375,11 +375,14 @@ pub(crate) fn expr_to_bool(e: &Expr) -> Option<bool> {
 }
 
 /// Evaluate a unit-less numeric expression to `i64` (for counter seed/step).
+///
+/// Only accepts integer literals (`Expr::Int`) and unary `±` around them.
+/// Floats and lengths are rejected — the caller should report an error rather
+/// than silently rounding, to stay consistent with the `_assert_int` validation
+/// that Typst performs at compile time.
 pub(crate) fn expr_to_i64(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int(i) => Some(i.get()),
-        Expr::Float(f) => Some(f.get().round() as i64),
-        Expr::Numeric(n) => Some(n.get().0.round() as i64),
         Expr::Unary(u) if matches!(u.op(), ast::UnOp::Pos | ast::UnOp::Neg) => {
             let v = expr_to_i64(&u.expr())?;
             Some(if matches!(u.op(), ast::UnOp::Neg) {
